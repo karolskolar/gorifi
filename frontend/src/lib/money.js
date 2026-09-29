@@ -66,3 +66,49 @@ export function roundMoney(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return value
   return Math.round(value * 100) / 100
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THE ONE HOME FOR „does this person owe money?" (PI-T7 review, 2026-09-20)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ⚠ PI-T7 shipped `balance < -0.01` in THREE live places on the friend surface —
+// `DebtBanner.vue` (whether the banner appears), `FriendBalanceCard.vue` (the card's
+// colour, its „Nedoplatok" copy AND whether Zaplatiť is offered) and
+// `FriendPortalSession.vue` (the drawer badge's tone) — and then declared itself the
+// single home in FOUR documents. They are not three questions sharing a constant: every
+// one asks „is this friend in debt?" and only the RENDERING differs. §UC-PI-008 had
+// already pointed the banner's gate at the card's thresholds.
+//
+// ⚠⚠ The split was not merely untidy, it was UNTESTABLE: only the banner's copy had a
+// boundary fixture (−0.004 / −0.02). The card's stubs were 0, 12.5, −5, −30, −74.24, so a
+// banner-versus-card disagreement anywhere between −0.01 and −1.00 rendered a debt banner
+// above a card that did not call it debt, and no test could see it.
+//
+// So the predicate lives here once. If the PO ever moves the threshold — „ignore sub-50-cent
+// dust", say — this is the only edit, and `portal-balance.spec.js`'s source pin counts the
+// literal ONCE across `frontend/src`, truthfully.
+//
+// ⚠ `BalanceBadge.vue` keeps its own copy ON PURPOSE: it is shared with the ADMIN skin,
+// which has no business importing a friend-portal lib, and the admin's badge is a different
+// audience's rendering of the same number. That exception is named here so it reads as a
+// decision rather than a miss.
+
+/** The debt threshold. One cent of float dust is not a debt. */
+export const DEBT_EPSILON = -0.01
+
+/** `true` when the friend owes money. Non-finite input is NOT debt (fails closed: a
+ *  balance that failed to load must never paint a „you owe" banner). */
+export function isInDebt(balance) {
+  const n = Number(balance)
+  return Number.isFinite(n) && n < DEBT_EPSILON
+}
+
+/** `'neg' | 'zero' | 'pos'` — the rendering states that hang off the same predicate.
+ *  `zero` absorbs both float dust and an unreadable balance. */
+export function balanceState(balance) {
+  const n = Number(balance)
+  if (!Number.isFinite(n)) return 'zero'
+  if (isInDebt(n)) return 'neg'
+  if (n <= 0.01) return 'zero'
+  return 'pos'
+}

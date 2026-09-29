@@ -36,6 +36,39 @@
 
 ---
 
+## ⚠⚠ SUPERSEDED IN PART BY MODULE 18 — READ THIS BEFORE ANY UC BELOW
+
+> **Shipped 2026-09-20 (PI-T3, 18 §UC-PI-005/011/016).** The authenticated portal is no
+> longer a CYCLE LIST: `/` renders the current round's product grid directly
+> (`FriendOrder.vue` in `mode='landing'`). The structures the UCs below specify are
+> **GONE FROM THE CODE**, and the e2e files that pinned them
+> (`portal-cycles.spec.js`, `portal-share-row.spec.js`) are **deleted**. Nothing here is
+> a live contract unless module 18 says so; this file is kept for the behaviour that
+> survived and for the history of what was removed.
+>
+> | UC here | Status | Where it lives now |
+> |---|---|---|
+> | UC-FL-006 cycle list — heading „Objednávkové cykly", gear, `div.card.p-4` cards, badge matrix, empty states | **RETIRED** | 18 §UC-PI-005 (landing = the order screen); gear + subscription modal → §UC-PI-016 (column and both routes KEPT) |
+> | UC-FL-007 share row + colleague-count fan-out | **RETIRED** | 18 §UC-PI-011 — the `.cartbar` share icon (landing only) + drawer item 4; the count is ONE `GET /guest-links/cycle/:id`, not a capped fan-out |
+> | UC-FL-008 archive fold | **RETIRED** | 18 §UC-PI-009 „Moje objednávky" (PI-T6) |
+> | UC-FL-010 subscription modal | **RETIRED** | 18 §UC-PI-016 — UI only; `friend_subscriptions`, `GET/PUT /api/subscriptions/friend/:id` and the server-side filter are untouched |
+> | UC-FL-005 balance card | still mounted on the landing | 18 §UC-PI-008/010 RELOCATE it (PI-T7) |
+> | UC-FL-001/002/003/009/011/012 | **STAY** | unchanged |
+>
+> ⚠ **The `p-4` prohibition (UC-FL-006 below) is historical.** It existed so
+> `guest-link.spec.js`'s `cardFor()` locator could not also match the page column. There
+> is no cycle card and no `cardFor()` any more — but the page column is STILL written as
+> `px-4 sm:px-7 py-4 sm:py-7` rather than `p-4`, and there is no reason to change it.
+>
+> ⚠ **UC-FL-013's pin table names assertions that no longer exist** (rows 5 and 9:
+> `div.p-4` + `<h3>` + share button; the cycle-name click navigating). The IMMUTABILITY
+> RULE itself stays; those two rows are case (a) retargets whose new homes are
+> `portal-landing.spec.js` (the share dialog's entry contract, „not open ⇒ no share
+> affordance") and `e2e/helpers/portal.js gotoCycle()` (portal → order navigation, one
+> home, twenty call sites).
+
+---
+
 ## Resolved conflicts (recency / canonicity)
 
 1. **Portal delivery-method badge dropped.** The current cycle card shows a red Packeta /
@@ -308,7 +341,7 @@ transactions modal; admin screens using `BalanceBadge` are pixel-unchanged.
 
 ---
 
-## UC-FL-006 Cycle list — heading, gear, cycle cards (Friend)
+## ~~UC-FL-006 Cycle list — heading, gear, cycle cards (Friend)~~ — **RETIRED by 18 §UC-PI-005/016 (PI-T3, 2026-09-20)**
 
 **Goal:** the portal's main content: section header + active cycle cards.
 
@@ -332,9 +365,14 @@ phone and 4 px under on desktop. Corrected here in both the spec and the view, b
 margin-bottom: 14px`):
 
 - `<h2 class="h-screen">Objednávkové <span class="hl">cykly</span></h2>` — font-size
-  **28 px phone / 34 px desktop**. **Pinned: it must stay a real `<h2>`** — five e2e
+  **28 px phone / 34 px desktop**. ~~**Pinned: it must stay a real `<h2>`** — five e2e
   specs locate `getByRole('heading', { name: 'Objednávkové cykly' })` (the accessible
-  name concatenates across the `.hl` span, so the markup above satisfies it).
+  name concatenates across the `.hl` span, so the markup above satisfies it).~~
+  ⚠ **SUPERSEDED by PI-T1 (18 §UC-PI-019 item 1, 2026-09-20): nothing gates on this
+  heading any more.** The „portal is ready" gate is `expectLanding()` in
+  `e2e/helpers/portal.js` (`data-testid="portal-landing"`), retargeted across 28 files.
+  The two surviving locators are in `portal-cycles.spec.js` / `portal-share-row.spec.js`,
+  which PI-T3 deletes with the cards.
 - Right: `NeoIcon name="gear"` in a span (`color: var(--ink-dim)`, `cursor:pointer`,
   `title="Nastavenia odberu"`) → opens the subscription modal.
 
@@ -399,7 +437,7 @@ planned card dimmed and inert; tapping an open/locked card navigates to
 
 ---
 
-## UC-FL-007 Share row + colleague count — GuestShareDialog entry point (Friend, host)
+## ~~UC-FL-007 Share row + colleague count — GuestShareDialog entry point (Friend, host)~~ — **RETIRED by 18 §UC-PI-011 (PI-T3, 2026-09-20)**
 
 **Goal:** the open-cycle card's footer row: colleague-count context + the share entry
 point into the (module 05) dialog.
@@ -462,7 +500,7 @@ share tap opens the dialog titled with that cycle's name and does not navigate;
 
 ---
 
-## UC-FL-008 Archive fold (Friend)
+## ~~UC-FL-008 Archive fold (Friend)~~ — **RETIRED by 18 §UC-PI-009 (PI-T3 removed it; PI-T6 builds its replacement)**
 
 **Goal:** completed cycles behind a fold, per the prototype.
 
@@ -507,22 +545,47 @@ render flat 2px-border cards with mono totals; clicking a row opens the cycle.
 
 **Composition:** `NeoModal` `title="Upraviť profil"`, footer = `button.btn` **"Zrušiť"**
 (closes, disabled while saving) + `button.btn.accent` **"Uložiť"** (label
-**"Ukladám..."** while saving; disabled when `!profileName.trim() || profileSaving`) →
+**"Ukladám..."** while saving; ~~disabled when `!profileName.trim() || profileSaving`~~
+**SUPERSEDED by PI-T10 — `!profileName.trim() || !profilePhone.trim() || profileSaving`**:
+18 §UC-PI-015 row 3 makes **Mobil** required on the friend's own route, so the button has
+TWO required terms now, and `saveProfile()` carries both in JS as well) →
 `saveProfile()`.
 
 **Field group (body, top to bottom — copy verbatim from portal.jsx):**
 
 | Field | Markup / rules |
 |---|---|
-| Jedinečné ID + Užívateľské meno | one row `display:flex; gap:10px`, two read-only value boxes: each a `label.field-lbl` over `div.copyrow > div.val` containing `getCurrentFriendUid()` / `currentFriend.username` (no copy button — the `.copyrow .val` box is the prototype's read-only style). The username field renders **only when `currentFriend.username` exists** (repo behavior: legacy friends may have none; prototype demo always has one — behavior wins). |
-| Prihlasovacie meno * | `label.field-lbl` "Prihlasovacie meno *" + `input.inp` bound to `profileName`, `field-help` **"Toto meno vidí správca a kolegovia."** Required (trimmed non-empty) — enforced by the disabled save button as today. |
-| Adresa Packeta výdajného miesta | `label.field-lbl` + `input.inp` bound to `profilePacketaAddress`, placeholder **"napr. Z-BOX Hlavná 15, Bratislava"**, `field-help` **"Predvolená adresa pre doručenie Packetou (voliteľné)."** Saved as `null` when blank (existing `saveProfile`). |
+| ~~Užívateľské meno~~ **Login** (PI-T10) | ⚠ **RELABELLED by PI-T10** (18 §UC-PI-015 row 1, roadmap §19): the row reads **„Login"** and gained a `field-help` **„Meno, ktorým sa prihlasujete. Nemení sa."** The string „Užívateľské meno" survives on the LOGIN SCREEN (§UC-FL-002) and in both username-SETUP dialogs — only THIS row moved. Otherwise as described: one row `display:flex; gap:10px` holding **one** read-only value box: a `label.field-lbl` over `div.copyrow > div.val` containing `currentFriend.username` (no copy button — the `.copyrow .val` box is the prototype's read-only style; the `div` is not labelable, so the label carries the `id` and the box points back with `aria-labelledby`). Renders **only when `currentFriend.username` exists** (repo behavior: legacy friends may have none; prototype demo always has one — behavior wins). ~~a second read-only box to its left with `getCurrentFriendUid()` (`Jedinečné ID`)~~ **SUPERSEDED — REMOVED by FUP-T20** (product decision): `friends.uid` is an internal identifier with nothing a friend can read off it or act on. Presentation-only removal — the uid still rides in the stored session and in the admin's own ID column. The flex row is kept as-is (it is what preserves the content-sized `.copyrow` rendering). |
+| Meno a priezvisko * | `label.field-lbl` "Meno a priezvisko *" + `input.inp` bound to `profileName`, `field-help` **"Celé meno. Uvádza sa na zásielke pri doručení Packetou a vidí ho správca aj kolegovia."** Required (trimmed non-empty) — enforced by the disabled save button as today. ~~label "Prihlasovacie meno *", `field-help` "Toto meno vidí správca a kolegovia."~~ **SUPERSEDED — RELABELLED by FUP-T20** (product-owner mapping confirmed 2026-08-17): this input writes **`friends.name`**, which is the **Meno a priezvisko** the friend supplies and which is **required for Packeta delivery** — it never was a login. The login is the read-only `username` box above; `friends.display_name` is an **admin-only** sidenote and never appears in the friend portal (and FUP-T20 also stopped `GET /friends/:id/profile` sending it). The old label was the same mislabel module 11 fixed in `AdminFriends.vue`, surviving here because 11 §UC-FC-002's grep guard named one file — see FUP-T21 for the two-file form. |
+| Adresa Packeta výdajného miesta ⚠ **MOVED LAST by PI-T10** | ⚠ 18 §UC-PI-015 reorders the whole body to **Login → Meno a priezvisko * → Mobil * → E-mail → Adresa Packeta**; this row is no longer second of three, and it gained `maxlength="160"` mirroring PI-T10's new server bound. Otherwise: `label.field-lbl` + `input.inp` bound to `profilePacketaAddress`, placeholder **"napr. Z-BOX Hlavná 15, Bratislava"**, `field-help` **"Predvolená adresa pre doručenie Packetou (voliteľné)."** Saved as `null` when blank (existing `saveProfile`). |
 | Password-change fold | section separated by `border-top: 2px solid rgba(10,10,10,0.12); padding-top: 12px`. Rendered **only when `currentFriend.hasCredentials`** (repo behavior). Toggle: `button.btn.ghost.sm` (`color:var(--accent); font-weight:700; padding:0`) — label **"Zmeniť heslo"** closed / **"Skryť zmenu hesla"** open. Fold content (column `gap:12px; margin-top:12px`): three `field-lbl` + `input.inp type="password"` fields **"Aktuálne heslo"**, **"Nové heslo"**, **"Potvrdiť nové heslo"** (Enter in the last submits), then `button.btn.sm.dark` **"Zmeniť heslo"** (label "Mením heslo..." while saving; disabled until all three filled). |
+
+⚠ **OPEN — this field table and the `saveProfile()` payload below are INCOMPLETE, and
+FUP-T21 deliberately did not fold the gap in** (it is other rows' scope and their shipped
+behaviour was not verified here). The table predates **FC-T4**, which added the friend's
+own **Mobil** and **Email** fields to this modal, and **GA-T7**, which added the **Google
+link/unlink section**; neither appears above, and the payload below is still described as
+`{ name, packeta_address }` when `saveProfile()` also sends the contact fields it changed.
+~~Everything the table DOES describe was re-verified against `FriendPortalSession.vue` by
+FUP-T21 and is accurate.~~ ⚠⚠ **THAT VOUCH EXPIRED WITH PI-T10 (2026-09-21) and the FOUR
+places it stopped being true are struck above**: the read-only row is now **„Login"**,
+the save button has a **second required term (Mobil)**, **Adresa Packeta moved to LAST**,
+and — in the Business-rules list, not the table, which is why the first sweep missed it —
+**the read-only row now carries a `field-help`** where this section says it carries none.
+⚠ That fourth one is the lesson: the sweep walked the TABLE and stopped, while the claim
+lived in prose below it. Grep the section, not the structure you expect. Recorded rather than rewritten, per the documentation-discipline rule —
+but note what the failure was: an „incomplete, and here is what is missing" disclaimer
+that ALSO vouches for the accuracy of what it does list does not cover a later row
+*changing* a listed item, and §UC-PI-015's own closing bullet points readers here.
+**`18-portal-information-architecture.md` §UC-PI-015 is the authority for this modal.**
+See it for the current full composition, and 11 §UC-FC-009 / 10 §UC-GA-007 for the two
+additions this table predates.
 
 **Business rules:**
 
 - `saveProfile()` behavior unchanged: `PATCH /friends/:id/profile` with
-  `{ name, packeta_address }`; updates `currentFriend`, the legacy dropdown list entry,
+  `{ name, packeta_address }` (⚠ see the OPEN note above — FC-T4 added changed-only
+  `phone`/`email` to this payload); updates `currentFriend`, the legacy dropdown list entry,
   and the stored `friendName` in localStorage; closes on success; errors surface via
   the view's `error` (render inside the modal body as `.banner.danger.slim` so the user
   sees it in context).
@@ -533,9 +596,24 @@ render flat 2px-border cards with mono totals; clicking a row opens the cycle.
   above the password fields (prototype silent; 02 semantic grammar).
 - Inputs must have programmatic label association (`for`/`id`) — the theme's
   `label.field-lbl` is a real `<label>`; getByLabel-style queries must keep working.
-- ID and username are **read-only by design** (uid immutable; username changes are not
-  a friend-facing feature). The old helper texts ("Toto ID sa nedá zmeniť") are dropped
-  — prototype shows none for the read-only row.
+- `username` is **read-only by design** — re-confirmed by the product owner in FUP-T20:
+  the admin renames, and module 10's Google login likely removes the need entirely.
+  Changing it is not a friend-facing feature. ~~No helper text under the read-only row
+  (the prototype shows none; the old "Toto ID sa nedá zmeniť" is dropped).~~
+  ⚠ **SUPERSEDED by PI-T10 (18 §UC-PI-015 row 1): the row now HAS a `field-help` —
+  „Meno, ktorým sa prihlasujete. Nemení sa."** The read-only half of this bullet still
+  holds; only the „no helper text" half is retired. (The old „Toto ID sa nedá zmeniť"
+  stays dropped — this is a different string on a different row.)
+  ~~ID and username are read-only by design (uid immutable; …)~~ — the **uid half no
+  longer applies**: FUP-T20 removed the `Jedinečné ID` box from this modal entirely, so
+  there is nothing left to describe as read-only. The uid itself is unchanged.
+- ⚠ **The server's blank-name refusal on `PATCH /friends/:id/profile` answers
+  `'Meno a priezvisko je povinné'`** — byte-identical to `POST /api/friends`. FUP-T21
+  carried 11 §UC-FC-004's relabel to this route once FUP-T20 retired the label the old
+  copy named. ~~`'Prihlasovacie meno je povinné'`, deliberately left as module 03's own
+  copy~~ — superseded, see 11 §UC-FC-004 and FUP-T21. The branch is unreachable from
+  this modal (the disabled save button is the client-side gate); it is pinned by
+  `friends-consolidation.spec.js` and `nonstring-body-shape.spec.js`.
 
 **Acceptance criteria:** modal matches the prototype (side-by-side with the live
 prototype's profile modal — no numbered screenshot exists; the prototype shell is the
@@ -545,7 +623,7 @@ server error inside the fold.
 
 ---
 
-## UC-FL-010 Subscription modal (Friend)
+## ~~UC-FL-010 Subscription modal (Friend)~~ — **RETIRED by 18 §UC-PI-016 (PI-T3, 2026-09-20). UI ONLY: the table, both routes and the server-side filter are untouched.**
 
 **Goal:** "Nastavenia odberu" via `NeoModal`, gear-triggered (UC-FL-006).
 
@@ -655,8 +733,8 @@ and cannot be dismissed by Esc/scrim; setting a valid password lands on the cycl
 | `toHaveTitle(/Gorifi/)` on `/` | `public-flow.spec.js:9` | UC-FL-001 title rule |
 | `getByText('Prihlásenie')` on anonymous `/` | `public-flow.spec.js:11`, `friend-login-list.spec.js:42` | legacy branch untouched (UC-FL-003); e2e seed is legacy |
 | `getByRole('combobox')` + populated options | `friend-login-list.spec.js:44-48` | legacy branch untouched |
-| `getByRole('heading', { name: 'Objednávkové cykly' })` | `guest-link.spec.js` ×3, `guest-host-view.spec.js:667` | `<h2 class="h-screen">` (UC-FL-006) |
-| `div.p-4` card wrapper + `heading` exact cycle name + share button inside it | `guest-link.spec.js:301-320` | `div.card.p-4` + `<h3>` + button (UC-FL-006/007) |
+| ~~`getByRole('heading', { name: 'Objednávkové cykly' })`~~ **RETIRED — PI-T1, 18 §UC-PI-019 item 1; now `expectLanding()` / `portal-landing`. None of the named sites still asserts it.** | ~~`guest-link.spec.js` ×3, `guest-host-view.spec.js:667`~~ | `<h2 class="h-screen">` (UC-FL-006) |
+| ~~`div.p-4` card wrapper + `heading` exact cycle name + share button inside it~~ **RETIRED — PI-T3** | ~~`guest-link.spec.js:301-320`~~ | `portal-landing.spec.js` §3 — the entry contract, and „not open ⇒ no share affordance" |
 | button accessible name `'Zdieľať s kolegami'`, absent on locked cards, `@click.stop` (URL stays `/`) | `guest-link.spec.js:287-322` | `aria-label` + open-only row (UC-FL-007) |
 | one share-dialog instance, Escape closes (`role="dialog"` count 0), race-guarded | `guest-link.spec.js:325+` | UC-FL-007 entry contract + module 05 |
 | `localStorage['gorifi_friend_auth']` restore shape | `guest-host-view.spec.js:649`, `guest-link.spec.js:236`, `mobile-no-h-overflow.spec.js:65` | UC-FL-001 session rules |
@@ -721,12 +799,12 @@ re-run). All 10 hold; three table entries are inaccurate and are corrected here:
 | 1 | `toHaveTitle(/Gorifi/)` — `public-flow.spec.js:9` | ✅ line exact; `watchEffect` unchanged |
 | 2 | `getByText('Prihlásenie')` — `public-flow.spec.js:11`, `friend-login-list.spec.js:42` | ✅ lines exact; legacy `CardTitle` untouched |
 | 3 | `getByRole('combobox')` — `friend-login-list.spec.js:44-48` | ✅ lines exact; shadcn `SelectTrigger` untouched |
-| 4 | heading "Objednávkové cykly" | ✅ but **UNDER-COUNTED**: `guest-link.spec.js` 252/299/349 + `guest-host-view.spec.js:667` **+ `forced-change-ui.spec.js:50`** — FIVE pre-existing sites, not four |
-| 5 | `div.p-4` + exact `<h3>` + share button — `guest-link.spec.js:301-320` | ✅ `cardFor()` on 301; card is `class="card p-4"`, column is `px-4 sm:px-7 py-6` (never `p-4`) |
+| 4 | ~~heading "Objednávkové cykly"~~ **RETIRED by PI-T1 (2026-09-20)** — the gate is now `expectLanding()` (`portal-landing`), and NONE of the sites enumerated here still asserts the heading. ⚠ The under-count note below was itself an enumeration written from a grep of the assertion SHAPE, which is exactly what missed `google-auth`'s 18 call sites behind a `PORTAL_HEADING` constant. | ~~✅ but **UNDER-COUNTED**: `guest-link.spec.js` 252/299/349 + `guest-host-view.spec.js:667` **+ `forced-change-ui.spec.js:50`** — FIVE pre-existing sites, not four |
+| 5 | ~~`div.p-4` + exact `<h3>` + share button — `guest-link.spec.js:301-320`~~ | **RETIRED by PI-T3** — no card, no `cardFor()`; the claim moved to `portal-landing.spec.js` §3 |
 | 6 | `'Zdieľať s kolegami'`, absent on locked, `@click.stop` — `:287-322` | ✅ lines exact; `aria-label` + open-only `v-if` + `.stop` all present |
 | 7 | one dialog, Escape closes, race-guarded — `guest-link.spec.js:325+` | ✅ but the test starts at **324**, not 325 |
 | 8 | `gorifi_friend_auth` restore shape | ✅ all three lines exact. Note `guest-host-view.spec.js:649` writes **no `friendUid`** — the restore path only requires `friendId` + `token`, and `currentFriendUid` falls back to `''` |
-| 9 | cycle-name click navigates — `mobile-no-h-overflow.spec.js:73` | ✅ line exact; card-level `@click` still on `div.card.p-4` |
+| 9 | ~~cycle-name click navigates — `mobile-no-h-overflow.spec.js:73`~~ | **RETIRED by PI-T3** — the name is no longer a navigation affordance; `e2e/helpers/portal.js gotoCycle()` is the one home of portal → order navigation |
 | 10 | `data-testid="forced-password-change"` + field labels | ⚠ `forced-change-ui.spec.js` is `test.fixme` — **it has never executed**. Its `getByText(/resetoval vaše heslo/)` does not match the shipped copy "Administrátor vám resetoval **heslo**" — **pre-existing** (identical at `7c3f85e`), not a redesign regression. The redesign *improved* the other half: pre-redesign `<Label>`/`<Input>` had no `for`/`id`, so `getByLabel` could not have resolved; the NeoModal gate now pairs them. The gate is in fact covered by a RUNNING spec — `modern-login.spec.js` §"Forced password change" (testid, `role`, `aria-modal`, copy, no ×, Esc, scrim, scroll lock, focus trap) |
 
 **Fidelity (378 px + 1180 px, canon prototype over HTTP, fonts force-loaded, port
@@ -803,7 +881,8 @@ the 12th differs in 3 pixels at Δ1 — a difference reproduced exactly by a
 same-build control capture, i.e. the harness's own antialiasing noise.** A runtime
 DOM scan of all 12 for `pp-*`, `font-display`/`font-courier` and 35 theme class
 names returns **0 hits**; `class="app"` exists only in `FriendPortal.vue` and
-`class="modal-layer"` only in `NeoModal.vue`; `BalanceBadge.vue` is untouched.
+`class="modal-layer"` only in ~~`NeoModal.vue`~~ **`NeoModal.vue` + `NeoDrawer.vue`** (PI-T2,
+18 §UC-PI-004); `BalanceBadge.vue` is untouched.
 
 **Regression net added:** `e2e/tests/portal-fidelity.spec.js` (11 tests, new file,
 zero edits to existing specs) pins the A9/A10 counter — `line-height: normal`

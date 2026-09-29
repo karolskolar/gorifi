@@ -1,5 +1,6 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // RD-GX-1 — the g-order SHELL, the shared neo grid and the checkout modal
 // (06 §UC-GX-001..003).
@@ -66,12 +67,14 @@ const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
 const GUEST_TICKER = '+++ KÁVA POD PULTOM +++ BEZ ÚČTU · BEZ REČÍ +++ POŠLI ODKAZ ĎALEJ +++'
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 // A friend with real credentials — the identity `/api/guest-links` requires.
 async function makeHost() {
@@ -211,7 +214,7 @@ test.describe('RD-GX-1 · g-order scaffold, brand header and hero (§UC-GX-001)'
 
     // Prototype copy — "Účet netreba" now lives in the appbar chip, so the shipped
     // sentence that repeated it is gone.
-    await expect(hero).toContainText('Vyberte si tovar, na konci zadáte len meno a telefón.')
+    await expect(hero).toContainText('Vyberieš si tovar, na konci zadáš len meno a telefón.')
     await expect(hero).not.toContainText('Účet netreba.')
   })
 })
@@ -275,6 +278,29 @@ test.describe('RD-GX-1 · the shared neo grid (§UC-GX-002)', () => {
     // Prices arrive marked up from the server; the FE never multiplies.
     await expect(boxes.nth(0).locator('.vprice')).toHaveText('12.50 EUR')
     await expect(boxes.nth(1).locator('.vprice')).toHaveText('37.50 EUR')
+  })
+
+  // ⚠ FUP-T24 — THE GUEST GRID'S kg STRING WAS UNPINNED. The kg display rule now
+  // has one home (`frontend/src/lib/kg.js kgLabel`) with four surfaces importing
+  // it, and a mutation in it reddened the friend stock bar
+  // (`order-product-card.spec.js`), the portal share row
+  // (`portal-share-row.spec.js`) and the admin board (`distribution-*.spec.js`) —
+  // but NOT the public guest page, whose only `stock-label` assertion (the ceiling
+  // test below) pins the `Vypredané` branch, which never calls the formatter. The
+  // one surface with no account behind it was the one that could go wrong quietly.
+  test('the kg string on the guest grid: a 500 g limit reads „Zostáva 0.5 kg z 0.5 kg", one bag in „0.25 kg z 0.5 kg"', async ({ page }) => {
+    await gotoGuest(page)
+
+    const card = page.getByTestId(`product-${scarce.id}`)
+    const label = card.getByTestId('stock-label')
+
+    // Trailing zeros are never printed — 500 g is „0.5 kg", never „0.50 kg" —
+    // because the number goes straight into a template literal. Both halves of the
+    // string come from the same formatter (remaining, and the limit).
+    await expect(label).toHaveText('Zostáva 0.5 kg z 0.5 kg')
+
+    await card.getByTestId('inc-250g').click()
+    await expect(label).toHaveText('Zostáva 0.25 kg z 0.5 kg')
   })
 
   test('⚠ the `+` at the stock ceiling is disabled AND inert — no press physics, no false "added"', async ({ page }) => {
@@ -400,7 +426,7 @@ test.describe('RD-GX-1 · the checkout modal (§UC-GX-003)', () => {
     await expect(dialog).toHaveCount(1)
     await expect(dialog.locator('.m-title')).toHaveText('Dokončiť objednávku')
     // Rich subtitle: the sum is mono and ink-coloured inside a `.sub` row.
-    await expect(dialog.locator('.m-head .sub')).toHaveText('Suma na úhradu: 12.50 EUR. Platba prevodom, tovar vám odovzdá Peto.')
+    await expect(dialog.locator('.m-head .sub')).toHaveText('Suma na úhradu: 12.50 EUR. Platba prevodom, tovar ti odovzdá Peto.')
     await expect(dialog.locator('.m-head .sub b')).toHaveClass(/\bmono\b/)
 
     // The × is a deliberate SYNONYM — Playwright matches accessible names as a
@@ -438,14 +464,14 @@ test.describe('RD-GX-1 · the checkout modal (§UC-GX-003)', () => {
     // Client messages verbatim (§UC-GX-003); the server re-validates anyway.
     await dialog.getByTestId('guest-submit').click()
     const err = dialog.getByTestId('checkout-error')
-    await expect(err).toHaveText('Zadajte svoje meno.')
+    await expect(err).toHaveText('Zadaj svoje meno.')
     await expect(dialog.locator('.banner.danger.slim')).toHaveCount(1)
     await expect(dialog.locator('.banner.danger.slim .dot')).toHaveCount(1)
 
     await dialog.getByTestId('guest-name').fill('Marek Shell')
     await dialog.getByTestId('guest-phone').fill('0901 23')
     await dialog.getByTestId('guest-submit').click()
-    await expect(err).toHaveText('Zadajte telefónne číslo (aspoň 9 číslic).')
+    await expect(err).toHaveText('Zadaj telefónne číslo (aspoň 9 číslic).')
   })
 
   test('⚠ the footer FITS at 320px — measured against min-content, not the flex-resolved width', async ({ page }) => {

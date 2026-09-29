@@ -1,6 +1,7 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { DatabaseSync } from 'node:sqlite'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // GSO-T7: the guest leg of the Distribution view (§UC-GSO-011).
 //
@@ -104,12 +105,14 @@ function txRowsFor(watermark, friendId, orderId) {
   )
 }
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 // The backend keeps exactly ONE live admin session, so a UI login through the form
 // invalidates a token captured earlier. Blocks that mix API fixture-building with a
@@ -653,8 +656,17 @@ test.describe('Distribution page — guest bags under the host (UI)', () => {
     // per item, not one shared lock (the GSO-T1 finding).
     const guestRows = card(hostName).locator('[data-owner="guest"]')
     await expect(guestRows).toHaveCount(2)
+    // ⚠ THE HOLD MUST OUTLAST THE SECOND CLICK, and 300 ms did not reliably — raised
+    // to 5 s in the PI-T6 review. The claim is GSO-T1's „the in-flight guard is PER ITEM,
+    // not one shared lock", which needs BOTH clicks to land while the first PATCH is still
+    // open. Playwright's actionability checks plus a scroll can exceed 300 ms on this box,
+    // and then the first request has already finished, a shared-lock defect releases in
+    // time, and the two `toBeChecked()` assertions pass WITH the defect present. These are
+    // presence assertions, so they need no impatient timeout — the window simply has to
+    // still be open when the second click is dispatched. See CLAUDE.md §Running the e2e
+    // suite: a hold shorter than the assertion window proves nothing.
     await page.route('**/api/guest-order-items/*/packed', async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 300))
+      await new Promise((resolve) => setTimeout(resolve, 5_000))
       await route.continue()
     })
     await guestRows.nth(0).click()

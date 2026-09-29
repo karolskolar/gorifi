@@ -1,5 +1,11 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { ackExplainer, expectLanding, logout, openInvite, openMenu, openProfile, expectChromeName } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // RD-FL-3 — the authenticated portal appbar (03 §UC-FL-004) and the restyled
 // balance card (03 §UC-FL-005), plus the two obligations RD-DS-5 deliberately
@@ -29,13 +35,15 @@ let friend = null
 
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-    timeout: TIMEOUT,
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+  timeout: TIMEOUT,
+})
 
 test.beforeAll(async () => {
   ctx = await playwrightRequest.newContext({ baseURL: process.env.BASE_URL || 'http://localhost:3997' })
@@ -45,7 +53,10 @@ test.beforeAll(async () => {
 
   const username = `rdfl3_${uniq}`.slice(0, 30)
   const name = `RDFL3 Tester ${uniq}`
-  const created = await admin('/api/friends', { method: 'post', data: { name } })
+  // ⚠ 18 §UC-PI-015 (PI-T10) — the phone is load-bearing for the profile-save tests
+  // below: „Mobil *" is required now, so „Uložiť" is DISABLED on a friend whose row
+  // has none, and a save this file stubs a 500 for would never be dispatched.
+  const created = await admin('/api/friends', { method: 'post', data: { name, phone: '0900 123 456' } })
   expect(created.status(), 'friend create').toBe(201)
   const row = await created.json()
 
@@ -66,6 +77,12 @@ test.beforeAll(async () => {
   expect(changed.status(), 'forced change').toBe(200)
   const token = (await changed.json()).token || body.token
 
+  // ⚠ 18 §UC-PI-013 (PI-T9): a friend created here has never acknowledged „Ako to
+  // funguje", so a LOGIN THROUGH THE CARD would land on `/ako-to-funguje` — where the
+  // hamburger is a back chevron, so every drawer helper below times out. One round
+  // trip through the real route; see `helpers/portal.js ackExplainer`.
+  await ackExplainer(ctx, { id: row.id, token })
+
   const profile = await ctx.get(`/api/friends/${row.id}/profile`, {
     headers: { Authorization: `Bearer ${token}` },
     timeout: TIMEOUT,
@@ -74,7 +91,11 @@ test.beforeAll(async () => {
   const full = await profile.json()
 
   friend = { id: row.id, name, username, token, uid: full.uid }
-  expect(friend.uid, 'the appbar renders the uid, so it must exist').toBeTruthy()
+  // ⚠ The appbar NEVER renders the uid (FUP-T20 removed the last on-screen
+  // consumer; §UC-PI-003 removed the name too). It is fetched so the absence pins
+  // below can be non-vacuous — asserting „the bar does not contain X" is worth
+  // nothing when X is the empty string.
+  expect(friend.uid, 'a real uid is needed for the absence pin to mean anything').toBeTruthy()
 })
 
 test.afterAll(async () => { await ctx?.dispose() })
@@ -115,30 +136,88 @@ async function stubBalance(page, balance) {
 
 async function openPortal(page) {
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+  await expectLanding(page)
 }
 
 // ---------------------------------------------------------------------------
 
-test.describe('Portal appbar — name, code, pencil, Pozvať chip, logout (UC-FL-004)', () => {
-  test('renders the four controls with the prototype structure', async ({ page }) => {
+// ⚠ REWRITTEN BY PI-T2 — 18 §UC-PI-019 item 7, case (a) of the immutability rule.
+//
+// 03 §UC-FL-004's appbar (name → profile · pencil · Pozvať · logout glyph) is
+// SUPERSEDED by 18 §UC-PI-003 (menu · wordmark + VIEW SUBTITLE · Pozvať · lock
+// chip). Four of this file's controls therefore no longer exist, and the tests
+// that pinned them are re-pointed at the mandated structure rather than deleted:
+//
+//   · „renders the four controls"            → the four SLOTS of §UC-PI-003, plus
+//                                              absence pins for the three retired
+//                                              controls (item 7's requirement)
+//   · the two PENCIL tests (:181, :208)      → ONE `profile-pencil` count-0 pin
+//   · „name and pencil open the profile…"    → the drawer helpers (items 4, 5)
+//   · the `.titles` role/tabindex/aria-label
+//     /Enter/Space describe                  → INVERTED. §UC-PI-003: „`titlesAction`
+//                                              is empty in every state — `.titles`
+//                                              carries no role, no tabindex, no
+//                                              aria-label". The login-state opt-out
+//                                              test at :348 becomes the general rule.
+//   · the `'ČLENSKÝ OKRUH'` ticker pin       → the THREE state tickers.
+//
+// The PROTECTED PROPERTIES are all kept and several are now asserted in both
+// directions: exactly one `.chip.acc`; the chip's accessible name is its visible
+// text and not its `title`; no user identifier anywhere in the bar; the bar does
+// not overflow at 320 px; and — new, because the controls moved rather than
+// vanished — every retired control is pinned ABSENT, so „it was removed" cannot be
+// confused with „the test stopped looking".
+
+/** A cycle row shaped like `GET /friends/cycles` publishes one (portal-shell idiom). */
+const cycleRow = (over) => ({
+  id: 80_000 + (over.n || 0), name: `PI2 Appbar ${over.n || 0}`, status: 'planned',
+  created_at: over.created_at || `2026-09-0${(over.n || 1) % 9 + 1} 10:00:00`,
+  total_friends: 0, expected_date: null, type: 'coffee', plan_note: null,
+  opens_at: null, closes_at: null, stage: null, parcel_enabled: 0, parcel_fee: 0,
+  hasOrder: false, orderTotal: 0, orderStatus: null, orderKilos: 0, orderItemCount: 0,
+  orderPickupName: null, orderPacketa: false, orderPaid: false, orderHandedOver: false,
+  ...over,
+})
+
+/**
+ * Serve a fixed cycles payload so the landing STATE — which the ticker, the lock
+ * chip and the subtitle are all functions of — is deterministic.
+ *
+ * ⚠ It waits for the response before asserting. `cycles` starts EMPTY on a
+ * restore, so the pre-load state is `closed`: a `closed` expectation that fired
+ * early would pass for entirely the wrong reason (the PI-T1 lesson). The `open`
+ * and `locked` rows are what make the set discriminating, since neither is the
+ * pre-load value.
+ */
+async function openPortalWith(page, cycles) {
+  await page.route('**/api/friends/cycles*', (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify(cycles),
+  }))
+  const served = page.waitForResponse((r) => r.url().includes('/api/friends/cycles'), { timeout: TIMEOUT })
+  await page.goto('/')
+  await served
+  await expectLanding(page)
+}
+
+test.describe('Portal appbar — menu · wordmark + view subtitle · Pozvať · lock (18 §UC-PI-003)', () => {
+  test('renders the THREE slots with the prototype structure', async ({ page }) => {
     await signIn(page)
     await stubBalance(page, -74.24)
     await openPortal(page)
 
-    // ⚠ Titles = the Podpultovka WORDMARK + the LOGIN NAME (product decision,
-    // 2026-08-09). It used to be `<name> / <uid>`; the uid is no longer rendered
-    // anywhere in the appbar, so the bar reads as the brand and no user identifier
-    // is on screen. Still never `display_name`, which is admin-only.
-    await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
-    await expect(page.locator('.appbar .titles .s')).toHaveText(friend.name)
-    // The load-bearing half: the uid must be absent from the whole appbar, not
-    // merely moved out of `.s`.
-    await expect(page.locator('.appbar')).not.toContainText(friend.uid)
+    // #leading — the hamburger. Icon-only, so it carries the accessible name.
+    const menu = page.locator('.appbar [aria-label="Menu"]')
+    await expect(menu).toHaveClass(/p2-icobtn/)
+    await expect(menu.locator('svg')).toHaveCount(1)
+    await expect(menu).toHaveAttribute('role', 'button')
+    await expect(menu).toHaveAttribute('tabindex', '0')
 
-    // The authenticated ticker copy.
-    await expect(page.locator('.ticker')).toContainText('ČLENSKÝ OKRUH')
-    await expect(page.locator('.hazard')).toBeVisible()
+    // .titles — the wordmark plus the VIEW SUBTITLE. The name is gone from here
+    // (§UC-PI-003; it lives in the drawer header now) and so is the uid.
+    await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
+    await expect(page.locator('.appbar .titles .s')).toHaveText('Aktuálna ponuka')
+    await expect(page.locator('.appbar')).not.toContainText(friend.name)
+    await expect(page.locator('.appbar')).not.toContainText(friend.uid)
 
     // The rotated magenta chip carries the invite glyph AND the visible label —
     // its accessible name is that text, not an aria-label contradicting it.
@@ -149,124 +228,160 @@ test.describe('Portal appbar — name, code, pencil, Pozvať chip, logout (UC-FL
     const transform = await chip.evaluate((el) => getComputedStyle(el).transform)
     expect(transform, 'the chip is rotated -2deg').toMatch(/^matrix\(/)
     expect(transform).not.toBe('none')
+    // ⚠ EXACTLY ONE `.chip.acc` in the bar — the shipped locator every other spec
+    // uses for „Pozvať". The lock chip is `.chip.p2-lock`, never `.acc`.
+    await expect(page.locator('.appbar .chip.acc')).toHaveCount(1)
 
     // "Label in name": the chip's `title` must not displace its visible text.
     await expect(page.getByRole('button', { name: 'Pozvať', exact: true })).toHaveCount(1)
     await expect(page.getByRole('button', { name: 'Pozvi priateľa' })).toHaveCount(0)
 
-    // Logout is icon-only, so it carries an aria-label.
-    await expect(page.locator('.appbar span[aria-label="Odhlásiť sa"] svg')).toHaveCount(1)
-    await expect(page.getByRole('button', { name: 'Odhlásiť sa' })).toHaveCount(1)
+    await expect(page.locator('.hazard')).toBeVisible()
+  })
 
-    // The pencil renders and is clickable, but is deliberately NOT exposed:
-    // it duplicates `.titles`' action and name, so a11y-wise it is decoration.
-    const pencil = page.locator('.appbar [data-testid="profile-pencil"]')
-    await expect(pencil.locator('svg')).toHaveCount(1)
-    await expect(pencil).toHaveAttribute('aria-hidden', 'true')
-    await expect(pencil).toHaveAttribute('title', 'Upraviť profil')
-    await expect(pencil).not.toHaveAttribute('tabindex', /.*/)
-    await expect(pencil).not.toHaveAttribute('role', /.*/)
+  test('⚠ the three RETIRED controls are absent, not merely unasserted', async ({ page }) => {
+    // §UC-PI-019 item 7: „add absence pins for pencil, logout glyph, `.titles[role]`".
+    // This is the half that makes the rewrite above honest — every one of these
+    // used to be pinned PRESENT in this very file.
+    await signIn(page)
+    await stubBalance(page, -74.24)
+    await openPortal(page)
 
-    // The three EXPOSED controls are keyboard-operable (the zero-pixel layer).
-    for (const sel of ['.titles', '.chip.acc', 'span[aria-label="Odhlásiť sa"]']) {
-      await expect(page.locator(`.appbar ${sel}`)).toHaveAttribute('tabindex', '0')
+    await expect(page.locator('.appbar [data-testid="profile-pencil"]')).toHaveCount(0)
+    await expect(page.locator('[data-testid="profile-pencil"]')).toHaveCount(0)
+    await expect(page.locator('.appbar span[aria-label="Odhlásiť sa"]')).toHaveCount(0)
+    await expect(page.locator('.appbar .titles[role]')).toHaveCount(0)
+    await expect(page.locator('.appbar .titles[tabindex]')).toHaveCount(0)
+    await expect(page.locator('.appbar .titles[aria-label]')).toHaveCount(0)
+    // …and no control in the bar answers to the profile action any more.
+    await expect(page.getByRole('button', { name: 'Upraviť profil' })).toHaveCount(0)
+
+    // Non-vacuity: the bar IS rendered and IS operable — three of these absence
+    // assertions would also pass against a page with no appbar at all.
+    await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
+    await expect(page.locator('.appbar [aria-label="Menu"]')).toHaveCount(1)
+  })
+
+  test('the three state tickers, the lock chip and the subtitle follow the round', async ({ page }) => {
+    await signIn(page)
+    await stubBalance(page, 0)
+
+    // OPEN — no lock chip.
+    await openPortalWith(page, [cycleRow({ n: 2, status: 'open', closes_at: '2026-09-12' })])
+    await expect(page.locator('.ticker')).toContainText('+++ OBJEDNÁVKY OTVORENÉ +++ NEHOVOR O TOM NAHLAS +++')
+    await expect(page.locator('.appbar .chip.p2-lock')).toHaveCount(0)
+    await expect(page.locator('.appbar .titles .s')).toHaveText('Aktuálna ponuka')
+
+    // LOCKED with the friend's own order ⇒ „Vaša objednávka".
+    await page.unroute('**/api/friends/cycles*')
+    await openPortalWith(page, [cycleRow({ n: 3, status: 'locked', hasOrder: true })])
+    await expect(page.locator('.ticker')).toContainText('+++ OBJEDNÁVKY UZAVRETÉ +++ KÁVA JE NA CESTE +++')
+    await expect(page.locator('.appbar .titles .s')).toHaveText('Vaša objednávka')
+    const lock = page.locator('.appbar .chip.p2-lock')
+    await expect(lock).toHaveCount(1)
+    await expect(lock).toHaveAttribute('title', 'Objednávky sú uzavreté')
+    // Decorative: the state is spoken by the landing banner, never twice.
+    await expect(lock).toHaveAttribute('aria-hidden', 'true')
+    await expect(lock).not.toHaveClass(/acc/)
+    await expect(page.locator('.appbar .chip.acc')).toHaveCount(1)
+
+    // LOCKED with NO order of the friend's own ⇒ back to „Aktuálna ponuka".
+    await page.unroute('**/api/friends/cycles*')
+    await openPortalWith(page, [cycleRow({ n: 4, status: 'locked', hasOrder: false })])
+    await expect(page.locator('.appbar .titles .s')).toHaveText('Aktuálna ponuka')
+
+    // CLOSED, with the next round four weeks out. ⚠ The ticker is asserted from
+    // `textContent`, and `.ticker` is `text-transform:uppercase` — so the string
+    // has to be built uppercase in JS. A lower-case source would render identically
+    // on screen and fail here, which is exactly the point.
+    const in4 = new Date(Date.now() + 28 * 24 * 3600 * 1000).toISOString().slice(0, 10)
+    await page.unroute('**/api/friends/cycles*')
+    await openPortalWith(page, [
+      cycleRow({ n: 5, status: 'completed' }),
+      cycleRow({ n: 6, status: 'planned', opens_at: in4 }),
+    ])
+    await expect(page.locator('.ticker')).toContainText('+++ OBJEDNÁVKY ZATVORENÉ +++ ĎALŠIA OBJEDNÁVKA O 4 TÝŽDNE +++')
+    const closedLock = page.locator('.appbar .chip.p2-lock')
+    await expect(closedLock).toHaveCount(1)
+    await expect(closedLock).toHaveAttribute('title', 'Objednávky sú zatvorené')
+
+    // …and CLOSED with nothing planned falls back to „DÁME VEDIEŤ" — the branch a
+    // single closed fixture would never reach.
+    await page.unroute('**/api/friends/cycles*')
+    await openPortalWith(page, [cycleRow({ n: 7, status: 'completed' })])
+    await expect(page.locator('.ticker')).toContainText('+++ OBJEDNÁVKY ZATVORENÉ +++ ĎALŠIA OBJEDNÁVKA DÁME VEDIEŤ +++')
+    // ⚠ Vocabulary rule (§UC-PI-017): the prototype's „ĎALŠIE KOLO" is rewritten.
+    await expect(page.locator('.ticker')).not.toContainText('KOLO')
+  })
+
+  test('the subtitle names the VIEW on each of the four routes', async ({ page }) => {
+    await signIn(page)
+    await stubBalance(page, 0)
+    await openPortal(page)
+
+    for (const [path, subtitle] of [
+      ['/moje-objednavky', 'Moje objednávky'],
+      ['/zostatok', 'Zostatok a platby'],
+      ['/ako-to-funguje', 'Ako to funguje'],
+      ['/', 'Aktuálna ponuka'],
+    ]) {
+      await page.goto(path)
+      await expectLanding(page)
+      await expect(page.locator('.appbar .titles .s'), path).toHaveText(subtitle)
     }
   })
 
-  test('⚠ the pencil adds no second tab stop with the same name', async ({ page }) => {
+  test('⚠ the explainer swaps the hamburger for a BACK chevron', async ({ page }) => {
+    // §UC-PI-003 `#leading` (prototype `portal2.jsx`:309): there is no menu button
+    // in the explainer view, and the chevron goes to `/`.
     await signIn(page)
-    await stubBalance(page, -74.24)
-    await openPortal(page)
+    await stubBalance(page, 0)
+    await page.goto('/ako-to-funguje')
+    await expectLanding(page)
 
-    // Walk the real tab order across the bar and record each stop's accessible
-    // name. Two adjacent "Upraviť profil, button" stops was the regression.
-    const stops = []
-    for (let i = 0; i < 6; i++) {
-      await page.keyboard.press('Tab')
-      const stop = await page.evaluate(() => {
-        const el = document.activeElement
-        if (!el || !el.closest('.appbar')) return null
-        return {
-          tag: el.tagName,
-          cls: el.className || '',
-          name: el.getAttribute('aria-label') || el.textContent.trim(),
-        }
-      })
-      if (stop) stops.push(stop)
-    }
-
-    const profileStops = stops.filter((s) => s.name === 'Upraviť profil')
-    expect(profileStops.length, `appbar tab stops: ${JSON.stringify(stops)}`).toBe(1)
-    expect(profileStops[0].cls, 'the surviving stop is .titles').toContain('titles')
+    await expect(page.locator('.appbar [aria-label="Menu"]')).toHaveCount(0)
+    const back = page.locator('.appbar [aria-label="Späť"]')
+    await expect(back).toHaveCount(1)
+    // ⚠ BOTH classes: §UC-PI-003 names „the existing `span.back`", the prototype
+    // renders a `p2-icobtn`. The second is what carries the 44×44 hit target
+    // (UC-DS-005) — a bare `.back` is an 20px glyph with `opacity:.9` and no box.
+    await expect(back).toHaveClass(/\bback\b/)
+    await expect(back).toHaveClass(/\bp2-icobtn\b/)
+    const backBox = await back.boundingBox()
+    expect(Math.round(backBox.width), 'the back chevron keeps a 44px hit target').toBe(44)
+    expect(Math.round(backBox.height)).toBe(44)
+    await back.click()
+    await expect(page).toHaveURL(/\/$/)
+    // …and the hamburger is back, so the swap is a swap and not a one-way loss.
+    await expect(page.locator('.appbar [aria-label="Menu"]')).toHaveCount(1)
   })
 
-  test('⚠ the pencil sits BETWEEN .titles and .grow, not at the right edge', async ({ page }) => {
+  test('the menu opens the drawer; the chip opens invite; the drawer opens profile and logs out', async ({ page }) => {
     await signIn(page)
     await stubBalance(page, -74.24)
     await openPortal(page)
 
-    // The whole point of RD-DS-5's `#after-titles` amendment: `#trailing`
-    // renders AFTER the spacer and would fling the pencil to the far edge
-    // (`screenshots/02-shot.png` puts it right next to the name).
-    const order = await page.locator('.appbar').evaluate((bar) => {
-      const kids = Array.from(bar.children)
-      return {
-        titles: kids.findIndex((k) => k.classList.contains('titles')),
-        pencil: kids.findIndex((k) => k.dataset.testid === 'profile-pencil'),
-        grow: kids.findIndex((k) => k.classList.contains('grow')),
-        chip: kids.findIndex((k) => k.classList.contains('chip')),
-      }
-    })
-    expect(order.titles, JSON.stringify(order)).toBeGreaterThanOrEqual(0)
-    expect(order.pencil, 'pencil immediately after .titles').toBe(order.titles + 1)
-    expect(order.grow, '.grow immediately after the pencil').toBe(order.pencil + 1)
-    expect(order.chip, 'the chip is trailing, i.e. after the spacer').toBeGreaterThan(order.grow)
-
-    // …and geometrically: the pencil hugs the name, the chip does not.
-    const box = await page.evaluate(() => {
-      const bar = document.querySelector('.appbar')
-      const t = bar.querySelector('.titles').getBoundingClientRect()
-      const p = bar.querySelector('[data-testid="profile-pencil"]').getBoundingClientRect()
-      const c = bar.querySelector('.chip').getBoundingClientRect()
-      return { titlesRight: t.right, pencilLeft: p.left, chipLeft: c.left, barRight: bar.getBoundingClientRect().right }
-    })
-    expect(box.pencilLeft - box.titlesRight, JSON.stringify(box)).toBeLessThan(40)
-    expect(box.chipLeft, 'the chip is pushed to the trailing edge').toBeGreaterThan(box.pencilLeft + 40)
-  })
-
-  test('name and pencil both open the profile modal; the chip opens invite; logout returns to login', async ({ page }) => {
-    await signIn(page)
-    await stubBalance(page, -74.24)
-    await openPortal(page)
-
-    // Titles tap.
-    await page.locator('.appbar .titles').click()
-    await expect(page.getByRole('dialog').getByText('Upraviť profil')).toBeVisible()
-    await page.getByRole('dialog').getByRole('button', { name: 'Zrušiť' }).click()
-    await expect(page.getByRole('dialog')).toHaveCount(0)
-
-    // Pencil tap (pointer-only by design — it is aria-hidden).
-    await page.locator('.appbar [data-testid="profile-pencil"]').click()
-    await expect(page.getByRole('dialog').getByText('Upraviť profil')).toBeVisible()
-    await page.getByRole('dialog').getByRole('button', { name: 'Zrušiť' }).click()
+    // Menu → the drawer, a dialog of its own.
+    await openMenu(page)
+    await page.keyboard.press('Escape')
     await expect(page.getByRole('dialog')).toHaveCount(0)
 
     // Chip → invite modal (real `GET /invitations/my-code`).
-    await page.locator('.appbar .chip.acc').click()
+    await openInvite(page)
     const invite = page.getByRole('dialog')
-    await expect(invite.getByText('Pozvi priateľa')).toBeVisible()
-    // ⚠ RD-FL-7: the bespoke readonly `<Input>` + copy button became
-    // `NeoCopyRow` (02 §UC-DS-011), whose value box is a `div.copyrow > .val` —
-    // there is no `input` in this modal any more, by design. Same assertion,
-    // same regex, read as text.
+    // ⚠ RD-FL-7: the bespoke readonly `<Input>` + copy button became `NeoCopyRow`
+    // (02 §UC-DS-011), whose value box is a `div.copyrow > .val`.
     await expect(invite.locator('.copyrow .val')).toHaveText(/\/invite\/[A-Z0-9]+$/)
     await invite.getByRole('button', { name: 'Zavrieť' }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
 
-    // Logout → back to the login state, storage cleared, wordmark restored.
-    await page.locator('.appbar span[aria-label="Odhlásiť sa"]').click()
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toHaveCount(0)
-    await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
+    // Drawer → Profil (the retarget of the `.titles` tap and the pencil tap).
+    await openProfile(page)
+    await page.getByRole('dialog').getByRole('button', { name: 'Zrušiť' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+
+    // Drawer → „Odhlásiť sa" → back to the login state, storage cleared.
+    await logout(page)
     expect(await page.evaluate(() => localStorage.getItem('gorifi_friend_auth'))).toBeNull()
   })
 
@@ -274,7 +389,8 @@ test.describe('Portal appbar — name, code, pencil, Pozvať chip, logout (UC-FL
     await page.setViewportSize({ width: 320, height: 720 })
     await signIn(page)
     await stubBalance(page, -1234.56)
-    await openPortal(page)
+    // The LOCKED state, so the lock chip is in the bar too — the widest it gets.
+    await openPortalWith(page, [cycleRow({ n: 8, status: 'locked', hasOrder: true })])
 
     const overflow = await page.evaluate(() => ({
       scrollWidth: document.documentElement.scrollWidth,
@@ -286,180 +402,94 @@ test.describe('Portal appbar — name, code, pencil, Pozvať chip, logout (UC-FL
 
 // ---------------------------------------------------------------------------
 
-test.describe('BrandChrome #after-titles + titles-click — the RD-DS-5 obligations (02 §UC-DS-006)', () => {
-  test('the .titles block is reachable by Tab and activates on BOTH Enter and Space', async ({ page }) => {
+test.describe('BrandChrome `.titles` — RD-DS-5\'s obligations, INVERTED by 18 §UC-PI-003', () => {
+  // ⚠ THIS DESCRIBE USED TO ASSERT THE POSITIVE PATH of `titlesAction` (role,
+  // tabindex, aria-label, Enter, Space) because the authenticated portal was its
+  // only consumer. §UC-PI-003 retires that consumer: „`titlesAction` is empty in
+  // every state — `.titles` carries no `role`, no `tabindex`, no `aria-label`
+  // (reverses 03 UC-FL-004; the login-state opt-out becomes the rule)". So the
+  // assertions invert, and the login-state test below is now the GENERAL rule
+  // asserted on both states.
+  //
+  // ⚠ The SEAM ITSELF is not retired: `titlesAction` is still BrandChrome's prop
+  // and 02 §UC-DS-006's no-op default is what these tests now pin — „empty ⇒
+  // NOTHING is added", asserted where a consumer really renders. That is the
+  // property a future consumer would rely on.
+
+  const TITLES_ATTRS = async (page) => page.locator('.appbar .titles').evaluate((el) => ({
+    role: el.getAttribute('role'),
+    tabindex: el.getAttribute('tabindex'),
+    ariaLabel: el.getAttribute('aria-label'),
+    cursor: el.style.cursor,
+  }))
+
+  test('the AUTHENTICATED state opts out too: no role, no tabindex, no aria-label, no cursor', async ({ page }) => {
     await signIn(page)
     await stubBalance(page, 0)
     await openPortal(page)
 
-    const titles = page.locator('.appbar .titles')
-    await expect(titles).toHaveAttribute('role', 'button')
-    await expect(titles).toHaveAttribute('tabindex', '0')
+    expect(await TITLES_ATTRS(page)).toEqual({ role: null, tabindex: null, ariaLabel: null, cursor: '' })
+    // Non-vacuity: this IS the authenticated bar (the login bar reads „Členský
+    // vstup"), so the four nulls are a claim about a rendered, populated block.
+    await expect(page.locator('.appbar .titles .s')).toHaveText('Aktuálna ponuka')
+  })
 
-    // Reachable by Tab from the top of the document (not merely focusable).
-    let reached = false
-    for (let i = 0; i < 6 && !reached; i++) {
+  test('⚠ `.titles` is not in the tab order, and Enter on it opens nothing', async ({ page }) => {
+    await signIn(page)
+    await stubBalance(page, 0)
+    await openPortal(page)
+
+    // Walk the real tab order across the bar: the first stop must be the MENU,
+    // never the titles block. (Before §UC-PI-003 the first stop was `.titles`.)
+    const stops = []
+    for (let i = 0; i < 4; i++) {
       await page.keyboard.press('Tab')
-      reached = await page.evaluate(() => document.activeElement === document.querySelector('.appbar .titles'))
+      const stop = await page.evaluate(() => {
+        const el = document.activeElement
+        if (!el || !el.closest('.appbar')) return null
+        return { cls: el.className || '', name: el.getAttribute('aria-label') || el.textContent.trim() }
+      })
+      if (stop) stops.push(stop)
     }
-    expect(reached, '.titles must be in the tab order').toBe(true)
+    expect(stops.length, `appbar tab stops: ${JSON.stringify(stops)}`).toBeGreaterThan(0)
+    expect(stops.some((s) => String(s.cls).includes('titles')),
+      `.titles must not be a tab stop: ${JSON.stringify(stops)}`).toBe(false)
+    expect(stops[0].name, 'the first stop in the bar is the menu').toBe('Menu')
 
-    // Enter activates.
-    await page.keyboard.press('Enter')
-    await expect(page.getByRole('dialog').getByText('Upraviť profil')).toBeVisible()
-    await page.getByRole('dialog').getByRole('button', { name: 'Zrušiť' }).click()
+    // …and a click on it does nothing at all — no dialog of any kind.
+    await page.locator('.appbar .titles').click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
-
-    // Space activates too — and is preventDefault'ed, so the page does not scroll.
-    await titles.focus()
-    const scrollBefore = await page.evaluate(() => window.scrollY)
-    await page.keyboard.press(' ')
-    await expect(page.getByRole('dialog').getByText('Upraviť profil')).toBeVisible()
-    expect(await page.evaluate(() => window.scrollY), 'Space must not also scroll').toBe(scrollBefore)
   })
 
-  test('⚠ the aria-label announces the ACTION, not the friend\'s name', async ({ page }) => {
-    await signIn(page)
-    await stubBalance(page, 0)
-    await openPortal(page)
-
-    const titles = page.locator('.appbar .titles')
-    await expect(titles).toHaveAttribute('aria-label', 'Upraviť profil')
-
-    // The whole reason `titlesAction` carries a label rather than a boolean: a
-    // bare role="button" would announce the CONTENT of the block, never the action.
-    // Since 2026-08-09 that content is "Podpultovka <name>" rather than
-    // "<name> <uid>" — still the brand and the person, still not a verb.
-    await expect(page.getByRole('button', { name: 'Podpultovka' })).toHaveCount(0)
-    await expect(page.getByRole('button', { name: friend.name })).toHaveCount(0)
-    await expect(page.getByRole('button', { name: friend.uid })).toHaveCount(0)
-    // ⚠ EXACTLY ONE control answers to the action's name. The pencil is an
-    // adjacent duplicate of this very block — same handler, and its only
-    // possible name is the same string — so exposing it too bought nothing and
-    // cost every keyboard user a redundant stop. It is `aria-hidden` instead.
-    await expect(page.getByRole('button', { name: 'Upraviť profil' })).toHaveCount(1)
-  })
-
-  test('the login state opts OUT: no pencil, no role, no tabindex on .titles', async ({ page }) => {
+  test('the login state opts OUT as well — the same rule, now on both states', async ({ page }) => {
     await page.addInitScript(() => localStorage.clear())
     await page.goto('/')
     await expect(page.getByText('Prihlásenie')).toBeVisible()
 
-    // `titlesAction` empty ⇒ NOTHING is added (UC-DS-006: the affordance is
-    // strictly opt-in, so a non-interactive appbar renders byte-identically).
-    const attrs = await page.locator('.appbar .titles').evaluate((el) => ({
-      role: el.getAttribute('role'),
-      tabindex: el.getAttribute('tabindex'),
-      ariaLabel: el.getAttribute('aria-label'),
-      cursor: el.style.cursor,
-    }))
-    expect(attrs, JSON.stringify(attrs)).toEqual({ role: null, tabindex: null, ariaLabel: null, cursor: '' })
+    expect(await TITLES_ATTRS(page)).toEqual({ role: null, tabindex: null, ariaLabel: null, cursor: '' })
     await expect(page.locator('.appbar [data-testid="profile-pencil"]')).toHaveCount(0)
+    // No menu button on the login card either — the drawer is session chrome.
+    await expect(page.locator('.appbar [aria-label="Menu"]')).toHaveCount(0)
+    await expect(page.locator('.appbar .titles .s')).toHaveText('Členský vstup')
   })
 })
 
 // ---------------------------------------------------------------------------
 
-test.describe('Balance card — three money states (UC-FL-005)', () => {
-  test('a negative balance renders the bordered red pill', async ({ page }) => {
-    await signIn(page)
-    await stubBalance(page, -74.24)
-    await openPortal(page)
-
-    const card = page.locator('.card', { hasText: 'Môj účet' }).first()
-    await expect(card.locator('.field-lbl')).toHaveText('Môj účet')
-
-    const value = card.locator('.neg.pill')
-    await expect(value).toHaveText('-74.24 EUR')
-    await expect(value).toHaveCSS('color', 'rgb(209, 26, 91)') // var(--danger)
-    await expect(value).toHaveCSS('font-size', '16px')
-    // Bordered pill, not a bare number.
-    await expect(value).toHaveCSS('border-width', '2px')
-    await expect(value).toHaveCSS('background-color', 'rgb(255, 224, 234)') // var(--danger-soft)
-  })
-
-  test('a settled balance renders the muted zero state', async ({ page }) => {
-    await signIn(page)
-    await stubBalance(page, 0)
-    await openPortal(page)
-
-    const card = page.locator('.card', { hasText: 'Môj účet' }).first()
-    await expect(card.locator('.zero')).toHaveText('0.00 EUR')
-    await expect(card.locator('.neg')).toHaveCount(0)
-  })
-
-  test('a positive balance renders the recorded OPEN default: green mono with a + sign', async ({ page }) => {
-    await signIn(page)
-    await stubBalance(page, 12.5)
-    await openPortal(page)
-
-    const card = page.locator('.card', { hasText: 'Môj účet' }).first()
-    const value = card.locator('.mono')
-    await expect(value).toHaveText('+12.50 EUR')
-    await expect(value).toHaveCSS('color', 'rgb(15, 93, 60)') // var(--ok-deep)
-    await expect(value).toHaveCSS('font-weight', '700')
-  })
-
-  test('"Transakcie" opens the existing transactions modal', async ({ page }) => {
-    await signIn(page)
-    await stubBalance(page, -74.24)
-    await openPortal(page)
-
-    const button = page.getByRole('button', { name: 'Transakcie' })
-    await expect(button).toHaveClass(/\bbtn\b/)
-    await expect(button).toHaveClass(/\bsm\b/)
-    // UC-DS-005 hit target: `.btn.sm` is 38px.
-    expect((await button.boundingBox()).height).toBeGreaterThanOrEqual(38)
-
-    await button.click()
-    await expect(page.getByRole('dialog').getByText('Všetky transakcie')).toBeVisible()
-  })
-
-  test('a failed balance load renders .banner.danger.slim inside the card and hides the button', async ({ page }) => {
-    await signIn(page)
-    await page.route('**/api/friends/*/balance', (route) => route.fulfill({
-      status: 500,
-      contentType: 'application/json',
-      body: JSON.stringify({ error: 'Zostatok sa nepodarilo načítať' }),
-    }))
-    await openPortal(page)
-
-    const card = page.locator('.card', { hasText: 'Môj účet' }).first()
-    await expect(card.locator('.banner.danger.slim')).toContainText('Zostatok sa nepodarilo načítať')
-    await expect(page.getByRole('button', { name: 'Transakcie' })).toHaveCount(0)
-  })
-
-  test('the loading state shows "Načítavam..." before the balance resolves', async ({ page }) => {
-    await signIn(page)
-    let release
-    const held = new Promise((resolve) => { release = resolve })
-    await page.route('**/api/friends/*/balance', async (route) => {
-      await held
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ balance: -5, transactions: [] }) })
-    })
-
-    await page.goto('/')
-    const card = page.locator('.card', { hasText: 'Môj účet' }).first()
-    await expect(card.locator('.sub')).toHaveText('Načítavam...')
-    release()
-    await expect(card.locator('.neg.pill')).toHaveText('-5.00 EUR')
-  })
-
-  test('⚠ BalanceBadge is still the admin component — the card must not render it', async ({ page }) => {
-    await signIn(page)
-    await stubBalance(page, -74.24)
-    await openPortal(page)
-
-    // BalanceBadge's signature is its Tailwind palette pills
-    // (`bg-red-100` / `bg-green-100` / `bg-gray-100` + `inline-flex rounded`).
-    // It is SHARED WITH ADMIN, so the restyle had to stop importing it rather
-    // than edit it — the card renders the theme's own money classes instead.
-    const card = page.locator('.card', { hasText: 'Môj účet' }).first()
-    await expect(card.locator('.bg-red-100, .bg-green-100, .bg-gray-100')).toHaveCount(0)
-    await expect(card.locator('.inline-flex.rounded')).toHaveCount(0)
-    await expect(card.locator('.neg.pill')).toHaveCount(1)
-  })
-})
+// ⚠ MOVED OUT BY PI-T7 — 18 §UC-PI-019 item 7, case (a) of the immutability rule.
+//
+// The „Balance card — three money states (UC-FL-005)" describe (7 tests) lived here
+// because module 03 rendered that card on the LANDING, which is where this file's
+// fixtures already were. §UC-PI-008 takes it off the landing entirely (R2.3: zero or
+// positive must NEVER appear there) and §UC-PI-010 re-purposes it into „Zostatok
+// a platby". The describe went with it, to `portal-balance.spec.js` §2, where six of
+// its seven tests continue — the three money states, the failed load, the loading
+// state and the „BalanceBadge is not rendered here" pin. The seventh („Transakcie"
+// opens the transactions modal) is DROPPED as unsatisfiable: §UC-PI-010 removes that
+// button and PI-T7 deletes `FriendTransactionsModal.vue`.
+//
+// What stays HERE is what this file is about — the appbar. `stubBalance` below is
+// still used by the tests that follow, for the drawer badge (§UC-PI-004 item 3).
 
 // ---------------------------------------------------------------------------
 
@@ -500,7 +530,7 @@ test.describe('Authenticated error banner — the RD-FL-1 residual', () => {
     // Before RD-FL-3 this message went nowhere at all.
     await expect(page.locator('.banner.danger')).toHaveCount(0)
 
-    await page.locator('.appbar .titles').click()
+    await openProfile(page)
     let dialog = page.getByRole('dialog')
     await expect(dialog.getByText('Upraviť profil')).toBeVisible()
     await dialog.getByRole('button', { name: 'Uložiť' }).click()
@@ -519,7 +549,7 @@ test.describe('Authenticated error banner — the RD-FL-1 residual', () => {
     await expect(page.locator('.app')).not.toContainText('Profil sa nepodarilo uložiť')
 
     // …and a successful retry leaves no stale message behind.
-    await page.locator('.appbar .titles').click()
+    await openProfile(page)
     dialog = page.getByRole('dialog')
     await dialog.getByRole('button', { name: 'Uložiť' }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
@@ -544,7 +574,7 @@ test.describe('Authenticated error banner — the RD-FL-1 residual', () => {
     }))
 
     await openPortal(page)
-    await page.locator('.appbar .chip.acc').click()
+    await openInvite(page)
     const invite = page.getByRole('dialog')
     await expect(invite.locator('.banner.danger.slim')).toContainText('Pozvánkový kód sa nepodarilo načítať')
     // …and no copy row for a link that was never fetched.
@@ -583,7 +613,7 @@ test.describe('Authenticated error banner — the RD-FL-1 residual', () => {
     })
 
     await openPortal(page)
-    await page.locator('.appbar .titles').click()
+    await openProfile(page)
     const dialog = page.getByRole('dialog')
     await dialog.getByRole('button', { name: 'Uložiť' }).click()
     await expect(page.locator('.banner.danger')).toContainText('Profil sa nepodarilo uložiť')
@@ -592,8 +622,7 @@ test.describe('Authenticated error banner — the RD-FL-1 residual', () => {
 
     // Log out. `switchUser` clears storage, `currentFriend` and `cycles` — and
     // must clear `error` with them.
-    await page.locator('.appbar span[aria-label="Odhlásiť sa"]').click()
-    await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
+    await logout(page)
 
     // Sign back in through the form. On a shared device this is routinely a
     // DIFFERENT person, who would otherwise be shown a stranger's failure with
@@ -602,9 +631,13 @@ test.describe('Authenticated error banner — the RD-FL-1 residual', () => {
     await page.getByLabel(/^heslo$/i).fill('ownPass12')
     await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
 
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
     await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
-    await expect(page.locator('.appbar .titles .s')).toHaveText(friend.name)
+    // ⚠ PI-T2: `.s` is the VIEW SUBTITLE now (§UC-PI-003), not the friend's name.
+    // The identity claim this line carried moves to the drawer header, which is
+    // where a friend's name renders from here on.
+    await expect(page.locator('.appbar .titles .s')).toHaveText('Aktuálna ponuka')
+    await expectChromeName(page, friend.name)
     await expect(page.locator('.banner.danger')).toHaveCount(0)
   })
 })
@@ -648,7 +681,11 @@ test.describe('Voucher banner geometry (RD-FL-1 residual)', () => {
 
     const geometry = await page.evaluate(() => {
       const bannerWrap = document.querySelector('.app > div.mt-4')
-      const column = Array.from(document.querySelectorAll('.app > div')).find((d) => d.querySelector('h2'))
+      // ⚠ PI-T3 · 18 §UC-PI-005 — the column used to be found by „the `.app` child
+      // holding an `<h2>`", i.e. by the retired „Objednávkové cykly" heading. The
+      // column itself is unchanged; it is located by PI-T1's marker now, which is
+      // the ONE handle for it and cannot be retired by a copy change.
+      const column = document.querySelector('.app > [data-testid="portal-landing"]')
       const b = bannerWrap.getBoundingClientRect()
       const c = column.getBoundingClientRect()
       return { bannerLeft: b.left, bannerWidth: b.width, columnLeft: c.left, columnWidth: c.width }

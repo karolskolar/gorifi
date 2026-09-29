@@ -33,6 +33,11 @@
 
 // `devices` is ML-T5's: §UC-ML-006's A12 case needs a coarse-pointer descriptor.
 import { test, expect, devices, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding, expectNoLanding, openProfile, expectChromeName } from '../helpers/portal.js'
 import { DatabaseSync } from 'node:sqlite'
 import crypto from 'node:crypto'
 // FRIEND_NAME / FRIENDS_PASSWORD are ML-T4's: the §UC-ML-007 block at the bottom
@@ -821,7 +826,13 @@ test.describe('UC-ML-005 — redemption (throwaway backend, modern mode)', () =>
 
       // ⚠ HAND-PICKED FIELDS, never `SELECT *` (07 §UC-IA-005). A raw-text sweep as
       // well as the key set, so a later `SELECT *` fails loudly rather than quietly.
-      expect(Object.keys(body.friend).sort()).toEqual(['id', 'name', 'packeta_address', 'uid', 'username'])
+      // ⚠ SANCTIONED RETARGET (18 §UC-PI-013, PI-T9; 03 UC-FL-013 case (a)): the
+      // redemption is one of the FOUR login payloads the first-login gate reads, so
+      // `explainer_seen_at` joins this hand-picked literal. The protected property is
+      // untouched and is why this stays an EXACT set beside the raw-text sweep below:
+      // a `SELECT *` spread must still red here, and it still does.
+      expect(Object.keys(body.friend).sort()).toEqual(['explainer_seen_at', 'id', 'name', 'packeta_address', 'uid', 'username'])
+      expect(body.friend.explainer_seen_at, 'never acknowledged ⇒ explicitly null').toBeNull()
       expect(body.friend.id).toBe(friend.id)
       expect(body.friend.username).toBe(friend.username)
       expect(await res.text()).not.toMatch(/invite_code|access_token|password_hash|google_sub|email/)
@@ -1198,7 +1209,7 @@ test.describe('UC-ML-005 — the /magic/:token page, full flow (throwaway backen
         magicPromptDismissed: true,
       }))
       await page.goto(`${backend.baseUrl}/`)
-      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+      await expectLanding(page)
 
       // ── Bob's link is clicked on Alice's device ──────────────────────────────
       const token = await captureToken(api, stub, bob.username)
@@ -1206,7 +1217,7 @@ test.describe('UC-ML-005 — the /magic/:token page, full flow (throwaway backen
 
       // Success replaces the page with the portal — `router.replace('/')`.
       await expect(page).toHaveURL(`${backend.baseUrl}/`)
-      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+      await expectLanding(page)
       expect(posts, 'one POST per visit, fired by the page').toBe(1)
 
       // ⚠ THE SIX-LEAK SURFACE. Clicking a valid login link means "log in as this
@@ -1232,8 +1243,10 @@ test.describe('UC-ML-005 — the /magic/:token page, full flow (throwaway backen
       expect(wholeStorage, "Alice's session token is gone from this device").not.toContain(aliceAuth.token)
       expect(wholeStorage, "Alice's name is gone from this device").not.toContain(alice.name)
 
-      // The appbar renders the NEW friend, so the leak would be visible too.
-      await expect(page.locator('.appbar')).toContainText(bob.name)
+      // The chrome renders the NEW friend, so the leak would be visible too.
+      // ⚠ PI-T2: that identity moved from the appbar into the drawer header
+      // (§UC-PI-003) — same claim, one home (`helpers/portal.js`).
+      await expectChromeName(page, bob.name)
 
       // ── single use, seen from the UI ────────────────────────────────────────
       // A FRESH DOCUMENT LOAD legitimately re-attempts (new module state — the
@@ -1306,7 +1319,7 @@ test.describe('UC-ML-005 — the /magic/:token page, full flow (throwaway backen
 
       // ── and it does not come back ───────────────────────────────────────────
       await page.reload()
-      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+      await expectLanding(page)
       await expect(gate, 'a satisfied gate must not re-open on every reload').toHaveCount(0)
 
       // Non-vacuity for the whole test: the new password is the one that now works,
@@ -1432,7 +1445,7 @@ test.describe('UC-ML-007 — remember-me is a TTL, not a storage switch', () => 
       await page.getByRole('checkbox', { name: 'Zapamätať si ma na tomto zariadení' }).click()
     }
     await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
   }
 
   test('the modern card ships the box UNCHECKED at rest (resolved conflict #2)', async ({ page }) => {
@@ -1461,7 +1474,7 @@ test.describe('UC-ML-007 — remember-me is a TTL, not a storage switch', () => 
     // instead of falling back to the login card. This is the half the retired
     // in-memory-only fallback could never do.
     await page.reload()
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
     const afterReload = await readStored(page)
     expect(afterReload.token, 'the restore must not rewrite the token').toBe(stored.token)
   })
@@ -1491,7 +1504,7 @@ test.describe('UC-ML-007 — remember-me is a TTL, not a storage switch', () => 
       await page.getByRole('checkbox', { name: /Zapamätať si ma na tomto zariadení/ }).check()
     }
     await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
   }
 
   test('the legacy card ships the box UNCHECKED at rest too — one ref, both cards', async ({ page }) => {
@@ -1512,7 +1525,7 @@ test.describe('UC-ML-007 — remember-me is a TTL, not a storage switch', () => 
     expectStoredHorizon(await readStored(page), DAY_MS, 'legacy / unchecked')
 
     await page.reload()
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
   })
 
   test('legacy shared-password login, box CHECKED: 60-day horizon', async ({ page }) => {
@@ -1546,7 +1559,7 @@ test.describe('UC-ML-007 — remember-me is a TTL, not a storage switch', () => 
     await page.goto('/')
 
     await expect(page.getByText('Prihlásenie')).toBeVisible()
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toHaveCount(0)
+    await expectNoLanding(page)
     expect(await readStored(page), 'the lapsed payload is dropped, not kept').toBeNull()
   })
 })
@@ -1949,7 +1962,7 @@ async function redeemInBrowser(page, backend, api, stub, friend) {
  *  is fire-and-forget — the password fold is gated on `friend?.hasCredentials`, which
  *  only arrives with the profile GET, so wait for the toggle rather than the dialog. */
 async function openPasswordFold(page) {
-  await page.locator('.appbar .titles').click()
+  await openProfile(page)
   const dialog = page.getByRole('dialog')
   await expect(dialog.locator('.m-title')).toHaveText('Upraviť profil')
   await dialog.getByRole('button', { name: 'Zmeniť heslo' }).click()
@@ -2173,7 +2186,7 @@ test.describe('UC-ML-008 — the non-blocking prompt (throwaway backend, modern 
       const friend = await api.cleanFriend('prompt', uniq)
       await redeemInBrowser(page, backend, api, stub, friend)
 
-      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+      await expectLanding(page)
       await expect(magicPrompt(page)).toBeVisible()
       await expect(magicPrompt(page)).toContainText(PROMPT_TEXT)
       await expect(magicPrompt(page).getByRole('button', { name: PROMPT_SET })).toHaveCount(1)
@@ -2187,7 +2200,7 @@ test.describe('UC-ML-008 — the non-blocking prompt (throwaway backend, modern 
 
       // "re-appears on every portal load of that session until dismissed"
       await page.reload()
-      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+      await expectLanding(page)
       await expect(magicPrompt(page), 'the prompt survives a reload').toBeVisible()
     })
   })
@@ -2215,7 +2228,7 @@ test.describe('UC-ML-008 — the non-blocking prompt (throwaway backend, modern 
       expect(stored.viaMagicLink, 'the provenance itself is untouched by a dismissal').toBe(true)
 
       await page.reload()
-      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+      await expectLanding(page)
       await expect(magicPrompt(page), 'a dismissed prompt stays dismissed').toHaveCount(0)
     })
   })
@@ -2266,7 +2279,7 @@ test.describe('UC-ML-008 — the non-blocking prompt (throwaway backend, modern 
       ).not.toHaveProperty('viaMagicLink')
 
       await page.reload()
-      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+      await expectLanding(page)
       await expect(magicPrompt(page), 'and it is gone for good').toHaveCount(0)
 
       // The modal's field comes back too — the waiver is retired on both halves.
@@ -2314,7 +2327,7 @@ test.describe('UC-ML-008 — the non-blocking prompt (throwaway backend, modern 
         expiresAt: auth.expiresAt,
       }))
       await page.goto(`${backend.baseUrl}/`)
-      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+      await expectLanding(page)
 
       await expect(magicPrompt(page), 'no prompt without the provenance').toHaveCount(0)
       await expect(page.getByText(PROMPT_TEXT)).toHaveCount(0)
@@ -2363,7 +2376,7 @@ test.describe('UC-ML-008 — the non-blocking prompt (throwaway backend, modern 
       await expect(magicPrompt(page), 'and it does not appear once the gate is satisfied').toHaveCount(0)
 
       await page.reload()
-      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+      await expectLanding(page)
       await expect(magicPrompt(page), 'nor after a reload').toHaveCount(0)
     })
   })

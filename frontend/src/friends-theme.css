@@ -24,7 +24,7 @@
 :where(.app, .modal-layer) .mono{font-family:var(--font-mono);letter-spacing:0.01em}
 :where(.app, .modal-layer) .display{font-family:var(--font-display);text-transform:uppercase;font-weight:800}
 /* product description — Figtree, the body face (product decision 2026-08-18):
-   match the status banner's typeface ("Objednávky sú uzamknuté…") — bold for
+   match the status banner's typeface ("Objednávky sú uzavreté…") — bold for
    description1 (.pspec), regular for description2 (.pnotes). This RETIRES the
    2026-08-13 Noto Sans Condensed canon sync: these two rules plus the portal
    cycle card's date/plan rows were its only consumers, so `--font-cond`, the
@@ -423,7 +423,10 @@
    is why adding `.mono` cannot disturb the cycle-card plan block (inline `1.7`) and
    adding `.display` cannot disturb the cycle name (inline `1`) or `.cartbar .sum`.
    Admin reach is nil by construction: `.app` is declared only in `FriendPortal.vue` and
-   `.modal-layer` only in `NeoModal.vue`. */
+   `.modal-layer` only in `NeoModal.vue` ~~and nowhere else~~ — ⚠ as of PI-T2 in
+   `NeoDrawer.vue` too (18 §UC-PI-004, the A13 block at the end of this file).
+   Both are friend/guest components and no admin view declares either, which is
+   what the claim is actually about. */
 :where(.app, .modal-layer) .field-lbl,
 :where(.app, .modal-layer) .field-help,
 :where(.app, .modal-layer) .sub,
@@ -451,3 +454,87 @@
 :where(.app, .modal-layer) .tbl,
 :where(.app, .modal-layer) .tbl th,
 :where(.app, .modal-layer) .confirmbox{line-height:normal}
+
+/* ---------- A13: the portal-v2 canon sync — `portal2.css` (2026-09) ----------
+   ⚠ NOT an ad-hoc theme edit. This is a CANON SYNC, sanctioned by
+   18 §UC-PI-004 ("`portal2.css` is ported **verbatim** into `friends-theme.css`
+   as a new trailing section … the prototype CSS is part of the handoff"). The
+   source is `docs/design/friends-portal-redesign/friends/portal2.css`, whose own
+   header reads:
+
+       Podpultovka Friends — Portál v2 (2026-09): additions on top of theme.css.
+       Prefixed p2- so nothing in the canonical theme changes.
+
+   Everything below is byte-for-byte that file, in its order, with exactly TWO
+   recorded deviations. PI-T2 consumes only `.p2-icobtn`, `.chip.p2-lock` and the
+   drawer block; the rest (`.p2-lines`, `.p2-tot`, `.p2-step`, `.p2-hl`,
+   `.p2-ro`, `.p2-tx`) lands here now because a canon sync is one act — PI-T4
+   (`.p2-ro`), PI-T5 (`.p2-lines`/`.p2-tot`), PI-T7 (`.p2-tx`) and PI-T8
+   (`.p2-step`/`.p2-hl`) are its consumers and must NOT re-port their slice.
+
+   ── DEVIATION D1 — `.p2-icobtn` also gets a `.modal-layer` scope ──────────────
+   The prototype writes `.app .p2-icobtn` only, because in the prototype the modal
+   layer is a node INSIDE the device frame, i.e. inside `.app`. In production it is
+   `<Teleport to="body">`d OUT of `.app` (02 §UC-DS-001 adaptation A6/A8 — the
+   token block names `.app, .modal-layer` for exactly this reason), so the
+   prototype's selector reaches the appbar's menu button but NOT the drawer's ×,
+   which would then render as an unstyled 18px glyph with no 44px hit target
+   (UC-DS-005 minima). The two selectors are grouped into ONE declaration block
+   rather than duplicated, and the specificity stays the prototype's (0,2,0).
+   ⚠ Recorded rather than silently reconciled: if the prototype ever moves its
+   layer, this line is the one to re-check.
+
+   ── DEVIATION D2 — the two TIMELINE blocks are NOT ported ────────────────────
+   `portal2.css` carries `.p2-tl` (vertical) and `.p2-dots` (compact) — 15
+   selectors. They are OMITTED, because module 17 already shipped that component:
+   `CycleTimeline.vue` (CS-T2) owns the same rules under the `.cs-` prefix
+   17 §UC-CS-006 always specified, in its own `<style scoped>`. Porting them would
+   add fifteen selectors that match nothing and a SECOND home for how the timeline
+   is painted — the one thing this codebase refuses. 18 §UC-PI-019 item 13 already
+   records the rename ("the prototype's `.p2-` prefix was dropped when CS-T2
+   shipped `CycleTimeline.vue`"), so the omission follows a decision that is
+   already canon here, not a new one.
+
+   ⚠ NOTE FOR A10: `.p2-mi .lab` declares `line-height:1` and `.p2-hl`
+   `line-height:.95`, so neither needs the preflight counter. `.p2-mi .sub` and
+   the drawer footer's `.sub.mono` are covered by the `.sub` / `.mono` entries in
+   the A10 rule below. The drawer HEADER's friend-name div carries no class at
+   all, so it takes A10's documented call-site remedy (`line-height:normal`
+   inline, in `NeoDrawer.vue`) — the case A10 says a class list structurally
+   cannot reach. */
+.app .p2-icobtn,.modal-layer .p2-icobtn{width:44px;height:44px;margin:-8px -6px;display:flex;align-items:center;justify-content:center;color:var(--nav-ink);border-radius:10px;cursor:pointer}
+.app .p2-icobtn:hover,.modal-layer .p2-icobtn:hover{background:rgba(255,255,255,0.08)}
+.app .appbar .chip.p2-lock{display:inline-flex;align-items:center;gap:6px}
+
+/* menu drawer — lives in .modal-layer like Modal, slides from the left */
+.modal-layer .p2-drawer-scrim{position:absolute;inset:0;background:rgba(10,10,10,0.5);pointer-events:auto;display:flex;justify-content:flex-start;align-items:stretch}
+.modal-layer .p2-drawer{width:86%;max-width:330px;height:100%;background:var(--bg);border-right:4px solid var(--nb-ink);box-shadow:8px 0 0 var(--accent);display:flex;flex-direction:column;animation:p2-slide .16s ease-out}
+@keyframes p2-slide{from{transform:translateX(-24px);opacity:.6}to{transform:none;opacity:1}}
+.modal-layer .p2-dh{background:var(--nav-bg);color:var(--nav-ink);padding:14px 18px 16px;border-bottom:4px solid var(--accent);display:flex;align-items:flex-start;gap:12px}
+.modal-layer .p2-mi{display:flex;align-items:center;gap:14px;padding:13px 18px;border-bottom:2px solid rgba(10,10,10,0.12);min-height:56px;cursor:pointer;color:var(--ink)}
+.modal-layer .p2-mi:hover{background:var(--surface-2)}
+.modal-layer .p2-mi .ic{width:24px;display:flex;justify-content:center;flex-shrink:0}
+.modal-layer .p2-mi .lab{font-family:var(--font-display);text-transform:uppercase;font-weight:800;font-size:22px;line-height:1;flex:1;min-width:0}
+.modal-layer .p2-mi .sub{margin-top:3px}
+.modal-layer .p2-mi.on{background:var(--accent);color:var(--accent-ink)}
+.modal-layer .p2-mi.on .sub{color:rgba(255,248,243,0.85)}
+.modal-layer .p2-mi.on:hover{background:var(--accent)}
+
+/* order summary lines + total (locked state, history) */
+.app .p2-lines{display:flex;flex-direction:column;gap:6px;font-size:13.5px}
+.app .p2-lines .ln{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid rgba(10,10,10,0.12);padding-bottom:6px}
+.app .p2-lines .ln>.mono{flex-shrink:0;white-space:nowrap}
+.app .p2-tot{display:flex;justify-content:space-between;align-items:baseline;margin-top:10px}
+
+/* explainer */
+.app .p2-step{display:flex;gap:14px;align-items:flex-start}
+.app .p2-step .ico{width:48px;height:48px;flex-shrink:0;border:3px solid var(--nb-ink);border-radius:12px;background:#fff;box-shadow:3px 3px 0 var(--nb-ink);display:flex;align-items:center;justify-content:center;position:relative}
+.app .p2-step .n{position:absolute;top:-10px;left:-10px;width:22px;height:22px;border-radius:999px;background:var(--accent);color:var(--accent-ink);border:2px solid var(--nb-ink);font-family:var(--font-mono);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.app .p2-hl{background:var(--accent);color:var(--accent-ink);box-shadow:0 4px 0 var(--nb-ink);padding:0 8px;display:inline-block;line-height:.95;margin-top:4px}
+
+/* read-only catalogue */
+.app .p2-ro{opacity:.55;pointer-events:none}
+
+/* transactions */
+.app .p2-tx{display:flex;justify-content:space-between;gap:10px;align-items:baseline;padding:10px 0;border-bottom:2px solid rgba(10,10,10,0.12);font-size:14px}
+.app .p2-tx:last-child{border-bottom:none}

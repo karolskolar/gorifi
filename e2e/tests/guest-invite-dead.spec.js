@@ -1,5 +1,6 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // RD-GX-4 — the last row of the friends-portal redesign: the invite CTA on the neo
 // shell (06 §UC-GX-009), the three dead-link variants and the status-404 card
@@ -30,12 +31,14 @@ const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 const PHONE = { width: 378, height: 900 }
 const NARROW = { width: 320, height: 720 }
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 let seq = 0
 async function makeHost(label) {
@@ -197,7 +200,7 @@ test.describe('RD-GX-4 · the invite CTA on the neo shell (§UC-GX-009)', () => 
 
     // Resolved conflict #2 — the prototype's fold line, uppercased by `.display`.
     // The word this line dropped ("nabudúce") must still exist, one fold deeper.
-    await expect(cta).toContainText(/Chcete si objednať sami\?/i)
+    await expect(cta).toContainText(/Chceš si objednávať priamo\?/i)
     await expect(cta).not.toContainText(/nabudúce/i)
     await page.getByTestId('invite-cta-open').click()
     await expect(cta, 'the body still says when the account starts paying off').toContainText(/nabudúce/i)
@@ -240,13 +243,13 @@ test.describe('RD-GX-4 · the invite CTA on the neo shell (§UC-GX-009)', () => 
     // Client validation strings verbatim, rendered in the neo error banner.
     await page.getByTestId('invite-name').fill('   ')
     await page.getByTestId('invite-submit').click()
-    await expect(page.getByTestId('invite-error')).toHaveText('Zadajte meno.')
+    await expect(page.getByTestId('invite-error')).toHaveText('Zadaj meno.')
     expect(await page.locator('.banner.danger.slim').first().evaluate((el) => getComputedStyle(el).borderTopWidth)).toBe('2px')
 
     await page.getByTestId('invite-name').fill('Kolega Testovaci')
     await page.getByTestId('invite-phone').fill('123')
     await page.getByTestId('invite-submit').click()
-    await expect(page.getByTestId('invite-error')).toHaveText('Zadajte telefónne číslo (aspoň 9 číslic).')
+    await expect(page.getByTestId('invite-error')).toHaveText('Zadaj telefónne číslo (aspoň 9 číslic).')
 
     // Späť folds it back without submitting anything.
     await page.getByRole('button', { name: 'Späť', exact: true }).click()
@@ -270,7 +273,7 @@ test.describe('RD-GX-4 · the invite CTA on the neo shell (§UC-GX-009)', () => 
     await expect(done).toHaveClass(/\bslim\b/)
     await expect(done.locator('.dot')).toHaveCount(1)
     await expect(page.getByTestId('invite-done')).toContainText('Žiadosť o účet je odoslaná.')
-    await expect(page.getByTestId('invite-done')).toContainText('Správca sa vám ozve.')
+    await expect(page.getByTestId('invite-done')).toContainText('Správca sa ti ozve.')
     // The first sentence is bolded (prototype), so it is not one flat paragraph.
     await expect(page.getByTestId('invite-done').locator('b')).toHaveText('Žiadosť o účet je odoslaná.')
     await expect(page.getByTestId('invite-cta-open'), 'no second submission on offer').toHaveCount(0)
@@ -284,7 +287,7 @@ test.describe('RD-GX-4 · the invite CTA on the neo shell (§UC-GX-009)', () => 
     await expect(queued).toHaveClass(/\bslim\b/)
     await expect(queued, 'neutral accent-soft, not the green success wash').not.toHaveClass(/\bok\b/)
     expect(await queued.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgb(255, 227, 239)')
-    await expect(page.getByTestId('invite-requested')).toHaveText('Žiadosť o účet už evidujeme. Správca sa vám ozve.')
+    await expect(page.getByTestId('invite-requested')).toHaveText('Žiadosť o účet už evidujeme. Správca sa ti ozve.')
     // ⚠ 409 → the requested state, NEVER a retry invitation (GSO-T10). A form here
     // could only ever be answered with another 409.
     await expect(page.getByTestId('invite-cta-open')).toHaveCount(0)
@@ -364,18 +367,25 @@ test.describe('RD-GX-4 · the invite CTA on the neo shell (§UC-GX-009)', () => 
 // ---------------------------------------------------------------------------
 // (B) g-dead — §UC-GX-010
 
-test.describe('RD-GX-4 · g-dead, three variants (§UC-GX-010)', () => {
+// GL-T7: „three variants" → TWO — the `closed` one is SUPERSEDED by 19 §UC-GL-002 (see `COPY.closed`).
+test.describe('RD-GX-4 · g-dead, two variants (§UC-GX-010; `closed` superseded by 19 §UC-GL-002)', () => {
   // Title → the shipped one (unchanged); description → the prototype's, replacing
   // the raw server message the shipped card printed under it.
   const COPY = {
     notfound: {
       title: 'Odkaz neexistuje',
-      text: 'Tento odkaz sme nenašli. Skontrolujte, či je skopírovaný celý.',
+      text: 'Tento odkaz sme nenašli. Skontroluj, či je skopírovaný celý.',
     },
     inactive: {
       title: 'Odkaz už nie je aktívny',
       text: 'Kolega, ktorý objednávku organizuje, tento odkaz deaktivoval.',
     },
+    // ⚠ SANCTIONED RETARGET (19 §UC-GL-011 item 2 — GL-T2): the `closed` variant is
+    // RETIRED. The listing no longer answers 410 `closed` (19 resolved conflict 1), so
+    // a live link on a cycle that locked renders the PRE-OPEN state instead, and
+    // GuestOrder.vue's branch + copy for it are removed (§UC-GL-006 business rules).
+    // The retired copy is KEPT here only as an absence probe: the 5xx test below
+    // loops over every COPY entry, and the retarget asserts it is gone too.
     closed: {
       title: 'Objednávanie je uzavreté',
       text: 'Cyklus sa medzičasom uzamkol — objednávky už neprijímame.',
@@ -421,17 +431,34 @@ test.describe('RD-GX-4 · g-dead, three variants (§UC-GX-010)', () => {
     await expect(card).toContainText(COPY.inactive.title)
     await expect(card).toContainText(COPY.inactive.text)
     // ⚠ The old card printed the server's own message here, which for this variant
-    // read "Tento odkaz už nie je aktívny. Požiadajte kolegu o nový." — i.e. the
+    // read "Tento odkaz už nie je aktívny. Požiadaj kolegu o nový." — i.e. the
     // title restated, plus a duplicate of the closing line below it.
-    await expect(card).not.toContainText('Požiadajte kolegu o nový.')
+    await expect(card).not.toContainText('Požiadaj kolegu o nový.')
 
-    // 410 `closed` — a LIVE link on a cycle that locked.
-    await page.goto(`/g/${(await deadLink('deadlock', 'closed')).token}`)
-    await expect(card).toContainText(COPY.closed.title)
-    await expect(card).toContainText(COPY.closed.text)
+    // The closing line is on both dead variants, and the ordering surface on neither.
+    await expect(card).toContainText('Ak máš odkaz od kolegu, požiadaj ho o nový.')
+    await expect(page.getByTestId('open-checkout')).toHaveCount(0)
 
-    // The closing line is on all three, and the ordering surface is on none of them.
-    await expect(card).toContainText('Ak ste odkaz dostali od kolegu, požiadajte ho o nový.')
+    // ⚠ SANCTIONED RETARGET (19 §UC-GL-011 item 2): a LIVE link on a cycle that
+    // locked was the 410 `closed` dead card; it is now the pre-open page — the
+    // `preopen-hero`, and NO `guest-unavailable` card.
+    const locked = await deadLink('deadlock', 'closed')
+    const payload = await (await ctx.get(`/api/guest/${locked.token}`)).json()
+    expect(payload.page, 'non-vacuity: the server answers the pre-open payload').toBe('preopen')
+    await page.goto(`/g/${locked.token}`)
+    const hero = page.getByTestId('preopen-hero')
+    await expect(hero).toBeVisible()
+    await expect(hero.locator('.badge')).toHaveText('Zatvorené')
+    // ⚠ The spec's retarget names „Objednávky sú zatvorené" — true only when NO newer
+    // round is open on the target. When one is (the usual state of a shared e2e DB),
+    // §UC-GL-006 item 2's `open_elsewhere` headline applies instead, so the expected
+    // headline is read off the payload the page itself receives.
+    await expect(hero.locator('h1')).toHaveText(
+      payload.next.kind === 'open_elsewhere' ? 'Táto objednávka je už uzavretá' : 'Objednávky sú zatvorené'
+    )
+    await expect(card).toHaveCount(0)
+    await expect(page.getByText(COPY.closed.title)).toHaveCount(0)
+    await expect(page.getByText(COPY.closed.text)).toHaveCount(0)
     await expect(page.getByTestId('open-checkout')).toHaveCount(0)
   })
 
@@ -534,7 +561,8 @@ test.describe('RD-GX-4 · g-dead, three variants (§UC-GX-010)', () => {
   test('a network/5xx failure keeps the SHIPPED fallback — the page does not invent a reason', async ({ page }) => {
     const { link } = await scenario('dead5xx')
 
-    // ⚠ The three variants above are safe only because the server NAMES the reason.
+    // ⚠ The ~~three~~ two variants above (GL-T7: `closed` is the pre-open page since 19
+    // §UC-GL-002) are safe only because the server NAMES the reason.
     // Anything else has no reason to name, so both shipped strings stand: the
     // fallback title, and the server's own message as the description.
     await page.route(`**/api/guest/${link.token}`, (route) => route.fulfill({
@@ -568,7 +596,7 @@ test.describe('RD-GX-4 · the status-404 card (§UC-GX-010)', () => {
     // The COPY is shipped copy — this failure has an actionable cause the g-dead
     // variants do not share, so the server line and the instruction both stand.
     await expect(card).toContainText('Táto objednávka neexistuje')
-    await expect(card).toContainText('Skontrolujte, či je odkaz skopírovaný celý. Ak nie, požiadajte kolegu, ktorý objednávku organizuje.')
+    await expect(card).toContainText('Skontroluj, či je odkaz skopírovaný celý. Ak nie, požiadaj kolegu, ktorý objednávku organizuje.')
 
     const shape = await card.evaluate((el) => {
       const badge = el.querySelector('.badge')
@@ -589,7 +617,7 @@ test.describe('RD-GX-4 · the status-404 card (§UC-GX-010)', () => {
     expect(shape.badgeGlyph).toBe(true)
     expect(shape.titleSize).toBe('32px')
     // ⚠ THIS route's subtitle, not the ordering route's.
-    expect(shape.subtitle).toBe('Vaša objednávka')
+    expect(shape.subtitle).toBe('Tvoja objednávka')
 
     await expect(page.getByTestId('guest-status')).toHaveCount(0)
   })

@@ -48,8 +48,8 @@
 // `switchUser()`.
 // =============================================================================
 
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import api, { getFriendsAuthInfo } from '../api'
 // 10 §UC-GA-012 — the ONE home for the GIS script. Never a second injector.
 import { loadGis } from '../lib/gis'
@@ -57,17 +57,74 @@ import { loadGis } from '../lib/gis'
 // dialog was the last radix consumer on the authenticated friend surface; it now
 // composes on `NeoModal`, so `Input`/`Label`/`Button`/`Alert`/`Dialog*` are gone.
 // UC-DS-004 rule 4 keeps radix ADMIN-only — do not re-introduce one here.
-import { fmtEur } from '@/lib/money'
+import { fmtEur, roundMoney, isInDebt } from '@/lib/money'
 import { VARIANT_GRAMS } from '@/lib/guest-cart'
-import { colleaguesLabel } from '@/lib/plural'
+import { colleaguesLabel, ordersAccusativeLabel, weeksLabel } from '@/lib/plural'
+import { kgLabel } from '@/lib/kg'
+// 18 §UC-PI-002 — the SHORT date forms. A date standing alone (here: the drawer's
+// „Otvorené do …“ sub-line) comes from `lib/dates.js`; a date inside one of module
+// 17's composed sentences comes from `cycle-stages.js` (PI-T1 §1).
+import { fmtDate, fmtDayMonth, fmtWeekdayDayMonth, weeksUntil } from '@/lib/dates'
+// 18 §UC-PI-002 — the ONE home of "which round is this landing about, and in what
+// state". Never re-derive open/locked/closed beside it.
+import { resolveLanding, nextTextIsNote } from '@/lib/portal-state'
+// 18 §UC-PI-008/010 — the money surfaces (PI-T7).
+//
+// ⚠⚠ ONE TRIGGER, ONE MOUNT, and this import block is where that is enforced.
+// `FriendBalanceCard.vue` is module 03's card RE-PURPOSED into the „Zostatok
+// a platby“ view: it owns the one `data-testid="pay-balance"` control and now takes
+// the balance as PROPS instead of fetching it. `DebtBanner.vue` is the landing's
+// §UC-PI-008 banner, mounted at three call sites (one per landing state) with the
+// `isInDebt()` (`lib/money.js`, the ONE home since the PI-T7 review) inside it. Neither mounts a `PaymentModal`: this file
+// mounts exactly ONE for the balance, at the bottom of the template, and both
+// surfaces open it through `openBalancePayment()`. A second mount would give „what
+// does this friend owe" two homes that can disagree — see `FriendBalanceCard`'s
+// header and CLAUDE.md §Money & data.
 import FriendBalanceCard from '@/components/FriendBalanceCard.vue'
-import GuestShareDialog from '@/components/GuestShareDialog.vue'
+import FriendTransactionList from '@/components/FriendTransactionList.vue'
+import DebtBanner from '@/components/DebtBanner.vue'
+import PaymentModal from '@/components/PaymentModal.vue'
+// 18 §UC-PI-005 — the landing IS the order screen. `FriendOrder.vue` is the ONE home
+// of that surface and is mounted here in `mode="landing"`; it is never forked, and no
+// slice of it is copied into this file. It also owns the only `GuestShareDialog`
+// instance on the friend surface (§UC-PI-011) — this view used to mount a SECOND one
+// for the cycle card's share row, and that instance is gone with the card.
+import FriendOrder from '@/views/FriendOrder.vue'
+// 18 §UC-PI-006 — the closed landing's state modal. Parametrised (title / intro /
+// lead are props) because PI-T5 mounts the SAME component for §UC-PI-007's
+// „locked, no own order" variant; a second modal would be the defect.
+import LandingStateModal from '@/components/LandingStateModal.vue'
+// 18 §UC-PI-007 — the LOCKED landing's own-order card and „Kde je vaša káva".
+// ⚠ `CartLineList` is THE one home for an ordered-items list (product decision
+// 2026-08-12) and `CycleTimeline` is module 17's ONE rendering of the six steps
+// (17 §UC-CS-006). Both are mounted here, neither is forked, and this view builds
+// no step array of its own — it hands `:cycle` over and 17 decides which step is
+// „now".
+import CartLineList from '@/components/CartLineList.vue'
+import CycleTimeline from '@/components/CycleTimeline.vue'
+// 18 §UC-PI-009 — „Moje objednávky". `lib/order-lines.js` is the ONE home of the
+// mapping from a server `order_items` row into `CartLineList`'s line shape (PI-T5
+// hoisted it out of `FriendOrder.vue` naming this view as its second consumer);
+// `lib/history-badges.js` is the ONE home of the SHORT badge words — a sanctioned
+// SECOND vocabulary beside module 17's long timeline labels, argued at length in
+// that file's header. Do not replace it with `cycle-stages.js STEPS`.
+import { deliveryExtras, orderLines } from '@/lib/order-lines'
+import { historyBadge } from '@/lib/history-badges'
+// 18 §UC-PI-012 — „Ako to funguje". The whole view is ONE component with an
+// `asGate` prop, because PI-T9 (§UC-PI-013) reuses this exact page as the
+// first-login gate and a second copy with a checkbox on it is the defect that row
+// would otherwise create. ⚠ It deliberately does NOT mount `CycleTimeline`: the
+// explainer describes the process in general, the timeline reports where ONE round
+// is now (argued in that component's header).
+import PortalExplainer from '@/components/PortalExplainer.vue'
+import { STANDING_GUEST_LINK } from '@/lib/features'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
-import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 import NeoModal from '@/components/neo/NeoModal.vue'
 import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
+import NeoDrawer from '@/components/neo/NeoDrawer.vue'
 
 const router = useRouter()
+const route = useRoute()
 
 const props = defineProps({
   // The authenticated friend's id. Also the parent's `:key`, so a change of
@@ -96,6 +153,13 @@ const props = defineProps({
   //   · `needsCredentialSetup` — transition mode, `hasCredentials === false`.
   //   · `googleLinked` + `googlePromptDismissed` — 10 §UC-GA-006. ⚠ These may be
   //     ABSENT, and absence is meaningful: see `googlePromptEligible` below.
+  //   · `explainerPending` — 18 §UC-PI-013. TRUE only on a LOGIN whose friend has
+  //     never acknowledged „Ako to funguje"; a restore never sets it. Read ONCE, at
+  //     mount, into `explainerGate` below — it is a one-shot instruction, not state.
+  //   · `freshLogin` — 18 §UC-PI-015 (PI-T10). TRUE on a LOGIN, absent on a restore,
+  //     same boundary as `explainerPending` and for the same stated reason. Read ONCE
+  //     into `profileAutoOpenArmed`; it carries NO phone number (none of the login
+  //     payloads does), so the auto-open waits on `hydrateCurrentFriend`.
   entry: { type: Object, default: () => ({}) },
   // ⚠ CONFIGURATION, not handshake state — the parent's two `GET /friends/auth-mode`
   // values, passed down rather than re-fetched. They are props (not `entry` keys)
@@ -120,6 +184,11 @@ const emit = defineEmits([
   // ⚠ An emit rather than a write, for the same reason `token` is one — the parent is
   // the single owner of localStorage, and this component must never touch it.
   'magic-prompt-dismissed',
+  // 18 §UC-PI-004 — the drawer's „Odhlásiť sa“ footer. An EMIT, not a call: ending a
+  // session means clearing the credential store, localStorage and the identity the
+  // appbar renders, all of which are the parent's (`switchUser()`, and its header
+  // explains why those three cannot move here). This component only asks.
+  'logout',
 ])
 
 // ---------------------------------------------------------------------------
@@ -129,37 +198,42 @@ const emit = defineEmits([
 // Seeded from the handshake, so the first paint needs no request of its own.
 const cycles = ref(Array.isArray(props.entry?.cycles) ? props.entry.cycles : [])
 
-// Archive fold (UC-FL-008): plain UI state, not persisted, not in the URL,
-// default closed. It used to need an explicit reset in `switchUser` so the next
-// session on a shared device also opened closed — the initializer is that reset
-// now.
-const showArchive = ref(false)
+// ⚠ RETIRED BY PI-T3 (18 §UC-PI-005/016), listed so nothing reads the gap as an
+// oversight: `showArchive` (the UC-FL-008 fold), `subscriptions` (the gear's seed —
+// the COLUMN and `GET/PUT /api/subscriptions/friend/:id` are KEPT, only the UI is
+// gone, §UC-PI-016) and `guestSummaries` (the per-card colleague MAP). The landing
+// has one round, so there is one count, below.
 
-// The type filter behind that list, also seeded from the handshake — the gear
-// must never be openable before it has landed, or the modal prefills "show
-// everything" and "Uložiť" writes that over the friend's real preferences.
-const subscriptions = ref(Array.isArray(props.entry?.subscriptions) ? props.entry.subscriptions : []) // ['coffee', 'bakery']
-
-// Colleague aggregates for the UC-FL-007 share row, keyed by cycle id:
-// `{ count, grams, units }`. CONTEXT ONLY — nothing on this screen is gated on
-// them; a missing entry simply renders the "Objednávate aj pre kolegov?"
-// fallback, which is also the failure surface (the fetch is non-blocking and
-// error-swallowing, never the `error` banner).
+// The colleagues who ordered through this friend's link IN THE CURRENT OPEN ROUND —
+// `{ count, grams }`, or `null` for "not loaded, still loading, or failed".
 //
-// It carries the QUANTITY as well as the count because the host's real question
-// on this card is how much coffee they are collecting for other people — the
-// count alone says nothing about whether that is one 250g bag or 4 kg.
-const guestSummaries = ref({})
-
-// ⚠ Sequence guard for that batch — the GSO-T2 `loadSeq` rule. It is NOT the
-// cosmetic case: a count is another friend's colleague data. `loadCycles` bumps
-// it so a refetch's results win over an older in-flight batch.
+// ⚠ 18 §UC-PI-004 item 4: „ONE `GET /guest-links/cycle/:id` for the current open
+// cycle". Module 03 fanned this out over EVERY open cycle behind a 3-at-a-time
+// concurrency cap, because the e2e database reaches 135 open rounds and an
+// unbounded `Promise.all` starved the portal's own requests behind the browser's
+// 6-connection limit. The landing resolves exactly one round, so the fan-out — and
+// the cap that bounded it — are gone: the bound is now ONE, which is the stronger
+// form of the same property and is pinned as such in `portal-menu.spec.js`.
 //
-// ⚠ The CROSS-SESSION half of RD-FL-5's guarantee is now structural: a response
-// still in flight when the session ends lands on a DESTROYED component, so it
-// can write nothing. This counter is what still covers the IN-SESSION half
-// (saving subscriptions re-runs `loadCycles`). Both halves stay mutation-tested
-// in `portal-share-row.spec.js`; do not fold them into one.
+// CONTEXT ONLY: nothing is gated on it. A failure renders the „Pošlite odkaz
+// kolegom" sub-line, which is also the not-yet-loaded copy — never an error banner.
+const colleagues = ref(null)
+
+// ⚠ Sequence guard for that fetch — the GSO-T2 `loadSeq` rule, KEPT although the
+// fan-out it was written for is gone. A count is another friend's colleague data.
+//
+// ⚠ TWO HALVES, AND ONLY ONE OF THEM IS REACHABLE TODAY — said out loud rather
+// than left to be discovered:
+//   · CROSS-SESSION is structural: the parent's `v-if` + `:key` DESTROYS this
+//     component on logout, so a response still in flight lands on a dead instance
+//     and can write nothing. `portal-menu.spec.js` pins it in both directions.
+//   · IN-SESSION was reachable through `loadCycles()`, whose ONLY caller was
+//     `saveSubscriptions()` — retired here with the gear (§UC-PI-016). With one
+//     cycles load per session there is no second batch to supersede, so this
+//     counter's live job is the `onBeforeUnmount` bump alone. It stays because the
+//     next in-session reloader (a post-submit `hasOrder` refresh, PI-T6's history)
+//     would otherwise reintroduce the race silently; nothing can red it today, and
+//     no test pretends otherwise.
 let guestCountSeq = 0
 
 // ---------------------------------------------------------------------------
@@ -205,15 +279,10 @@ const profilePacketaOriginal = ref('')
 const profileSaving = ref(false)
 const profileError = ref('')
 
-const showSubscriptionModal = ref(false)
-const subCoffee = ref(true)
-const subBakery = ref(true)
-const subSaving = ref(false)
-// ⚠ Not cosmetic. A failed `saveSubscriptions()` leaves this modal OPEN, and the
-// page banner then renders BEHIND the scrim with its dismiss unreachable — the
-// user sees a dialog that simply "did nothing". (Measured; not a regression —
-// radix behaved identically before the NeoModal port.)
-const subError = ref('')
+// ⚠ The subscription modal's five refs are RETIRED (§UC-PI-016): bakery is retiring,
+// so the cycle-type filter has nothing left to filter. The table, the two routes and
+// `GET /friends/cycles`'s SERVER-side filter all stay — no schema change, no route
+// removal, no data deleted.
 
 // Vouchers
 const pendingVouchers = ref([])
@@ -230,6 +299,26 @@ const changeNewPasswordConfirm = ref('')
 const changePasswordError = ref('')
 const changePasswordSaving = ref(false)
 const changePasswordSuccess = ref('')
+
+// First password (inside the profile modal) — GA-T11, 10 §UC-GA-007.
+//
+// ⚠ THE FOLD ABOVE IS HIDDEN FOR EXACTLY THE PEOPLE WHO NEED THIS ONE. It is keyed on
+// `hasCredentials`, so a friend with no `password_hash` sees no password control at
+// all; `showCredentialSetup` below only fires in TRANSITION mode, and the forced gate
+// only when an admin reset a password that exists. For one whole module that left a
+// credential-less friend with no on-screen way to get a password (`PUT
+// /:id/change-password` 400s for them — it changes a password, and there is none).
+// `POST /friends/:id/set-password` is the route that closes it.
+//
+// ⚠ Session-scoped by construction, like every ref in this file: the parent's `v-if`
+// destroys this instance on logout, so the typed password cannot survive into the next
+// person's dialog — the RD-FL-6 leak, restated. No module scope, no localStorage.
+const showPasswordSet = ref(false)
+const firstUsername = ref('')
+const firstPassword = ref('')
+const firstPasswordConfirm = ref('')
+const firstPasswordError = ref('')
+const firstPasswordSaving = ref(false)
 
 // Credential setup (transition mode)
 const showCredentialSetup = ref(!!props.entry?.needsCredentialSetup)
@@ -500,6 +589,36 @@ async function dismissGooglePromptForever() {
 }
 
 // ---------------------------------------------------------------------------
+// First-password fold in the profile modal (GA-T11, 10 §UC-GA-007)
+// ---------------------------------------------------------------------------
+
+// ⚠ STRICT `=== false`, never `!props.friend?.hasCredentials` — the same trap
+// `googlePromptEligible` and `googleNoPassword` document. `hasCredentials` is ABSENT
+// until the owner-scoped profile fetch lands (and absent for good on a stubbed or
+// failed hydrate), and `!undefined` is `true`, which would offer a first-password form
+// to a friend who has a perfectly good password — and whose every submit the server
+// would then 409. Absence means "not known", not "no password".
+//
+// ⚠ AND THE MODE TERM IS NOT DECORATION: `POST /:id/set-password` answers 409
+// `field: 'auth_mode'` outside modern mode, deliberately (a shared password can mint
+// anybody's session there, so minting a credential is credential PLANTING). Offering
+// the fold on a legacy or transition deployment would offer a form every attempt
+// refuses. Transition mode already has its own answer — `needsCredentialSetup` raises
+// the credential-setup dialog, which calls `setup-credentials` and works there.
+const canSetFirstPassword = computed(
+  () => props.friend?.hasCredentials === false && props.authMode === 'modern'
+)
+
+// Whether the form must also ask for a name to log in with — DERIVED, never assumed,
+// because a friend who reaches this fold may well already have one: admin
+// `PUT /:id/admin-username` writes `friends.username` without touching
+// `password_hash`, and it is the only writer that does (GA-T11's corrected
+// reachability finding). So both states are real, and the field renders only for the
+// one that needs it. The server decides the same thing independently: it honours a
+// supplied username only while the column is NULL, and never as a rename (FUP-T20).
+const firstNeedsUsername = computed(() => canSetFirstPassword.value && !props.friend?.username)
+
+// ---------------------------------------------------------------------------
 // Google section in the profile modal (10 §UC-GA-007)
 // ---------------------------------------------------------------------------
 //
@@ -692,20 +811,57 @@ const inviteError = ref('')
 // covers re-entrancy within one session.
 let inviteSeq = 0
 
-// Guest share dialog — the cycle whose link is being shared (null = closed)
-const shareCycle = ref(null)
+// ⚠ `shareCycle` is GONE with the card that fed it (§UC-PI-011): this view mounts no
+// `GuestShareDialog` any more. The ONE instance lives in `FriendOrder.vue` and the
+// drawer reaches it through `requestShareDialog()` below.
 
 // ---------------------------------------------------------------------------
 // Loading
 // ---------------------------------------------------------------------------
 
 onMounted(async () => {
+  // ⚠ 18 §UC-PI-013 — THE FIRST-LOGIN GATE'S ONE NAVIGATION, and it is FIRST in this
+  // hook on purpose: it must land before the first paint settles, or the friend sees
+  // the shop flash past on their way to the explainer.
+  //
+  // `replace`, not `push` — §UC-PI-013's word, and the reason it gives is wrong (so was
+  // the first correction of it). ⚠ THE REAL REASON: `push` leaves a ONE-TAP BYPASS of the
+  // gate. `explainerGate` is raised ONCE, at setup, and the watch below lowers it on any
+  // transition OUT of the explainer view — so back → `/` → `view === 'shop'` would end the
+  // gate UNSTAMPED, and the ref cannot re-raise. `replace` removes the `/` entry, so that
+  // tap does not exist. (It does NOT remove `/ako-to-funguje`: after „Rozumiem" pushes `/`,
+  // back returns here — harmless, the gate has lowered and the write has happened.)
+  //
+  // ⚠ PRECEDENCE IS STRUCTURAL, NOT CODED HERE. §UC-PI-013 puts the forced
+  // password-change gate (03 §UC-FL-012) and the Google link prompt (10 §UC-GA-006)
+  // ahead of the explainer, and both are `NeoModal`s over WHATEVER view is mounted —
+  // so the explainer simply waits underneath them and is what the friend meets when
+  // the modal closes. Adding an `if (!forcedPasswordChange)` here would INVERT that:
+  // the friend would finish the forced change and land on the shop, having never been
+  // shown the page the gate exists to show them.
+  //
+  // ⚠ UNCONDITIONAL on the current path, deliberately. A friend who logged in on a
+  // deep-linked `/zostatok` (the three portal routes render the login card on their
+  // own URL — PI-T1) still meets the explainer first; it is the FIRST login, and the
+  // view they asked for is one tap away afterwards.
+  if (explainerGate.value && route.path !== '/ako-to-funguje') {
+    router.replace('/ako-to-funguje')
+  }
+
   const seq = ++guestCountSeq
-  // `cycles` and `subscriptions` are already seeded from the handshake, so the
-  // only fetch the first render still owes is the voucher check.
+  // 18 §UC-PI-004 — ONE balance request per session load, for the drawer badge
+  // (and, from PI-T7, the landing debt banner). Fire-and-forget: the badge is
+  // decoration on a menu that is not even open yet, so it must not delay the
+  // voucher check, and it owns no error surface (see `loadBalance`). It is
+  // issued BEFORE the `await` below rather than after, so the one request it
+  // makes is already in flight while the voucher check settles.
+  loadBalance()
+  // `cycles` is already seeded from the handshake, so the only fetch the first
+  // render still owes is the voucher check. (`subscriptions` no longer rides along:
+  // §UC-PI-016 retired the modal it prefilled, and with it one request per login.)
   await checkPendingVouchers()
-  // ⚠ Issued LAST, deliberately — see `loadGuestCounts`.
-  loadGuestCounts(seq, cycles.value)
+  // ⚠ Issued LAST, deliberately — see `loadColleagueCount`.
+  loadColleagueCount(seq)
 })
 
 onBeforeUnmount(() => {
@@ -714,98 +870,56 @@ onBeforeUnmount(() => {
   // does not stop work already in flight from being ISSUED.
   //
   //   · a pending `setTimeout` — `switchUser` used to cancel it; ours now.
-  //   · the two sequence counters. `loadGuestCounts`'s worker loop has exactly
+  //   · the two sequence counters. `loadGuestCounts`'s worker loop had exactly
   //     one exit, `if (seq !== guestCountSeq) return`, and nothing bumped it on
   //     unmount — so after a logout the capped queue kept DISPATCHING. Against
-  //     the e2e database's 135 open cycles that is ~132 further
+  //     the e2e database's 135 open cycles that was ~132 further
   //     `GET /api/guest-links/cycle/:id`, now token-less (`clearFriendsPassword()`
   //     has already run), each 401ing into the empty catch while competing for
-  //     connections with the NEXT login's own requests. The concurrency cap
-  //     holds it to 3 sockets, which is the only reason it was survivable —
-  //     the cap was masking this, not fixing it. Bumping both counters makes
-  //     the loop exit before its next dispatch.
+  //     connections with the NEXT login's own requests.
+  //     ⚠ PI-T3: the queue is one request now (§UC-PI-004), so the dispatch half of
+  //     that story is historical — but the WRITE half is not, and the bump is what
+  //     still stops a response that lands after the unmount from being applied.
   if (usernameCheckTimeout) clearTimeout(usernameCheckTimeout)
   usernameCheckTimeout = null
   guestCountSeq++
   inviteSeq++
 })
 
-async function loadSubscriptions() {
+// ⚠ `loadSubscriptions()` and `loadCycles()` are DELETED, not merely unused.
+// `loadCycles()` had exactly ONE caller — `saveSubscriptions()` — and the gear that
+// reached it is retired (§UC-PI-016). `cycles` is seeded from the handshake and is
+// not refetched within a session; the next row that needs a refresh adds the caller
+// back beside the `guestCountSeq` bump, which is why that counter stays.
+
+/**
+ * The colleague count behind drawer item 4 — ONE `GET /guest-links/cycle/:id`, for
+ * the CURRENT OPEN round only (18 §UC-PI-004).
+ *
+ * ⚠ Issued after the voucher check has settled (see `onMounted`), the ordering rule
+ * module 03 established: decoration must never be ahead of the two calls that decide
+ * what the screen shows. And issued at most ONCE per session load whatever the
+ * payload contains — with 40 open rounds in `cycles` this still fires one request,
+ * which is the bound that replaces RD-FL-8a's 3-at-a-time cap.
+ *
+ * Non-blocking and error-swallowing: `colleagues` stays `null`, and `null` renders
+ * the same „Pošlite odkaz kolegom" copy as a genuine zero (§UC-PI-004 item 4:
+ * „failure ⇒ the „Pošlite odkaz kolegom" sub, never an error").
+ */
+async function loadColleagueCount(seq) {
+  const cycle = landing.value.state === 'open' ? landing.value.currentCycle : null
+  if (!cycle) return
   try {
-    const subs = await api.getSubscriptions(props.friendId)
-    subscriptions.value = subs.types || []
-  } catch (e) {
-    // Non-critical: it only prefills the subscription modal.
+    const data = await api.getGuestLink(cycle.id)
+    if (seq !== guestCountSeq) return
+    colleagues.value = summariseSubOrders(data)
+  } catch {
+    // Swallowed: no link yet, a 404, or an offline blip all render the same sub-line.
   }
-}
-
-// Re-fetch the list. Only invalidated by a subscription change today — the first
-// render is seeded from the handshake.
-async function loadCycles() {
-  // Bumped BEFORE the awaits: an older count batch must never outlive the list
-  // it was fetched for.
-  const seq = ++guestCountSeq
-  cycles.value = await api.getFriendsCycles(props.friendId)
-  await loadSubscriptions()
-  loadGuestCounts(seq, cycles.value)
-}
-
-// ⚠ The concurrency cap is the point of this function (RD-FL-8a item 3).
-//
-// It used to `Promise.all` one `GET /api/guest-links/cycle/:id` per OPEN cycle in
-// a single tick, on the assumption — written into the code — that there would be
-// "typically 1–2" of them. Cycles are never auto-closed, so that assumption
-// decays silently with age: the e2e database reaches 135 open cycles, and 135
-// XHRs issued at once queue behind the browser's 6-connection-per-host limit
-// with the portal's OWN requests stuck behind them. That really happened; it
-// flaked `portal-session-boundary.spec.js` until `muteGuestCounts` was added to
-// paper over it.
-//
-// Two bounds, both required:
-//   · at most GUEST_COUNT_CONCURRENCY in flight, leaving at least half the
-//     connection budget for the balance card, the order pages and navigation;
-//   · the batch is issued only AFTER the subscription and voucher fetches have
-//     settled (see `onMounted`), so decoration can never be ahead of the two
-//     calls that decide what the screen shows.
-// The sequence guard is re-checked before each DISPATCH as well as before each
-// write, so a superseded batch stops issuing rather than merely stops writing.
-const GUEST_COUNT_CONCURRENCY = 3
-
-async function loadGuestCounts(seq, list) {
-  const queue = list.filter(c => c.status === 'open')
-  let next = 0
-
-  const worker = async () => {
-    while (next < queue.length) {
-      if (seq !== guestCountSeq) return
-      const cycle = queue[next++]
-      try {
-        const data = await api.getGuestLink(cycle.id)
-        if (seq !== guestCountSeq) return
-        // Written even when the count is 0, so a colleague cancelling is
-        // reflected on the next load instead of leaving a stale figure standing.
-        //
-        // ⚠ That self-healing is SUCCESS-PATH ONLY. `guestSummaries` is a merge
-        // map that is never reset per batch, so a refetch that FAILS leaves the
-        // previous entry standing rather than falling back to the "Objednávate
-        // aj pre kolegov?" copy — showing last-known-good is the better UX, but
-        // do not read this as "the map heals on error". It is not a
-        // cross-session leak: the map dies with this component.
-        guestSummaries.value = { ...guestSummaries.value, [cycle.id]: summariseSubOrders(data) }
-      } catch {
-        // Swallowed: no link yet, a 404 on a stale cycle id, or an offline blip
-        // all render the "Objednávate aj pre kolegov?" fallback.
-      }
-    }
-  }
-
-  await Promise.all(
-    Array.from({ length: Math.min(GUEST_COUNT_CONCURRENCY, queue.length) }, worker)
-  )
 }
 
 // One cycle's colleague aggregate, out of the GSO-T2 `{ link, guest_orders,
-// totals }` payload the batch above already fetches. No new request and no new
+// totals }` payload the fetch above already returns. No new request and no new
 // endpoint: `guest_orders` carries its `items` (helpers/guest-orders.js
 // `attachItems`), so the quantity is derivable from what is on the wire.
 //
@@ -818,16 +932,14 @@ function summariseSubOrders(data) {
   const count = Number(data?.totals?.count)
   const orders = Array.isArray(data?.guest_orders) ? data.guest_orders : []
   let grams = 0
-  let units = 0
   for (const order of orders) {
     if ((order?.status || 'submitted') === 'cancelled') continue
     for (const item of order?.items || []) {
       const quantity = Number(item?.quantity) || 0
       grams += (VARIANT_GRAMS[item?.variant] || 0) * quantity
-      units += quantity
     }
   }
-  return { count: Number.isFinite(count) ? count : 0, grams, units }
+  return { count: Number.isFinite(count) ? count : 0, grams }
 }
 
 // ---------------------------------------------------------------------------
@@ -876,58 +988,1038 @@ async function resolveVoucher(action) {
   }
 }
 
+// ⚠ RETIRED BY PI-T3 (§UC-PI-005): `goToCycle()`, `activeCycles`, `archivedCycles`,
+// `getCycleTypeLabel()`, `formatKilos()` and `orderQuantityLabel()` were the cycle
+// LIST's helpers and died with it. `/cycle/:id` is still a live route (§UC-PI-018) —
+// it is simply no longer reachable from a card on this screen.
+
 // ---------------------------------------------------------------------------
-// Cycle card helpers
-// ---------------------------------------------------------------------------
-
-function goToCycle(cycleId) {
-  router.push(`/cycle/${cycleId}`)
-}
-
-const activeCycles = computed(() => cycles.value.filter(c => c.status !== 'completed'))
-const archivedCycles = computed(() => cycles.value.filter(c => c.status === 'completed'))
-
-function getCycleTypeLabel(type) {
-  if (type === 'bakery') return 'Pekáreň'
-  return 'Káva'
-}
-
-function formatKilos(kilos) {
-  if (!kilos || kilos === 0) return '0 kg'
-  return `${kilos.toFixed(2)} kg`
-}
-
-// The quantity that FOLDS INTO the "Objednané ·" badge (03 resolved conflict #6:
-// the separate "☕ 0.25 kg" line is dropped). Bakery counts pieces, coffee counts
-// weight — the same split the dropped line used.
-function orderQuantityLabel(cycle) {
-  if (cycle.type === 'bakery') return `${cycle.orderItemCount} ks`
-  return formatKilos(cycle.orderKilos)
-}
-
-// The colleagues' quantity on the share row — the same bakery/coffee split the
-// badge above uses, but fed by `guestSummaries` rather than by the cycle row.
+// 18 §UC-PI-001/002 — WHICH VIEW, and WHICH ROUND (PI-T1; the four view BODIES
+// are PI-T3..T8).
 //
-// ⚠ Trailing zeros are STRIPPED here ("4 kg", not "4.00 kg"), which is the
-// RD-FO-2 rule from FriendOrder's stock bar and NOT `formatKilos`. The two are
-// fed from different units — `cycle.orderKilos` arrives as kilos from the API,
-// this one is summed in GRAMS off the sub-order items — and the design canon for
-// this row prints "4 kg". Empty string when there is nothing to show: the
-// template appends this after a "· " separator, and " · 0 kg" next to a live
-// colleague count would read as a failure rather than as "no weight yet" (the
-// real case being a bakery-only cycle, or the count arriving without items).
-function guestQuantityLabel(cycle) {
-  const summary = guestSummaries.value[cycle.id]
-  if (!summary) return ''
-  if (cycle.type === 'bakery') return summary.units > 0 ? `${summary.units} ks` : ''
-  if (!summary.grams) return ''
-  return `${Math.round(summary.grams / 10) / 100} kg`
+// ⚠ BOTH ARE `computed`, AND BOTH LIVE HERE RATHER THAN IN `FriendPortal.vue`.
+// That is the session-boundary rule, not a placement preference (see this file's
+// header): every piece of state module 18 adds — `view`, `menuOpen`,
+// `closedModalDismissed`, the resolved round, history expansion, balance,
+// explainer state, drawer counts — belongs on THIS side of the parent's
+// `v-if` + `:key="sessionSeq"`, so that logging out destroys it with no list to
+// maintain. Hoisting any of it into the parent, into a plain `<script>` block or
+// into `localStorage` would let friend A's session greet friend B.
+//
+// Being a `computed` off `route`/`cycles` is itself part of that: it holds no
+// value of its own, so there is nothing for a logout to fail to clear.
+// ---------------------------------------------------------------------------
+
+/**
+ * Which of the four views this route asks for: `shop` | `history` | `balance` |
+ * `explainer` (`router.js` `meta.view`). The fallback is `shop` — the deep link
+ * `/cycle/:id` never mounts this component, so an unmapped route can only be a
+ * new one someone forgot to give a `meta.view`, and the offer is the safe answer.
+ */
+const view = computed(() => route.meta?.view || 'shop')
+
+/**
+ * The landing's round and state, from the ONE home (`lib/portal-state.js`).
+ * Recomputed whenever `cycles` is reloaded; `resolveLanding` is pure, so this
+ * never fires a request of its own.
+ */
+const landing = computed(() => resolveLanding(cycles.value))
+
+// ---------------------------------------------------------------------------
+// 18 §UC-PI-003/004 — THE APPBAR PER STATE, AND THE DRAWER (PI-T2).
+//
+// ⚠ ALL OF IT LIVES HERE, on the session side of the parent's `v-if` +
+// `:key="sessionSeq"`, for the reason the block above states: `menuOpen`, the
+// balance, the drawer's labels and the appbar's own subtitle are SESSION data,
+// and a logout must destroy them with no list to maintain. The parent renders
+// `BrandChrome` (one instance across all three auth states — 03 §UC-FL-001, it
+// must not remount on login), so it READS `appbar` below through the exposed
+// session; it stores nothing of its own, and when the session is gone the whole
+// object is gone with it.
+// ---------------------------------------------------------------------------
+
+const menuOpen = ref(false)
+
+function openMenu() {
+  menuOpen.value = true
 }
 
-// Guest share link straight from the cycle list, so the host does not have to
-// open a cycle first. Same dialog (and logic) as FriendOrder.vue.
-function openShareDialog(cycle) {
-  shareCycle.value = cycle
+// ---------------------------------------------------------------------------
+// 18 §UC-PI-006 / §UC-PI-007 — THE LANDING'S STATE MODAL (PI-T4; PI-T5 added its
+// second consumer).
+//
+// ⚠ ONE DISMISSAL FLAG FOR BOTH STATES, deliberately. `LandingStateModal.vue` is one
+// parametrised component (PI-T4 built it that way precisely so §UC-PI-007's „locked,
+// NO own order" variant is three different strings, not a second modal), and the
+// flag answers „has this friend already been told why there is nothing to order in
+// this session?". A landing is closed or locked, never both; two flags would differ
+// only when an admin changed a round's status mid-session, and the honest answer
+// there is still „they have been told".
+//
+// ⚠⚠ ONCE PER SESSION, WITH NO PERSISTENCE, AND THE STATE LIVES *HERE*.
+// PO clarification 2026-09-19 (a): „modal once per closed period" IS the spec's
+// per-SESSION rule — a reload shows it again. So:
+//
+//   · NOT `localStorage` / `sessionStorage`. This component is `:key`-ed on the auth
+//     HANDSHAKE and destroyed on logout (`FriendPortal.vue`'s `v-if` + `:key`), which
+//     is the six-leak guard: a stored flag would survive that boundary and friend B
+//     would land on a closed offer with friend A's dismissal already applied. There
+//     is nothing about this flag that is worth reintroducing that class of bug for.
+//   · NOT a plain `<script>` block. `<script setup>` has no module scope (CLAUDE.md
+//     §Frontend), so a `let` hoisted up there is ONE value shared by every instance
+//     the tab ever mounts — the same leak with a shorter fuse.
+//   · NOT the parent. PI-T1's source pin forbids landing state in `FriendPortal.vue`
+//     outright, and for the same reason: the parent outlives the session.
+//
+// A `ref` in this component is therefore not the lazy option, it is the only one
+// that expires when the session does.
+const stateModalDismissed = ref(false)
+
+/**
+ * The modal is showing: the closed offer, the `shop` view, not yet dismissed.
+ *
+ * ⚠ Gated on the VIEW as well as the state. Navigating to „Zostatok a platby" and
+ * back must not put a modal over the balance view on the way — and §UC-PI-006 places
+ * it on the landing, not on the session.
+ *
+ * ⚠ …and that term is DEFENCE IN DEPTH TODAY, said out loud because the alternative
+ * is someone later reading it as the thing that enforces the rule. The enforcer is
+ * the TEMPLATE: the modal is mounted inside the `view === 'shop' && state ===
+ * 'closed'` branch, so dropping this term alone changes nothing observable
+ * (measured — mutation M10 reddened zero tests). It takes hoisting the modal out of
+ * that branch to break it, which is the realistic defect and which `portal-landing`
+ * §5 does pin. The term stays: a later row that moves the mount is exactly the
+ * change that would otherwise ship a modal over the balance view.
+ */
+const showClosedModal = computed(() => (
+  view.value === 'shop' && landing.value.state === 'closed' && !stateModalDismissed.value
+))
+
+/**
+ * §UC-PI-007's „Locked, NO own order" branch — „the closed-state treatment with the
+ * modal title „Objednávky sú uzavreté"" (GP-T7, PO decision 2026-09-24: ~~„uzamknuté"~~).
+ *
+ * ⚠ `hasOrder` is the ONE discriminator, and it is the cycles payload's (a SUBMITTED
+ * order, `routes/friends.js`) rather than anything this view derives: a friend who
+ * ordered gets the own-order card and never this modal, and a draft is not an
+ * objednávka. The same `view === 'shop'` defence-in-depth term as above, for the same
+ * measured reason (PI-T4 §4: the mount's template branch is what enforces it today).
+ */
+const showLockedModal = computed(() => (
+  view.value === 'shop'
+  && landing.value.state === 'locked'
+  && !landing.value.currentCycle?.hasOrder
+  && !stateModalDismissed.value
+))
+
+/** ×, Esc, scrim, „Prezrieť ponuku" and „Ako to funguje" all mean the same thing. */
+function dismissStateModal() {
+  stateModalDismissed.value = true
+}
+
+function stateModalToExplainer() {
+  dismissStateModal()
+  router.push('/ako-to-funguje')
+}
+
+// ---------------------------------------------------------------------------
+// 18 §UC-PI-005/011 — THE EMBEDDED ORDER SURFACE, AND THE ONE SHARE DIALOG
+// ---------------------------------------------------------------------------
+
+/**
+ * The `FriendOrder.vue` instance this view mounts in `mode="landing"` (open state
+ * only). `null` on every other view and state, which is exactly what the two
+ * readers below are written to cope with.
+ */
+const landingOrder = ref(null)
+
+/**
+ * The landing cart's total, read through `FriendOrder`'s `defineExpose` — drawer
+ * item 1's „ · v košíku …" clause. `0` while the component is not mounted.
+ */
+const landingCartTotal = computed(() => Number(landingOrder.value?.cartTotal) || 0)
+
+/**
+ * The `FriendOrder.vue` instance the CLOSED landing mounts for its read-only
+ * catalogue (PI-T4) — GL-T6c's third bridge to the one share dialog. Like
+ * `lockedOrder`, a SEPARATE ref from `landingOrder`, whose other reader
+ * (`landingCartTotal`) means „the OPEN round's cart". `null` when the closed landing
+ * has no catalogue (`landing-empty`), which is the one state with no mount at all.
+ */
+const closedOrder = ref(null)
+
+
+/**
+ * Drawer item 4's condition — „is there an instance this row can reach?".
+ *
+ * ⚠ SUPERSEDES §UC-PI-004's „`state === 'open'` only" (GL-T6c, 19 §UC-GL-008 acceptance
+ * clause 1 and R9.4 „the host can copy the link any time"): the standing link is
+ * cycle-independent, so a round that is not open no longer hides the row — it hides
+ * the PER-CYCLE section, inside the dialog. ⚠ The ONE state still without the row is a
+ * closed landing with no catalogue (no locked and no completed round ever — `landing-
+ * empty`): nothing mounts `FriendOrder` there, and the one-instance rule forbids
+ * mounting a second dialog to cover it. Recorded as a gap (learnings 11 §GL-T6c), not
+ * papered over with a row that does nothing.
+ */
+const shareRowShown = computed(() => {
+  const l = landing.value
+  if (l.state === 'open') return true
+  // Parked standing link (PO 2026-09-29, `lib/features.js`): locked/closed would open
+  // a dialog with nothing left in it, so the row is `state === 'open'` only again.
+  if (!STANDING_GUEST_LINK) return false
+  if (l.state === 'locked') return !!l.currentCycle
+  return !!l.catalogCycle
+})
+
+/**
+ * Drawer item 4's action (§UC-PI-011): open THE share dialog — the one instance,
+ * which lives in `FriendOrder.vue`.
+ *
+ * ⚠ THE PENDING FLAG IS NOT DEFENSIVE PADDING. Item 4's condition is the landing
+ * STATE (`open`), not the current VIEW, so the row is offered on „Moje objednávky"
+ * and „Zostatok a platby" too — where the embedded `FriendOrder` is not mounted and
+ * `landingOrder` is `null`. Navigating to `/` and opening the dialog once the
+ * instance exists is what makes the row mean the same thing from every view; the
+ * alternative (a second `GuestShareDialog` mounted here) is precisely what
+ * §UC-PI-011 forbids.
+ *
+ * ⚠⚠ IT IS ALSO DISARMED ON EVERY PATH THAT DOES NOT REACH THE INSTANCE, and that
+ * is the half a first version got wrong (PI-T3 review). A flag that is set and never
+ * cleared is a dialog that opens UNBIDDEN later: the friend arrives on the offer
+ * minutes afterwards and a share dialog they never asked for is waiting. Three exits:
+ * the instance is already here (open now), we are on `/` with no instance at all (the
+ * round is not open — nothing to share), or the push was REFUSED (drop it).
+ *
+ * ⚠ SAID PLAINLY, as with `guestCountSeq` above: the second and third exits have NO
+ * REACHABLE TRIGGER TODAY and no test can red them. Item 4 renders only when the round
+ * is open, and no guard currently refuses a push INTO `/` (the landing's own leave
+ * guard fires on the way OUT). They are here because the cost is two lines and the
+ * failure they prevent is silent and user-visible; what IS pinned — in
+ * `portal-landing.spec.js` §3 — is the reachable half: after the row has opened the
+ * dialog from another view, returning to `/` must not re-open it.
+ */
+const pendingShare = ref(false)
+
+async function requestShareDialog() {
+  if (shareHost.value?.openShareDialog) {
+    shareHost.value.openShareDialog()
+    return
+  }
+  // Already on the offer with no instance ⇒ the closed landing without a catalogue
+  // (the row is hidden there), so there is nothing to wait for.
+  if (route.path === '/') return
+  // ⚠ GL-T6c: arriving on a closed / no-order-locked offer from another view would
+  // raise the landing's STATE modal (once per session) AND the share dialog the
+  // friend asked for — two `NeoModal`s stacked on one layer. The explicit request
+  // wins: it counts as the state modal's dismissal, and the slim banner that
+  // replaces the modal still says what the modal said. (On `/` itself the modal is
+  // necessarily dismissed already — its scrim covers the hamburger.)
+  if (landing.value.state !== 'open') dismissStateModal()
+  pendingShare.value = true
+  // `router.push` RESOLVES WITH a NavigationFailure rather than rejecting when a
+  // guard cancels or redirects it — so the falsy check is the success case.
+  const failure = await router.push('/')
+  if (failure) pendingShare.value = false
+}
+
+
+// ---------------------------------------------------------------------------
+// 18 §UC-PI-007 — THE LOCKED LANDING'S OWN-ORDER CARD (PI-T5)
+// ---------------------------------------------------------------------------
+
+/**
+ * The `FriendOrder.vue` instance the LOCKED landing mounts (read-only grid, tabs
+ * kept). A SEPARATE ref from `landingOrder`, not a reuse of it.
+ *
+ * ⚠ `landingOrder` means „the OPEN landing's live order surface" and two readers
+ * depend on that meaning: `landingCartTotal` feeds drawer item 1's „ · v košíku …"
+ * clause, and ~~`requestShareDialog()` treats „the instance exists" as „there is a
+ * round to share"~~ (GL-T6c: it now asks `shareHost`, which includes THIS ref — the
+ * read-only mount's dialog is standing-only). A read-only mount has an empty cart by
+ * construction, so pointing `landingOrder` at one would answer the cart question with
+ * a mount that cannot mean it. PI-T4 made the same call for the closed catalogue
+ * (which GL-T6c gave its own `closedOrder` ref for the same reason).
+ */
+const lockedOrder = ref(null)
+
+/**
+ * 19 §UC-GL-008 / GL-T6c — the mounted `FriendOrder` that holds THE share dialog on
+ * the current landing, whichever state it is in. Three refs, one instance at a time
+ * (the three mounts sit in mutually exclusive `v-if` branches), and ONE dialog in
+ * source — the `portal-landing.spec.js` §4 mount COUNTS are unchanged (FriendOrder 1,
+ * session 0, parent 0); only its bridge regex follows the call to `shareHost`.
+ *
+ * ⚠ On the open landing it is the live order surface and the dialog carries the
+ * round (per-cycle section included); on the two read-only mounts `FriendOrder`
+ * passes `cycleId = null` itself (`shareCycleId`), so the dialog is standing-only.
+ * The session decides WHICH instance, never what the dialog shows.
+ */
+const shareHost = computed(() => landingOrder.value || lockedOrder.value || closedOrder.value)
+
+// ⚠ Declared HERE, after all three refs, because `watch()` reads its source at setup
+// and a `const` above its declaration is in the TDZ. It was `watch(landingOrder, …)`
+// up with `requestShareDialog()` until GL-T6c widened it to the three mounts.
+watch(shareHost, (instance) => {
+  if (!instance || !pendingShare.value) return
+  pendingShare.value = false
+  instance.openShareDialog()
+})
+
+/**
+ * §UC-PI-007 item 2's data — „renders from FriendOrder's loaded `order` (no second
+ * loader)". `null` until that mount has loaded, which is what the card's `v-if`
+ * waits on.
+ *
+ * ⚠ THE SESSION HOLDS NO COPY. This is a read THROUGH `defineExpose` (a `computed`
+ * travels unwrapped via Vue's `proxyRefs`, so it stays reactive), for the same
+ * reason drawer item 1 reads `cartTotal` rather than modelling a cart: a second home
+ * for „what did this friend order" is the thing the whole surface is built to avoid.
+ */
+const lockedOwnOrder = computed(() => lockedOrder.value?.ownOrder || null)
+
+/**
+ * „Zaplatiť {total}" — it opens `FriendOrder`'s OWN `PaymentModal`, the one that
+ * already carries this order's server-issued variable symbol.
+ *
+ * ⚠ NEVER A SECOND `PaymentModal` MOUNT for the same order (15 §UC-PL-004 D4 and
+ * CLAUDE.md: the balance modal has one home too, and PI-T7 RELOCATES that one rather
+ * than adding another). ⚠ And nothing here writes money: `paid` is the admin's
+ * toggle and this surface posts no `transactions` row at all.
+ */
+function payOwnOrder() {
+  lockedOrder.value?.openPaymentModal?.()
+}
+
+/**
+ * `landing.nextText` is the admin's `plan_note` verbatim (17's branch 2) — person-typed,
+ * so the two warn banners mark it `data-user-copy` (FUP-T22 / 18 §UC-PI-017) and leave
+ * 17's two app sentences readable to the vocabulary sweep. One home:
+ * `lib/portal-state.js nextTextIsNote()`, which `LandingStateModal.vue` also reads.
+ */
+const nextIsNote = computed(() => nextTextIsNote(landing.value.nextCycle, landing.value.nextOpening))
+
+/**
+ * §UC-PI-007 item 4's next-round banner: „<b>Ďalšia objednávka</b> {short} — ponuku
+ * si už môžete prezrieť nižšie."
+ *
+ * ⚠⚠ THE DATE HERE IS THE SHORT FORM, AND THAT IS NOT A CALL-SITE RESOLUTION OF THE
+ * RECORDED PO QUESTION. The conflict (learnings 10 §1, PI-T4 §1) is about ONE
+ * sentence — module 17's „Ďalšia objednávka sa otvorí približne {fmtDay}" — which
+ * this banner is NOT: §UC-PI-007 specifies a different, shorter sentence that
+ * `nextOpeningText()` cannot produce and does not own. The rule PI-T1 wrote for
+ * exactly this case applies unchanged: a date standing alone after a preposition is
+ * SHORT and comes from `lib/dates.js`; only a date INSIDE one of 17's composed
+ * sentences is long. Reformatting 17's sentence here, or importing `fmtDay` for this
+ * one, is what would create the second home.
+ *
+ * ⚠ `nextOpening.date` is the „is `opens_at` usable" predicate (it already encodes
+ * the `2026-02-31` round-trip refusal), exactly as `LandingStateModal.vue` uses it —
+ * what is RENDERED is `fmtDayMonth`.
+ */
+const nextRoundShort = computed(() => {
+  const next = landing.value.nextCycle
+  if (landing.value.nextOpening?.date && next?.opens_at) {
+    return { kind: 'date', date: fmtDayMonth(next.opens_at) }
+  }
+  if (next?.plan_note) return { kind: 'note', note: next.plan_note }
+  return { kind: 'none' }
+})
+
+// ── the balance, fetched ONCE per session ────────────────────────────────────
+//
+// §UC-PI-004 item 3: "Balance for item 3 comes from the same
+// `api.getFriendBalance(friendId)` call the debt banner uses (UC-PI-008) — one
+// request per session load, shared state." So it is fetched HERE, at session
+// level, and NOT per drawer open: a menu that refetched on every open would put
+// a request behind a gesture people make constantly, and two components each
+// holding their own answer is how „what does this friend owe" acquires two homes.
+//
+// `null` means "not loaded (or failed)", which is exactly the state the badge is
+// specified to render as NOTHING — a menu must never show a money figure it is
+// not sure of, and a failed balance is not a reason to shout at someone opening
+// a menu. There is no error surface and no retry by design.
+//
+// ~~⚠ PI-T7 SEAM. `FriendBalanceCard.vue` still makes its OWN `getFriendBalance`
+// call … So today a session load makes TWO balance requests, and that is KNOWN.~~
+// **CLOSED by PI-T7 (2026-09-20).** The card takes `balance` / `payment` /
+// `loading` / `error` as PROPS and fetches nothing; this is the only
+// `api.getFriendBalance` call on the friend surface, and a landing load makes
+// exactly ONE. `payment-links.spec.js`'s exact-count pin was rewritten with it
+// (it asserted `toBe(2)` and named the two readers, precisely so this row could
+// not leave a stale claim behind).
+//
+// ⚠ THREE CONSUMERS, ONE ANSWER: the drawer badge (§UC-PI-004 item 3), the landing
+// debt banner (§UC-PI-008) and the account card (§UC-PI-010) all read these refs.
+// That is the whole point — the day `balancePaymentBlock()` changes, there is one
+// place that quotes it.
+//
+// ⚠ THE ERROR IS AUDIENCE-SCOPED, and that is spec, not caution. `balanceError` is
+// rendered ONLY by the card on `/zostatok` (§UC-PI-010: „error `.banner.danger.slim`
+// (shipped copy)“). The drawer badge and the debt banner render NOTHING on a failure
+// (§UC-PI-008: „a failed balance fetch renders NO banner and no error on the landing
+// (the balance view owns the error surface)“) — they get that for free from
+// `balance` being `null`, without a second predicate about loading.
+const balance = ref(null)
+// The server's `payment` block, QUOTED — never recomposed on the client.
+const balancePayment = ref(null)
+const balanceLoading = ref(true)
+const balanceError = ref('')
+
+async function loadBalance() {
+  if (!props.friendId) return
+  balanceLoading.value = true
+  balanceError.value = ''
+  // ⚠ CLEARED BEFORE THE READ, not merged after it — the defence-in-depth rule that
+  // came up here from `FriendBalanceCard.vue` with the mount (CLAUDE.md §Money &
+  // data). It is NOT what keeps one session's payment block out of the next
+  // session's: that is structural and lives in `FriendPortal.vue`, which mounts this
+  // component with `v-if` + `:key="sessionSeq"` and DESTROYS the subtree on logout
+  // (the six-leak guard named in this file's header). What the clear covers is the
+  // gap a FAILED reload leaves: without it the card paints its error banner while a
+  // stale block sits behind a „Zaplatiť“ that still opens. Closing the dialog with
+  // it is the same rule — a dialog quoting a debt that is no longer on screen has
+  // no owner.
+  balancePayment.value = null
+  showBalancePayment.value = false
+  try {
+    const data = await api.getFriendBalance(props.friendId)
+    const value = Number(data?.balance)
+    balance.value = Number.isFinite(value) ? value : null
+    balancePayment.value = data?.payment || null
+  } catch (e) {
+    balance.value = null
+    balanceError.value = e.message
+  } finally {
+    balanceLoading.value = false
+  }
+}
+
+/**
+ * §UC-PI-010 business rule: „The view reloads balance + transactions on mount (a
+ * payment marked by the admin shows after re-entering the view — no polling)."
+ *
+ * ⚠ AND THAT IS NOT A CONTRADICTION OF „one request per session load". §UC-PI-004's
+ * sentence is about the LANDING load — the drawer badge must not cost a request per
+ * menu open. Re-entering `/zostatok` is a deliberate navigation to the screen whose
+ * whole subject is the number, and a stale one there is the bug the rule names. The
+ * transactions half needs no code here: `FriendTransactionList` is `v-if`-gated on
+ * this view, so leaving unmounts it and coming back re-runs its `onMounted`.
+ */
+// ⚠ ON ENTERING THE BALANCE VIEW FROM **ANY** OTHER VIEW — not only from the landing.
+// `history → balance` and `explainer → balance` re-read too, which is the behaviour
+// §UC-PI-010 wants; the docs said „`shop → balance`" and were narrower than the code
+// (review, 2026-09-20). The `prev !== 'balance'` term is belt-and-braces: a watcher
+// cannot fire on an unchanged value, so it can never be false here.
+watch(view, (next, prev) => {
+  if (next === 'balance' && prev !== 'balance') loadBalance()
+})
+
+// ⚠⚠ THE ONE BALANCE `PaymentModal` IN THE TREE, and the one function that opens it.
+// `FriendBalanceCard`'s „Zaplatiť {suma}" (`pay-balance`, on `/zostatok`) and
+// `DebtBanner`'s „Zaplatiť" (`debt-banner-pay`, on the landing) both call this; the
+// mount is at the bottom of the template. PL-T4 put both in the card, which module
+// 18 RELOCATES rather than duplicates (15 §UC-PL-007 item 4, CLAUDE.md §Money &
+// data): a mount inside the card cannot be opened from a banner on another view, and
+// the second mount that would fix that is exactly the defect — two components each
+// holding their own copy of `balancePaymentBlock()`'s answer.
+//
+// ⚠ Nothing here writes money. Opening or closing this modal posts no
+// `transactions` row, and `close` deliberately does NOT reload the balance: paying
+// through a link changes nothing in the ledger until the admin records the transfer,
+// and a refreshed-looking balance would tell the friend otherwise.
+const showBalancePayment = ref(false)
+
+function openBalancePayment() {
+  showBalancePayment.value = true
+}
+
+// The „Zaplatiť“ gate, shared by both surfaces so they can never disagree about
+// whether this debt is payable: a block, and somewhere to send the money. The DEBT
+// half of the predicate lives in each surface (the card's `balanceState`, the
+// banner's `-0.01` threshold), because the card also renders the settled and credit
+// states while the banner renders nothing at all.
+const canPayBalance = computed(() => !!balancePayment.value
+  && !!(balancePayment.value.iban || balancePayment.value.revolut_username))
+
+// ── the appbar (§UC-PI-003) ──────────────────────────────────────────────────
+
+/**
+ * The `.titles .s` line: a FIXED string per view, never free text and never the
+ * friend's name any more (§UC-PI-003; the name moved into the drawer header).
+ * `shop` splits on the landing state: a LOCKED round the friend actually ordered
+ * in is „Vaša objednávka“, everything else is „Aktuálna ponuka“.
+ */
+const appbarSubtitle = computed(() => {
+  if (view.value === 'history') return 'Moje objednávky'
+  if (view.value === 'balance') return 'Zostatok a platby'
+  if (view.value === 'explainer') return 'Ako to funguje'
+  const l = landing.value
+  if (l.state === 'locked' && l.currentCycle?.hasOrder) return 'Vaša objednávka'
+  return 'Aktuálna ponuka'
+})
+
+/**
+ * The three state tickers (§UC-PI-003). The prototype's „ĎALŠIE KOLO“ is rewritten
+ * to „ĎALŠIA OBJEDNÁVKA“ — 18 resolved conflict 1 / §16: no „kolo“ or „cyklus“
+ * anywhere a friend can read (§UC-PI-017).
+ *
+ * ⚠ The week count is `lib/dates.js weeksUntil()` + `lib/plural.js weeksLabel()`,
+ * i.e. 18's own short rule, NOT 17's `inWeeksText()`. They genuinely differ:
+ * `inWeeksText` switches to DAYS under a week (PO decision O6) and this ticker is
+ * specified as weeks-or-nothing („…else DÁME VEDIEŤ“). Uppercased in JS rather
+ * than left to `.ticker { text-transform:uppercase }`, because `textContent` — what
+ * Playwright's `toContainText` reads — does not apply a text-transform.
+ */
+const appbarTicker = computed(() => {
+  const state = landing.value.state
+  if (state === 'open') return '+++ OBJEDNÁVKY OTVORENÉ +++ NEHOVOR O TOM NAHLAS +++'
+  if (state === 'locked') return '+++ OBJEDNÁVKY UZAVRETÉ +++ KÁVA JE NA CESTE +++'
+  const weeks = weeksUntil(landing.value.nextCycle?.opens_at)
+  const suffix = weeks !== null && weeks >= 1 ? `O ${weeksLabel(weeks).toUpperCase()}` : 'DÁME VEDIEŤ'
+  return `+++ OBJEDNÁVKY ZATVORENÉ +++ ĎALŠIA OBJEDNÁVKA ${suffix} +++`
+})
+
+/**
+ * Everything `FriendPortal.vue`'s `BrandChrome` needs, as ONE object — exposed
+ * rather than emitted, so the parent holds no state of its own (a ref there would
+ * survive the logout that unmounts this component, which is the whole six-leak
+ * class). It is a `computed`: it has no value to clear.
+ */
+const appbar = computed(() => ({
+  // The explainer swaps the hamburger for a back chevron (prototype `portal2.jsx`
+  // :309) — there is nowhere to go back to from the other three views.
+  menu: view.value !== 'explainer',
+  subtitle: appbarSubtitle.value,
+  ticker: appbarTicker.value,
+  // The lock chip is present whenever the round is NOT open, and it is decorative
+  // (`aria-hidden`) — the state is spoken by the banner, not by a glyph.
+  lock: landing.value.state === 'open'
+    ? null
+    : landing.value.state === 'locked' ? 'Objednávky sú uzavreté' : 'Objednávky sú zatvorené',
+}))
+
+// ── the drawer's rows (§UC-PI-004) ───────────────────────────────────────────
+
+/** Rounds the friend has actually ordered in — 18 resolved conflict 8. */
+const orderedCycles = computed(() => cycles.value.filter((c) => c && c.hasOrder))
+
+/**
+ * Item 1's sub-line. Open ⇒ „Otvorené do {fmtDate(closes_at)}“, or the bare
+ * „Objednávky sú otvorené“ when no deadline is stored; closed/locked ⇒
+ * „Objednávky sú zatvorené“.
+ *
+ * ⚠ The „ · v košíku {fmtEur(cartTotal)}" clause reads the LANDING's cart, and it
+ * reads it off the embedded `FriendOrder` through `defineExpose` rather than keeping
+ * a copy: the cart model has one home (§UC-PI-005), and a drawer that summed its own
+ * would be the second. `> 0` is the spec's gate, so an empty basket adds nothing.
+ * `landingCartTotal` is `0` whenever the component is not mounted (closed/locked, or
+ * another view), which collapses to the same thing.
+ */
+const shopSub = computed(() => {
+  const l = landing.value
+  if (l.state !== 'open') return 'Objednávky sú zatvorené'
+  const closes = fmtDate(l.currentCycle?.closes_at)
+  const head = closes ? `Otvorené do ${closes}` : 'Objednávky sú otvorené'
+  const cart = landingCartTotal.value
+  return cart > 0 ? `${head} · v košíku ${fmtEur(cart)}` : head
+})
+
+/**
+ * §UC-PI-004 item 4's sub-line: „{colleaguesLabel(count)} · {kgLabel(grams)} cez váš
+ * odkaz", and „Pošlite odkaz kolegom" for a zero count, a failure or a load still in
+ * flight — the three are DELIBERATELY indistinguishable (a missing count costs the
+ * host nothing, and a menu is no place for an error surface).
+ *
+ * ⚠ `kgLabel()` returns the WHOLE „X kg" string (FUP-T24, and §UC-PI-004 says so in
+ * its own footnote) — „… {kg} kg" would render „0.25 kg kg".
+ *
+ * ⚠ The zero-GRAMS guard drops the „· " separator rather than printing „· 0 kg",
+ * which is module 03's copy decision carried over: „3 kolegovia · 0 kg" reads as a
+ * failure, „3 kolegovia cez váš odkaz" reads as what it is (the real case being a
+ * count that arrived without item rows).
+ */
+const shareSub = computed(() => {
+  const c = colleagues.value
+  if (!c || !c.count) return 'Pošlite odkaz kolegom'
+  const qty = c.grams ? ` · ${kgLabel(c.grams)}` : ''
+  return `${colleaguesLabel(c.count)}${qty} cez váš odkaz`
+})
+
+/** Item 2's sub-line: „{n} objednávky · naposledy {cycleName}“, or „Zatiaľ žiadne“ — as `{ text, data }`. */
+const historySub = computed(() => {
+  const list = orderedCycles.value
+  if (!list.length) return { text: 'Zatiaľ žiadne', data: '' }
+  // `cycles` arrives `ORDER BY created_at DESC` (friends.js), so the first row
+  // carrying an order is the most recent one.
+  // ⚠ The cycle NAME is returned APART from the app text (PI-T11 review): it is admin
+  // free text, and `NeoDrawer.vue` renders it in its own `data-user-copy` span so the
+  // vocabulary sweep reads „3 objednávky · naposledy" and never the name (FUP-T22).
+  // Composing it into one string here made the whole sub-line unmarkable.
+  return { text: `${ordersAccusativeLabel(list.length)} · naposledy`, data: list[0].name }
+})
+
+/**
+ * The rows, in the spec's order. `view` maps the four navigating rows onto `.on`.
+ *
+ * ⚠ RECORDED SPEC DISCREPANCY (§UC-PI-004): the business rule says „the item whose
+ * view is current gets `.on`“ and its parenthetical says „(only items 1/2/6 map to
+ * a view)“ — but item 3's action IS a view (`/zostatok`, `meta.view: 'balance'`),
+ * so FOUR rows map, not three. The prototype agrees (`portal2.jsx` renders
+ * `Item k="balance"` through the same `view === k ? " on"` test as the others), and
+ * the general rule is the one written as a rule. Implemented as the general rule;
+ * the parenthetical reads as a miscount.
+ *
+ * ⚠ Item 4 („Zdieľať s kolegami") is CONDITIONAL on `shareRowShown` — ~~`state ===
+ * 'open'`, 05 §UC-KG-002's „a locked or closed round offers no share affordance at
+ * all"~~ SUPERSEDED by GL-T6c (19 §UC-GL-008): the row now opens the standing-only
+ * dialog on the locked and closed landings too; KG-002 still holds for the PER-CYCLE
+ * link. It is the only row that opens a dialog belonging to another component; see
+ * `requestShareDialog()`.
+ */
+const menuItems = computed(() => {
+  const rows = [
+    { key: 'shop', view: 'shop', icon: 'bag', label: 'Aktuálna ponuka', sub: shopSub.value },
+    {
+      key: 'history', view: 'history', icon: 'list', label: 'Moje objednávky',
+      sub: historySub.value.text, subData: historySub.value.data,
+    },
+    {
+      key: 'balance',
+      view: 'balance',
+      icon: 'wallet',
+      label: 'Zostatok a platby',
+      // While it is loading (or after a failure) there is NO badge — never a
+      // placeholder figure. `-0.01` is the spec's threshold, so a balance that
+      // rounds to zero is not painted as debt.
+      badge: balance.value === null
+        ? null
+        // ⚠ `isInDebt`, not a fourth copy of the comparison (`lib/money.js`).
+        : { text: fmtEur(balance.value), tone: isInDebt(balance.value) ? 'danger' : 'ok' },
+    },
+    ...(shareRowShown.value
+      ? [{ key: 'share', icon: 'share', label: 'Zdieľať s kolegami', sub: shareSub.value }]
+      : []),
+    { key: 'invite', icon: 'invite', label: 'Pozvať priateľa', sub: 'Váš pozývací odkaz' },
+    { key: 'explainer', view: 'explainer', icon: 'help', label: 'Ako to funguje' },
+    { key: 'profile', icon: 'user', label: 'Profil', sub: 'Meno, telefón, Packeta, heslo' },
+  ]
+  return rows.map((row) => ({ ...row, on: !!row.view && row.view === view.value }))
+})
+
+/**
+ * §UC-PI-004: "Choosing any item closes the drawer first, then acts." Not
+ * cosmetic — a `router.push` out of a view whose leave guard prompts (PI-T3) would
+ * otherwise run with the drawer still on the modal layer, over the confirm.
+ */
+function onMenuSelect(key) {
+  menuOpen.value = false
+  if (key === 'invite') return openInviteModal()
+  if (key === 'profile') return openProfileModal()
+  if (key === 'share') return requestShareDialog()
+  const path = key === 'history' ? '/moje-objednavky' : key === 'balance' ? '/zostatok' : key === 'explainer' ? '/ako-to-funguje' : '/'
+  if (route.path !== path) router.push(path)
+}
+
+function onMenuLogout() {
+  menuOpen.value = false
+  emit('logout')
+}
+
+/**
+ * The explainer view's back chevron (§UC-PI-003 `#leading`). It lives here, not in
+ * the parent, so that ROUTING has one home on the authenticated surface — the same
+ * place `view`, `onMenuSelect` and (from PI-T9) the explainer gate's
+ * `router.replace` live. Keeping the parent router-free is also what keeps
+ * `portal-shell.spec.js`'s source pin („no `route.meta` in `FriendPortal.vue`")
+ * meaningful rather than incidental.
+ */
+function backHome() {
+  if (route.path !== '/') router.push('/')
+}
+
+// ---------------------------------------------------------------------------
+// 18 §UC-PI-012 — „AKO TO FUNGUJE", THE EXPLAINER (PI-T8).
+//
+// The view itself is `components/PortalExplainer.vue`; everything this file owns
+// is the ONE thing the component cannot know — whether the round a friend is
+// looking at charges for Packeta — and where „Späť na ponuku" goes.
+// ---------------------------------------------------------------------------
+
+/**
+ * §UC-PI-012 item 4: the Packeta badge is gated on
+ * `(currentCycle ?? catalogCycle)?.parcel_enabled`.
+ *
+ * ⚠ THE `??` IS RESOLVED HERE, not in the component, because `landing` is THIS
+ * file's shape (`lib/portal-state.js`). And it is not `currentCycle` alone:
+ * `currentCycle` is NULL under `closed` (PI-T1 §2), which is the state the
+ * explainer is most likely to be READ in — a friend with nothing to order is
+ * exactly the one reading how it works. Dropping `catalogCycle` would silently
+ * hide the fee for the majority of visits to this page.
+ *
+ * ⚠ `parcel_enabled` arrives from SQLite as 0/1, so it is coerced here: the
+ * component's prop is a real `Boolean` and `0` would be `true` to a truthiness
+ * test written at the call site later.
+ */
+const explainerCycle = computed(() => landing.value.currentCycle ?? landing.value.catalogCycle ?? null)
+const explainerParcelEnabled = computed(() => !!explainerCycle.value?.parcel_enabled)
+const explainerParcelFee = computed(() => Number(explainerCycle.value?.parcel_fee) || 0)
+
+/**
+ * 18 §UC-PI-013 (PI-T9) — THE FIRST-LOGIN GATE, which is this same page with one
+ * checkbox on it.
+ *
+ * ⚠ A `ref` SEEDED ONCE, not a computed over `props.entry`. The flag has to STOP
+ * being true the moment the gate is answered: the friend can reach the explainer
+ * again from the drawer in the very same session, and §UC-PI-013 says an explainer
+ * opened from the menu never writes anything and shows no checkbox. A computed would
+ * keep the checkbox (and the stamping branch) alive for the rest of the session.
+ *
+ * ⚠ It is SESSION state, on the session side of the parent's `v-if` + `:key` — the
+ * six-leak guard. A logout destroys it; there is no list to maintain.
+ */
+const explainerGate = ref(!!props.entry?.explainerPending)
+
+/**
+ * ⚠ THE GATE IS ONE-SHOT PER ARRIVAL, AND „Rozumiem" IS NOT ITS ONLY EXIT — this
+ * watch is a MEASURED fix, not symmetry for its own sake. §UC-PI-003 puts a BACK
+ * CHEVRON on the explainer view where the hamburger is elsewhere, so the friend can
+ * leave the gate without answering it. Lowering the flag only in `onExplainerDone`
+ * left it RAISED after that escape, and the next visit from the drawer — an explainer
+ * the friend navigated to ON PURPOSE — still carried the pre-ticked „Už mi to
+ * neukazovať" and would have STAMPED the column on „Rozumiem". §UC-PI-013 forbids
+ * exactly that („opening the explainer from the menu never writes anything"), so the
+ * gate ends when the friend leaves the VIEW, however they leave it.
+ *
+ * ⚠ It watches the TRANSITION OUT (`before === 'explainer'`), never `view !==
+ * 'explainer'` on its own: the session mounts on `shop` and `router.replace` happens a
+ * tick later, so the simpler predicate would fire once at mount and lower the flag
+ * before the gate had ever rendered.
+ *
+ * The explicit lowering inside `onExplainerDone` stays: it has to happen BEFORE the
+ * `hide` branch can run a second time, and this watch fires only after the navigation.
+ */
+watch(view, (now, before) => {
+  if (before === 'explainer' && now !== 'explainer') explainerGate.value = false
+})
+
+/**
+ * The explainer's one action (§UC-PI-012 item 8). From the menu it is „Späť na
+ * ponuku" and means exactly the back chevron.
+ *
+ * ⚠ THE `hide` FLAG IS READ ONLY WHILE `explainerGate` IS TRUE. `PortalExplainer`
+ * emits `{ hide }` in BOTH modes (one payload shape, its header says so) and `hide`
+ * defaults to `true` — so reading it without the gate check would stamp the column
+ * every time a friend closed the explainer from the menu, which §UC-PI-013 forbids in
+ * as many words. The gate flag, not the payload, is what makes this a write.
+ *
+ * ⚠ FIRE-AND-FORGET, error SWALLOWED (§UC-PI-013: "the UX must not block on it").
+ * The friend is on their way to the shop; a failed stamp costs them one more explainer
+ * at their next login and nothing else. `.catch(() => {})` rather than `await` — an
+ * `await` here would make the navigation wait on a request whose answer is never read.
+ */
+function onExplainerDone(payload) {
+  if (explainerGate.value) {
+    // Lowered FIRST, so a second click (or a re-entry from the drawer in this same
+    // session) can no longer take the writing branch.
+    explainerGate.value = false
+    if (payload?.hide) {
+      api.markExplainerSeen(props.friendId).catch(() => {})
+    }
+  }
+  backHome()
+}
+
+// ---------------------------------------------------------------------------
+// 18 §UC-PI-015 + PO 2026-09-19(c) — THE PROFILE MODAL'S AUTO-OPEN (PI-T10)
+// ---------------------------------------------------------------------------
+
+/**
+ * „This login has not yet been shown the profile modal." ONE-SHOT, session-scoped.
+ *
+ * ⚠ IT IS A REF ON THE SESSION SIDE of the parent's `v-if` + `:key="sessionSeq"` —
+ * the six-leak boundary §UC-PI-001 states. A logout destroys it; there is no
+ * `localStorage`, no module scope (`<script setup>` has none), nothing keyed on the
+ * friend id. „Dismissible per session" is exactly this ref being lowered when the
+ * modal opens: the friend closes it and it does not come back until the NEXT LOGIN.
+ *
+ * ⚠ SEEDED FROM `entry.freshLogin`, which only the three LOGIN paths pass — see
+ * `FriendPortal.vue beginSession`. A restore (every reload, every deep link) leaves
+ * it false, inheriting §UC-PI-013's „a restore is not a login" boundary verbatim.
+ */
+const profileAutoOpenArmed = ref(!!props.entry?.freshLogin)
+
+/**
+ * ⚠ THE HYDRATE GATE, and it is a `hasOwnProperty`, not a truthiness test.
+ *
+ * `phone` is in NONE of the login payloads (PI-T9 pinned that set), so `props.friend`
+ * carries no `phone` KEY until `hydrateCurrentFriend()`'s `GET /:id/profile` lands.
+ * `!props.friend?.phone` would therefore be `true` for every friend for the first few
+ * hundred milliseconds of every login — including friends who HAVE a phone, who would
+ * see the modal flash open and (worse) stay open. Asking whether the key EXISTS is
+ * what turns „I do not know yet" into „not yet", and it is also what puts this last in
+ * the precedence chain for free: the fetch settles after the gates have painted.
+ *
+ * ⚠ A FAILED hydrate therefore never auto-opens. Accepted and deliberate: that fetch
+ * is documented fire-and-forget and allowed to fail silently, and the cost of a miss
+ * is one more prompt at the next login — the same trade `onExplainerDone` makes.
+ */
+const profilePhoneKnown = computed(
+  () => !!props.friend && Object.prototype.hasOwnProperty.call(props.friend, 'phone')
+)
+const profilePhoneMissing = computed(() => !String(props.friend?.phone ?? '').trim())
+
+/**
+ * ⚠⚠ PRECEDENCE IS CODED HERE, AND THAT IS THE OPPOSITE OF PI-T9'S EXPLAINER — say
+ * why, because the next reader will see the disagreement.
+ *
+ * The explainer gate is a `router.replace`: a VIEW, which the forced-password gate and
+ * the Google prompt simply paint over, so its precedence is structural and coding it
+ * would have INVERTED the rule (learnings 10 §PI-T9.10). This one is a `NeoModal`, and
+ * a modal opened while another modal is up does not wait underneath it — it stacks,
+ * traps focus against its sibling and puts a scrim over a gate the friend cannot
+ * dismiss. So the three gates PO clarification (c) names are terms in the trigger,
+ * read REACTIVELY (each of them clears in place when the friend satisfies it, and this
+ * modal is supposed to arrive at exactly that moment).
+ *
+ * ⚠⚠ THE TERM LIST IS „EVERY SURFACE THAT RAISES ITSELF WITHOUT THE FRIEND ASKING",
+ * NOT „the gates clarification (c) names". PI-T10's first pass enumerated the latter
+ * and shipped a measured defect: on a CLOSED landing — the normal state for most of the
+ * month — a phone-less friend got `dialogs=2`, „Objednávky sú zatvorené" AND „Upraviť
+ * profil", scrim over scrim. Found in review by BUILDING that login rather than reading
+ * the list. The class is the standing one: a rule stated narrower than what it protects
+ * reads as licence for everything it failed to name — and this comment is where that
+ * class is supposed to be caught.
+ *
+ * ⚠⚠ THE LIST BELOW IS DERIVED, AND THE DERIVATION IS THE PART THAT MATTERS — because
+ * a hand-kept list under a class rule reads as complete and has now been wrong TWICE
+ * (round 1 missed the two landing state modals; round 2 missed the voucher overlay).
+ * THE DERIVATION: walk every overlay MOUNT in this file's template — ~~`<NeoModal>`,
+ * `<LandingStateModal>`, `<NeoDrawer>`, and the teleported `fixed inset-0` voucher div~~
+ * **every `*Modal`/`*Dialog`/`*Drawer` component and every `fixed` element, whatever its
+ * shape (PI-T12: that four-shape list missed `<PaymentModal :open>`, the TENTH mount)** —
+ * and ask of each „can this raise with NO friend action?" Yes ⇒ it is a term.
+ * ⚠ `portal-profile-modal.spec.js` PINS THAT WALK IN SOURCE, so an EIGHTH self-raising
+ * overlay reds instead of silently stacking — and, since PI-T12, it pins the COUNTS
+ * too (10 mounts, 8 terms) and derives the exact term set, so a term added or dropped
+ * reds as well. Do not maintain the list by hand; add the mount and let the pin tell you.
+ *
+ * The seven self-raising surfaces, and why each is one:
+ *   · `forcedPasswordChange`  — 03 §UC-FL-012, non-dismissable `NeoModal`.
+ *   · `showCredentialSetup`   — 03 §UC-FL-011, auto-raised from the same handshake.
+ *   · `showGooglePrompt`      — 10 §UC-GA-006.
+ *   · `explainerGate`         — 18 §UC-PI-013 (a VIEW, but it owns that first login).
+ *   · `showClosedModal` / `showLockedModal` — 18 §UC-PI-006/007, the landing STATE
+ *     modals. They raise themselves with no friend action, exactly like the rest,
+ *     and they are the common case rather than the edge.
+ *   · `showVoucherModal`      — 05 §UC-KG: `onMounted` AWAITS `checkPendingVouchers()`
+ *     and it raises the overlay with no friend action. ⚠ It is the worst one to stack
+ *     on: it is a hand-rolled `fixed inset-0 z-50` teleport while `.modal-layer` is
+ *     `z-index: 200`, so the profile form paints OVER it — measured,
+ *     `elementFromPoint()` over the voucher's own button returned `INPUT.inp` — and the
+ *     decision under it („Toto rozhodnutie je jednorazové a nedá sa zmeniť") is
+ *     irreversible and cannot be dismissed, only answered.
+ *     ⚠ The „ACCEPTED RESIDUAL — the voucher overlay" note further up this file does
+ *     NOT license leaving it out: its whole argument is that `googlePromptEligible` is
+ *     a SEEDED-ONCE ref and an async term would turn that seed into a `watch`. This
+ *     trigger is already a watch, so the term costs nothing that argument was protecting.
+ * Only the first, third and fourth are in clarification (c); the rest were added
+ * deliberately and are each pinned by a test that reds when the term is deleted.
+ *
+ * ⚠ NOT self-raising, so NOT terms (each checked, not assumed): `showInviteModal` and
+ * `showBalancePayment` need a friend's click; `showPasswordChange` / `showPasswordSet`
+ * are FOLDS inside the profile modal, not overlays; the drawer needs the hamburger.
+ *
+ * ⚠ QUEUE BEHIND, NOT IN FRONT. Every term is a `computed`/`ref` that clears in place,
+ * so the profile modal arrives the moment the friend dismisses whatever was there —
+ * which is clarification (c)'s „runs AFTER … resolve", not a race for the same layer.
+ * ⚠ `showMagicPrompt` is NOT a term: its mount is `div.banner[data-testid="magic-prompt"]`,
+ * not a modal, so there is nothing to stack on. (The first draft cited a LINE NUMBER
+ * here and it was wrong twice over — stale when written, and staler once this very
+ * comment grew. Cite the selector.)
+ */
+watch(
+  () => profileAutoOpenArmed.value
+    && !forcedPasswordChange.value
+    && !showCredentialSetup.value
+    && !showGooglePrompt.value
+    && !explainerGate.value
+    && !showClosedModal.value
+    && !showLockedModal.value
+    && !showVoucherModal.value
+    // ⚠ NOT a self-raising surface — a term of a DIFFERENT kind, and the only one.
+    // `openProfileModal()` unconditionally re-seeds all four fields from `props.friend`,
+    // so without this the auto-open can fire on a modal the friend ALREADY HAS OPEN and
+    // wipe what they typed: hydrate is still in flight (`profilePhoneKnown` false, so the
+    // trigger is false), the friend opens Profil from the drawer and starts typing, the
+    // profile GET lands, and the watch re-prefills over them. Narrow and recoverable,
+    // and one term in an expression that already had to be right.
+    && !showProfileModal.value
+    && profilePhoneKnown.value
+    && profilePhoneMissing.value,
+  (ready) => {
+    if (!ready) return
+    // Lowered FIRST, so closing the modal cannot re-arm it and a later flip of any
+    // gate term cannot open it a second time in this session.
+    profileAutoOpenArmed.value = false
+    openProfileModal()
+  },
+  { immediate: true }
+)
+
+// ---------------------------------------------------------------------------
+// 18 §UC-PI-009 — „MOJE OBJEDNÁVKY", THE HISTORY VIEW (PI-T6).
+//
+// The rounds the friend actually ordered in, newest first, each a card with a short
+// badge and a lazily fetched line list. It REPLACES 03 §UC-FL-008's „Archív" fold
+// (supersession map) and it is READ-ONLY: no „Otvoriť" link into the round (PO
+// decision — §UC-PI-009's `OPEN:` resolved to „omitted"; the deep link `/cycle/:id`
+// still exists, history is a reading surface). Nothing here writes anything at all.
+//
+// ⚠ ALL FOUR PIECES OF STATE BELOW LIVE ON THE SESSION SIDE of the parent's
+// `v-if` + `:key="sessionSeq"` — the boundary rule §UC-PI-001 states and this file's
+// header explains: never `localStorage` (friend A's rounds would greet friend B),
+// never a plain `<script>` block (`<script setup>` has no module scope, so a `let`
+// up there is ONE cache shared by every instance the tab ever mounts — CLAUDE.md
+// §Frontend), never the parent (it outlives the session). A `ref` here expires when
+// the session does, with no list to maintain.
+// ---------------------------------------------------------------------------
+
+/**
+ * The ONE expanded round's cycle id, or `null` (§UC-PI-009: „One round expanded at
+ * a time (prototype toggle)"). A single scalar IS the rule — a per-row boolean set
+ * would let two rows be open and would need a second mechanism to stop it.
+ */
+const expandedRound = ref(null)
+
+/**
+ * The per-round line cache: `cycleId → { lines, extras }`, „cached per round for
+ * the session" (§UC-PI-009). Collapsing and re-expanding a round re-renders from
+ * here and fires no second request.
+ *
+ * ⚠ KEYED BY CYCLE ID, and that is the structural half of „a stale response never
+ * writes into another round": every write lands under the id it was fetched for,
+ * and the template reads `roundLines[expandedRound]`, so a response arriving after
+ * the friend moved on paints nothing. The single `lines` ref this view could have
+ * had instead is exactly the defect that shape prevents.
+ */
+const roundLines = ref({})
+
+/**
+ * Per-row pending and per-row error, both keyed the same way (§UC-PI-009:
+ * „per-row pending + a per-row `rowSeq`"; the repo convention for per-row mutations,
+ * CLAUDE.md §Frontend).
+ *
+ * ⚠ PER ROW, NOT ONE FLAG. With one shared flag a round whose lines are already
+ * cached renders „Načítavam..." over them whenever ANOTHER round's request happens
+ * to be in flight — and an error from round A would paint a red banner inside
+ * round B. Measured: one shared pending flag reds `portal-history.spec.js` §4's
+ * first test (mutation M4).
+ */
+const roundPending = ref({})
+const roundError = ref({})
+
+/**
+ * The per-row sequence counters — `cycleId → seq` (§UC-PI-009's `rowSeq`, the
+ * `loadSeq` rule of GSO-T2 applied per row).
+ *
+ * ⚠ A plain `Map`, deliberately NOT a `ref`: nothing renders from it, and a
+ * reactive counter would re-run every computed that touches this view on each
+ * fetch. It is still session-scoped — it is a `const` inside `<script setup>`, i.e.
+ * per INSTANCE, and the instance dies with the session (the same reason
+ * `guestCountSeq` and `inviteSeq` are plain `let`s above).
+ *
+ * ⚠⚠ SAID PLAINLY, because the alternative is a comment promising a test that does
+ * not exist: ON TODAY'S CODE THIS GUARD REDS NOTHING BY ITSELF. Two things already
+ * make a cross-row paint impossible — the cache is keyed by id (above) and
+ * `toggleRound` refuses to start a second fetch while one is pending for that row —
+ * so there is no reachable path where a stale response has anywhere wrong to go.
+ * MEASURED: deleting every `roundSeq` check leaves `portal-history.spec.js` at
+ * 15/15 green (mutation M5). What reds is the realistic FUTURE defect this guard is
+ * here for — a writer who gives this view one shared `lines`/`pending` pair again,
+ * the shape it would have had without the rule (mutation M5′, measured at **3 red**:
+ * §3's „ONE round is expanded at a time" and both of §4's). Kept and documented
+ * rather than quietly dropped, exactly as PI-T5 kept `showLockedModal`'s `hasOrder`
+ * term (learnings 10 §9).
+ */
+const roundSeq = new Map()
+
+/** Rounds with a submitted order, newest first — the list itself (resolved
+ *  conflict 8: „a round without one is not an objednávka"). `GET /friends/cycles`
+ *  already sorts `created_at DESC`, so this is `orderedCycles` verbatim; the drawer's
+ *  item-2 sub-line counts the SAME list, which is what keeps „{n} objednávky" and the
+ *  number of cards on screen from ever disagreeing. */
+const historyRounds = computed(() => orderedCycles.value)
+
+/**
+ * Toggle one round open (and every other one closed).
+ *
+ * The fetch is LAZY — „fetched lazily on first expand … cached per round for the
+ * session" — so a friend with thirty rounds costs one request per round they
+ * actually open, and none for the rest.
+ */
+function toggleRound(cycle) {
+  const id = cycle?.id
+  if (id == null) return
+  if (expandedRound.value === id) {
+    expandedRound.value = null
+    return
+  }
+  expandedRound.value = id
+  // Already fetched, or its request is still in flight: nothing to start. The
+  // second half is what makes a double click one request rather than two.
+  if (roundLines.value[id] || roundPending.value[id]) return
+  loadRoundLines(id)
+}
+
+/**
+ * Fetch one round's lines through the EXISTING endpoint (`GET /orders/cycle/:id/
+ * friend/:id` — §UC-PI-009 names it; no new route, no new payload).
+ *
+ * ⚠ The mapping is `lib/order-lines.js`'s, never a second normaliser: `orderLines()`
+ * computes `price × quantity` from the SNAPSHOT price the server stored at submit
+ * (a price the admin edited after the round locked must not rewrite what the friend
+ * is told they ordered) and `deliveryExtras()` renders `orders.delivery_fee` as an
+ * EXTRA, never as an item — it has never been an `order_items` row.
+ *
+ * ⚠ NO `purposeOrder`: `CartLineList` groups by purpose and this view never loads
+ * the round's catalogue, so there is no category strip to align the groups with.
+ * The component's documented fallback — first-appearance order, i.e. the server's —
+ * is the right answer here and the only available one.
+ */
+async function loadRoundLines(id) {
+  const seq = (roundSeq.get(id) || 0) + 1
+  roundSeq.set(id, seq)
+  roundPending.value[id] = true
+  delete roundError.value[id]
+  try {
+    const data = await api.getOrderByFriend(id, props.friendId)
+    if (roundSeq.get(id) !== seq) return
+    roundLines.value[id] = {
+      lines: orderLines(data?.items),
+      extras: deliveryExtras(data?.order?.delivery_fee),
+      // ⚠ THE TOTAL IS RE-QUOTED FROM THIS FETCH, and that is a fix, not a
+      // convenience (PI-T6 review). The header's `round.orderTotal` comes from
+      // `cycles`, seeded from the auth handshake and **never reloaded in-session** —
+      // `loadCycles()` was deleted with the gear (see the note above), and
+      // `FriendOrder` emits nothing, so a re-submit on the landing updates no row.
+      // The lines below, by contrast, are fetched live. For the CURRENT OPEN round —
+      // which §UC-PI-009 deliberately lists and highlights, and which `PUT /orders`
+      // still accepts — a friend could edit and re-submit on „/", open „Moje
+      // objednávky", expand that round, and read a stale total above lines that sum
+      // to something else. Quoting the fetch keeps the two halves of one card
+      // describing the same order.
+      total: typeof data?.order?.total === 'number'
+        ? roundMoney(data.order.total + (data.order.delivery_fee || 0))
+        : null,
+    }
+  } catch (e) {
+    if (roundSeq.get(id) !== seq) return
+    // The error surface is INSIDE the card (§UC-PI-009), never the page-level
+    // banner: it is one row's failure, and the other rows are fine.
+    roundError.value[id] = e?.message || 'Objednávku sa nepodarilo načítať.'
+  } finally {
+    if (roundSeq.get(id) === seq) roundPending.value[id] = false
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -958,7 +2050,12 @@ function openProfileModal() {
 }
 
 async function saveProfile() {
-  if (!profileName.value.trim()) return
+  // ⚠ 18 §UC-PI-015 — the JS half of the two disabled terms. A `disabled` attribute
+  // does NOT stop a dispatched click reaching the handler (CLAUDE.md), and the modal
+  // can also be submitted from the keyboard, so both required fields are re-checked
+  // here. Mobil joined `name` with PI-T10; the SERVER refuses a blank phone too
+  // (400 `{field:'phone'}`), which is the rule this guard only mirrors.
+  if (!profileName.value.trim() || !profilePhone.value.trim()) return
 
   profileSaving.value = true
   // A retry must not leave the previous attempt's banner standing (RD-FL-3).
@@ -1050,36 +2147,72 @@ async function changePassword() {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Subscriptions (UC-FL-010)
-// ---------------------------------------------------------------------------
+/**
+ * Set a FIRST password (GA-T11) — the fold the change-password one above cannot serve.
+ *
+ * ⚠ The client rules are the SERVER's rules, restated so a mistyped form does not cost
+ * a round trip; the server stays authoritative and its refusals render in the same
+ * banner. Length 8 and the username format are copied from `validateUsername` /
+ * `friends.js` verbatim — if one moves, both move.
+ */
+async function submitFirstPassword() {
+  firstPasswordError.value = ''
 
-function openSubscriptionModal() {
-  subError.value = ''
-  subCoffee.value = subscriptions.value.length === 0 || subscriptions.value.includes('coffee')
-  subBakery.value = subscriptions.value.length === 0 || subscriptions.value.includes('bakery')
-  showSubscriptionModal.value = true
-}
+  const username = firstUsername.value.toLowerCase().trim()
+  if (firstNeedsUsername.value) {
+    if (username.length < 3 || username.length > 30 || !/^[a-z0-9._-]+$/.test(username)) {
+      firstPasswordError.value = 'Meno musí mať 3 – 30 znakov a obsahovať len malé písmená, čísla, bodku, podtržník a pomlčku'
+      return
+    }
+  }
 
-async function saveSubscriptions() {
-  subSaving.value = true
-  // A retry must not leave the previous attempt's banner standing (RD-FL-3).
-  subError.value = ''
+  if (!firstPassword.value || firstPassword.value.length < 8) {
+    firstPasswordError.value = 'Heslo musí mať aspoň 8 znakov'
+    return
+  }
+
+  if (firstPassword.value !== firstPasswordConfirm.value) {
+    firstPasswordError.value = 'Heslá sa nezhodujú'
+    return
+  }
+
+  firstPasswordSaving.value = true
   try {
-    const types = []
-    if (subCoffee.value) types.push('coffee')
-    if (subBakery.value) types.push('bakery')
-    await api.updateSubscriptions(props.friendId, types)
-    subscriptions.value = types
-    showSubscriptionModal.value = false
-    // Reload cycles with new filter
-    await loadCycles()
+    const result = await api.setFirstPassword(
+      props.friendId,
+      firstPassword.value,
+      firstNeedsUsername.value ? username : null
+    )
+
+    // ⚠ The token FIRST and unconditionally: the route invalidates every session of
+    // this friend (including the one this request presented — `change-password`'s
+    // contract, copied), so without handing the re-mint to the parent the friend would
+    // be logged out by succeeding.
+    if (result.token) {
+      emit('token', { token: result.token, expiresAt: result.expiresAt })
+    }
+    // `hasCredentials: true` rides in `result.friend`, so the fold below this one —
+    // the change-password one, keyed on exactly that field — replaces this one in
+    // place, with no reload and no second fetch.
+    if (result.friend) {
+      emit('friend-merged', result.friend)
+    }
+
+    showPasswordSet.value = false
+    firstUsername.value = ''
+    firstPassword.value = ''
+    firstPasswordConfirm.value = ''
   } catch (e) {
-    subError.value = e.message
+    firstPasswordError.value = e.message
   } finally {
-    subSaving.value = false
+    firstPasswordSaving.value = false
   }
 }
+
+// ⚠ Subscriptions (UC-FL-010) — the modal, `openSubscriptionModal()` and
+// `saveSubscriptions()` are RETIRED (18 §UC-PI-016). `api.updateSubscriptions` and
+// `PUT /api/subscriptions/friend/:id` are untouched and still answer 200; the
+// server-side filter in `GET /friends/cycles` is untouched too. Only the UI is gone.
 
 // ---------------------------------------------------------------------------
 // Credential setup (transition mode)
@@ -1243,7 +2376,12 @@ function getInviteUrl() {
 // pair of "open this modal" booleans owned by the parent, which is precisely the
 // session state this extraction exists to keep out of it.
 // ---------------------------------------------------------------------------
-defineExpose({ openProfileModal, openInviteModal })
+// ⚠ `appbar` is exposed as well as the two openers (18 §UC-PI-003): `BrandChrome`
+// is the PARENT's one instance across all three auth states, so the parent has to
+// read the per-view subtitle, the ticker and the lock chip from somewhere — and
+// „somewhere" must not be a ref of its own, or friend A's chrome greets friend B.
+// A `computed` read through the exposed session dies with the session.
+defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
 </script>
 
 <template>
@@ -1281,7 +2419,30 @@ defineExpose({ openProfileModal, openInviteModal })
        further down), so an all-sides utility here would make that locator match
        the column as well and trip Playwright strict mode. RD-FL-8b: was `py-6`
        (24px), which was 8px over on phone and 4px under on desktop. -->
-  <div class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7">
+  <!-- ⚠ `data-testid="portal-landing"` — 18 §UC-PI-019 item 1: THE „portal is
+       ready" MARKER, present in every view and in every landing state. It replaces
+       the heading gate `getByRole('heading', { name: 'Objednávkové cykly' })` that
+       ~30 spec files used to wait on, precisely because that heading is a
+       STRUCTURE this module retires (§UC-PI-005) — a gate tied to one screen's
+       copy cannot survive the screen. Tests reach it through
+       `e2e/helpers/portal.js expectLanding()`, one home, so the next IA change
+       edits one file rather than thirty.
+
+       ⚠ It sits on the PAGE COLUMN, which is the session's only unconditional
+       element: this is a fragment component (the voucher banner is its sibling),
+       so there is no single root to carry it, and the column is the one node that
+       renders in all four views, all three states and behind every modal gate.
+
+       `data-view` publishes `route.meta.view` (§UC-PI-001) and
+       `data-landing-state` the resolver's answer (§UC-PI-002) — the DOM handle
+       those two rules are asserted through while their VIEWS are still being
+       built (PI-T3..T8). Neither is user copy; both are read by e2e only. -->
+  <div
+    class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7"
+    data-testid="portal-landing"
+    :data-view="view"
+    :data-landing-state="landing.state"
+  >
     <!-- ⚠ The page-level error banner. After RD-FL-8a's convergence it has
          exactly ONE writer left — `resolveVoucher` — because the profile,
          subscription and invite failures each render in their own modal body
@@ -1347,346 +2508,593 @@ defineExpose({ openProfileModal, openInviteModal })
       </div>
     </div>
 
-    <!-- Balance Card -->
-    <FriendBalanceCard :friend-id="friendId" />
+    <!-- ⚠ WHAT WAS HERE AND IS GONE (PI-T7, §UC-PI-008): module 03's „Môj účet"
+         balance card, which rendered on EVERY view and in every landing state.
+         A settled or positive balance must never appear on the landing at all —
+         R2.3, a product decision, not an oversight — so the card moved into the
+         „Zostatok a platby" view below and the landing keeps only the debt banner,
+         positioned per state by §UC-PI-005/006/007. -->
 
-    <!-- Section header (UC-FL-006).
+    <!-- ═══════════════ 18 §UC-PI-005 — THE LANDING, OPEN STATE (PI-T3) ═══════════
+         ⚠ WHAT WAS HERE AND IS GONE: module 03's cycle LIST — the „Objednávkové
+         cykly" heading, the „Nastavenia odberu" gear, the `div.p-4` cards with their
+         badge matrix, the UC-FL-007 share row and the UC-FL-008 „Archív" fold
+         (§UC-PI-005/011/016; the two spec files that pinned them,
+         `portal-cycles.spec.js` and `portal-share-row.spec.js`, are deleted in the
+         same commit and their surviving properties moved to `portal-landing.spec.js`
+         / `portal-menu.spec.js`). Nothing gated on the heading any more — PI-T1 moved
+         that gate onto `data-testid="portal-landing"` above, which is why this
+         deletion is safe rather than merely sanctioned.
 
-         ⚠ PINNED: `<h2>` with the accessible name "Objednávkové cykly" —
-         FIVE e2e specs locate it with `getByRole('heading', { name:
-         'Objednávkové cykly' })`. The name concatenates across the `.hl`
-         span, so the highlight costs nothing; the space before the span is
-         load-bearing. `h-screen` is the theme's DISPLAY-HEADING class inside
-         `.app` (UC-DS-001), not Tailwind's height utility — it is blocklisted
-         as a Tailwind candidate in `tailwind.config.js` for exactly this. -->
-    <div class="flex justify-between items-center" style="margin-bottom:14px">
-      <h2 class="h-screen text-[28px] sm:text-[34px]">Objednávkové <span class="hl">cykly</span></h2>
-      <!-- The gear is the ONLY route to the subscription modal, so it takes
-           the house zero-pixel ARIA layer (role + tabindex + Enter/Space) —
-           the same enhancement NeoCheckbox, NeoModal's `.m-x` and the login
-           eye toggle make, and the same rule that kept it OFF the appbar
-           pencil (which merely duplicates `.titles`). The prototype's bare
-           span would be unreachable without a mouse. -->
-      <span
+         ⚠ The CLOSED and LOCKED landings are PI-T4's and PI-T5's. Until they land,
+         those two states render the chrome, the balance card and nothing else —
+         that is the planned increment, not an omission. -->
+
+    <template v-if="view === 'shop' && landing.state === 'open' && landing.currentCycle">
+      <!-- 1. THE STATUS LINE (§UC-PI-005 item 1).
+           „<b>Objednávky do {fmtWeekdayDayMonth(closes_at)}</b> Káva príde okolo
+           {expected_date} — <a>Ako to funguje?</a>"
+
+           · `closes_at` null ⇒ the bare „<b>Objednávky sú otvorené.</b>";
+           · `expected_date` null ⇒ the „Káva príde …" clause is omitted. It is ADMIN
+             FREE TEXT and is rendered VERBATIM (PI-T1: `lib/dates.js` formats the
+             ISO columns, never this one);
+           · the „Ako to funguje?" link renders in BOTH branches — it is the way into
+             the explainer, not a decoration on the deadline sentence.
+
+           ⚠ The date is `fmtWeekdayDayMonth` from `lib/dates.js` — a date standing
+           alone after a preposition is SHORT (PI-T1 §1); `cycle-stages.js` owns the
+           long form only inside module 17's composed sentences. -->
+      <div class="banner slim" data-testid="landing-status">
+        <span class="dot"></span>
+        <div style="min-width:0;overflow-wrap:anywhere">
+          <template v-if="landing.currentCycle.closes_at">
+            <b>Objednávky do {{ fmtWeekdayDayMonth(landing.currentCycle.closes_at) }}</b>
+          </template>
+          <template v-else><b>Objednávky sú otvorené.</b></template>
+          <!-- ⚠ THE EM DASH BELONGS TO THE „Káva príde" CLAUSE, NOT TO THE LINK.
+               §UC-PI-005 writes the sentence as „… Káva príde okolo {expected_date} —
+               <a>Ako to funguje?</a>", and the spec drops only the „Káva príde …" half
+               when `expected_date` is null. Rendering the dash unconditionally left
+               „Objednávky sú otvorené. — Ako to funguje?" — an orphan dash introducing
+               nothing. The LINK survives both branches (it is the way into the
+               explainer, not a decoration on the deadline); only its separator is
+               conditional. ⚠ PO: if a separator is wanted in the bare branch it is a
+               copy decision, not a template one — both branches are pinned in
+               `portal-landing.spec.js`, so changing either is a deliberate edit. -->
+          <template v-if="landing.currentCycle.expected_date">Káva príde okolo {{ landing.currentCycle.expected_date }} —</template>
+          <!-- ⚠ `{{ ' ' }}`, NOT TEMPLATE WHITESPACE. Vue's compiler condenses the
+               whitespace between a `v-if` template and its next sibling, so when the
+               clause above is dropped the link fused onto the sentence:
+               „Objednávky sú otvorené.Ako to funguje?" (measured). An explicit space
+               text node renders in BOTH branches and is what the fallback test's
+               whole-string pin holds. -->
+          {{ ' ' }}<router-link to="/ako-to-funguje" style="font-weight:700">Ako to funguje?</router-link>
+        </div>
+      </div>
+
+      <!-- 2. THE DEBT BANNER (§UC-PI-008) — one of three call sites for ONE
+              component; the debt predicate is `lib/money.js isInDebt()` and lives inside it. -->
+      <DebtBanner :balance="balance" :can-pay="canPayBalance" @pay="openBalancePayment" />
+
+      <!-- 3./4. THE ORDER SURFACE AND ITS `.cartbar` (§UC-PI-005 items 3 and 4).
+           ⚠ ONE HOME, EXTENDED — never forked, never partially copied. The `ref` is
+           how the drawer reaches `openShareDialog()` and `cartTotal` (§UC-PI-011,
+           §UC-PI-004 item 1) without this view holding either.
+
+           ⚠ `:key` on the cycle id: `FriendOrder` loads its order from `onMounted`
+           only and has no watch on its cycle (a lifetime assumption recorded in its
+           own header), so re-pointing the same instance at a different round would
+           leave `order`/`cart`/`paymentVs` from the previous one. The key re-creates
+           it instead, which is the assumption this file must not quietly break. -->
+      <FriendOrder
+        ref="landingOrder"
+        :key="landing.currentCycle.id"
+        mode="landing"
+        :cycle-id="landing.currentCycle.id"
+        :friend-id="friendId"
+      />
+    </template>
+
+    <!-- ═══════════════ 18 §UC-PI-006 — THE LANDING, CLOSED STATE (PI-T4) ═══════
+         R1.3: no open round ⇒ a read-only catalogue behind a dismissible state
+         modal, then a slim banner. `landing.state === 'closed'` means „no `open`
+         and no `locked` round" (`lib/portal-state.js`) — the LOCKED landing is
+         PI-T5's and keeps its own branch. -->
+    <template v-else-if="view === 'shop' && landing.state === 'closed'">
+      <!-- 1. THE STATE MODAL — once per session (see `closedModalDismissed`).
+           ⚠ Its title/intro are passed as PROPS, not baked into the component:
+           §UC-PI-007's no-order LOCKED variant is the same modal with „Objednávky
+           sú uzavreté" (GP-T7, PO 2026-09-24: ~~uzamknuté~~) / „Táto objednávka je už uzavretá — káva je objednaná
+           v pražiarni." and PI-T5 must not need a second one.
+
+           ⚠ `timelineCycle` is `nextCycle ?? catalogCycle` (§UC-PI-006) and it is
+           handed to `CycleTimeline` as `:cycle` — module 17 decides which dot is
+           „now". This view never builds a step array. -->
+      <LandingStateModal
+        v-if="showClosedModal"
+        title="Objednávky sú zatvorené"
+        intro="Káva sa objednáva spoločne, v termínoch — pár dní naraz, potom ju nakúpime v pražiarni a rozdáme si ju."
+        :next-cycle="landing.nextCycle"
+        :next-opening="landing.nextOpening"
+        :timeline-cycle="landing.nextCycle || landing.catalogCycle"
+        @close="dismissStateModal"
+        @explainer="stateModalToExplainer"
+      />
+
+      <!-- 2. …AND AFTER DISMISSAL, THE SLIM BANNER THAT REPLACES IT.
+           ⚠⚠ THIS IS WHERE THE TWO DATE FORMATS MEET, AND IT IS A RECORDED PO
+           QUESTION, NOT A DEFECT WITH AN OWNER. `landing.nextText` is module 17's
+           composed sentence („Ďalšia objednávka sa otvorí približne 3. OKTÓBRA"),
+           while the modal's card sets the same date in display type through 18's
+           `fmtDayMonth` („3. 10."). Both are specified — 17 §UC-CS-005 and 18
+           §UC-PI-002 — for the same sentence, and PI-T1 kept the shipped one
+           because the alternative is a second home for it (learnings 10 §1, both
+           options costed). ⚠ PI-T4 must NOT resolve it at a call site: reformatting
+           either one here is how the second home finally gets created. It is one
+           sentence with one home until the PO rules.
+
+           `white-space:pre-line` because branch 2 of `nextText` is the admin's
+           `plan_note`, verbatim, newlines and all (§UC-PI-002). Kept on ONE source
+           line so the template's own indentation cannot become rendered whitespace. -->
+      <div v-else class="banner warn slim" data-testid="landing-closed-banner">
+        <span class="dot"></span>
+        <div style="min-width:0;overflow-wrap:anywhere;white-space:pre-line"><b>Objednávky sú zatvorené.</b> <span v-if="nextIsNote" data-user-copy>{{ landing.nextText }}</span><template v-else>{{ landing.nextText }}</template></div>
+      </div>
+
+      <!-- 3. THE DEBT BANNER (§UC-PI-008) — „shown in all three landing states". -->
+      <DebtBanner :balance="balance" :can-pay="canPayBalance" @pay="openBalancePayment" />
+
+      <!-- 4. THE READ-ONLY CATALOGUE of `catalogCycle` — the newest `locked` or
+             `completed` round (`lib/portal-state.js`). ⚠ NOT `currentCycle`, which
+             is `null` here by design: a `planned` round has no products a friend
+             may look at. -->
+      <template v-if="landing.catalogCycle">
+        <!-- The caption row is THIS view's (`portal2.jsx:288-290`), above the grid
+             and outside `.p2-ro` so it keeps full contrast. -->
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">
+          <span class="field-lbl" style="min-width:0;overflow-wrap:anywhere">Minulá ponuka · <span data-user-copy>{{ landing.catalogCycle.name }}</span></span>
+          <span class="sub mono" style="white-space:nowrap;font-size:12px">len na prezretie</span>
+        </div>
+
+        <!-- ⚠ THE SAME `FriendOrder`, WITH `readonly` — never a second card
+             template (§UC-PI-006). It brings `.p2-ro` on the cards, disabled
+             steppers, no stock bars, no cartbar, no tabgroup; the `.cat-tabs`
+             strip stays live so every category is browsable.
+
+             ⚠ NO `ref="landingOrder"`: that ref is the OPEN landing's bridge to
+             `cartTotal`, and a closed round has no cart. ⚠ GL-T6c: its OWN ref,
+             `closedOrder`, is drawer item 4's bridge on this landing (`shareHost`) —
+             this mount's dialog is standing-only (`FriendOrder`'s `shareCycleId`
+             is `null` on a `readonly` mount), so the row reaches the one instance
+             without a second one being mounted here. -->
+        <FriendOrder
+          ref="closedOrder"
+          :key="`ro-${landing.catalogCycle.id}`"
+          mode="landing"
+          readonly
+          :cycle-id="landing.catalogCycle.id"
+          :friend-id="friendId"
+        />
+      </template>
+
+      <!-- No locked and no completed round has ever existed ⇒ there is no
+           catalogue to show (§UC-PI-006). This one string replaces BOTH of module
+           03's retired empty states, whose wording §UC-PI-017 forbids. -->
+      <div
+        v-else
+        class="sub"
+        style="text-align:center;padding:24px 0"
+        data-testid="landing-empty"
+      >Ponuka ešte nie je pripravená.</div>
+    </template>
+
+    <!-- ═══════════════ 18 §UC-PI-007 — THE LANDING, LOCKED STATE (PI-T5) ═══════
+         R1.4: the friend ordered, the round is locked ⇒ „where is my coffee".
+
+         ⚠ THE SHIPPED LOCKED TREATMENT IS REPLACED HERE AND NOWHERE ELSE. 04
+         §UC-FO-014's `.banner.warn` („Objednávky sú uzavreté. Už nie je možné
+         meniť objednávku.") and the locked cartbar stay on the `/cycle/:id` deep
+         link, byte for byte — §UC-PI-007's business rule says „replaced on the
+         landing only", `order-locked.spec.js` still pins them there, and
+         `FriendOrder`'s own `readonly` switches are what make the difference.
+
+         ⚠ MONEY: nothing in this branch writes a ledger row. `paid` renders
+         read-only (it is the admin's toggle), `paymentTotal` includes
+         `delivery_fee` for DISPLAY only (04 resolved conflict #9) and
+         `transactions` rows still come only from the friend paid toggle and
+         pack/unpack (CLAUDE.md §Money & data). -->
+    <template v-else-if="view === 'shop' && landing.state === 'locked' && landing.currentCycle">
+      <!-- 1. THE DEBT BANNER (§UC-PI-008) — „above the own-order card in `locked`",
+              and above the no-order variant's modal/banner for the same reason: it
+              is the first thing on this landing, before anything about the round. -->
+      <DebtBanner :balance="balance" :can-pay="canPayBalance" @pay="openBalancePayment" />
+
+      <template v-if="landing.currentCycle.hasOrder">
+        <!-- 2. THE OWN-ORDER CARD (§UC-PI-007 item 2).
+             ⚠ It renders from the EMBEDDED `FriendOrder`'s loaded order — „no
+             second loader" — reached through that component's `defineExpose`
+             (`lockedOwnOrder`). It is deliberately below the mount in the script
+             and above it in the DOM: the card is the page's headline and the grid
+             is the footnote, while the fetch belongs to the component that already
+             owns this order's payment state, its variable symbol and its modal. -->
+        <div
+          v-if="lockedOwnOrder"
+          class="card hl"
+          style="padding:16px"
+          data-testid="own-order-card"
+        >
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+            <!-- ⚠ `line-height` INLINE — `friends-theme.css` loads after Tailwind and
+                 `:where(.app,.modal-layer) .display` matches at the same specificity
+                 as a utility, so the canon's value survives only as a style attribute
+                 (CLAUDE.md §Frontend; the same remedy `LandingStateModal` uses).
+                 ⚠ The canon's value HERE is `1` (`portal2.jsx:350`, and `:356` for the
+                 total below). PI-T5 shipped `.9` — `LandingStateModal`'s 38px date value,
+                 a different element — and PI-T12's `portal-fidelity` pin measured it
+                 (19.8px, not 22px). -->
+            <span class="display" style="font-size:22px;line-height:1">Vaša objednávka</span>
+            <!-- The cycles payload's `hasOrder` is a SUBMITTED order (`routes/
+                 friends.js`), so this badge has no second state to carry. -->
+            <span class="badge ok">Odoslaná</span>
+          </div>
+
+          <!-- ⚠ `CartLineList` — THE one home for an ordered-items list. The Packeta
+               fee arrives as an EXTRA, never an item: `orders.delivery_fee` is a
+               field on the order and has never been an `order_items` row. -->
+          <div style="margin-top:12px">
+            <CartLineList
+              :items="lockedOwnOrder.lines"
+              :extras="lockedOwnOrder.extras"
+              :purpose-order="lockedOwnOrder.purposeOrder"
+              line-testid="own-order-line"
+            />
+          </div>
+
+          <!-- ⚠ `paymentTotal`, i.e. goods + `delivery_fee` (04 resolved conflict
+               #9) — the same number the „Zaplatiť" button and `PaymentModal` bill.
+               `EUR` on a total, `€` on the lines above (CLAUDE.md §Frontend). -->
+          <div class="p2-tot">
+            <span class="field-lbl">Spolu</span>
+            <span
+              class="display"
+              style="font-size:22px;line-height:1"
+              data-testid="own-order-total"
+            >{{ fmtEur(lockedOwnOrder.total) }}</span>
+          </div>
+
+          <!-- The pickup row — EXACTLY ONE of a location name, a free-text note or
+               the Packeta line (`helpers/pickup.js` semantics; the precedence is
+               written out in `FriendOrder`'s `orderPickupText`). Absent entirely
+               when the party has no target yet, rather than an empty badge. -->
+          <div
+            v-if="lockedOwnOrder.pickup.data"
+            style="border-top:2px solid rgba(10,10,10,0.12);margin-top:14px;padding-top:12px"
+          >
+            <!-- ⚠ `inline-flex` AT THE CALL SITE: `.badge` is `inline-block` and
+                 Tailwind preflight makes every `svg` `display:block`, which drops
+                 the glyph onto its own line (CLAUDE.md §Frontend). -->
+            <span
+              class="badge"
+              style="display:inline-flex;align-items:center;gap:6px;white-space:normal;overflow-wrap:anywhere;text-align:left"
+              data-testid="own-order-pickup"
+            >
+              <NeoIcon name="pin" />
+              <!-- `pickup.text` is app copy („Packeta · "), `pickup.data` is typed
+                   (address / location name / note) — marked on its own (FUP-T22). -->
+              <span style="min-width:0">{{ lockedOwnOrder.pickup.text }}<span data-user-copy>{{ lockedOwnOrder.pickup.data }}</span></span>
+            </span>
+          </div>
+
+          <!-- The payment row. ⚠ `paid` is READ-ONLY here: writing it is admin-only
+               (CLAUDE.md §Money & data), and „Zaplatiť" opens the ONE `PaymentModal`
+               that `FriendOrder` already mounts for this order — with the SERVER's
+               variable symbol, which no client derives. The button is absent when
+               no payment settings are configured (§UC-PI-007 item 2). -->
+          <div style="margin-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span v-if="lockedOwnOrder.paid" class="badge ok" data-testid="own-order-paid">Zaplatené</span>
+            <template v-else>
+              <span class="badge warn" data-testid="own-order-paid">Nezaplatené</span>
+              <button
+                v-if="lockedOwnOrder.canPay"
+                type="button"
+                class="btn sm accent"
+                data-testid="own-order-pay"
+                @click="payOwnOrder"
+              >Zaplatiť {{ fmtEur(lockedOwnOrder.total) }}</button>
+            </template>
+          </div>
+        </div>
+
+        <!-- 3. „KDE JE VAŠA KÁVA" (§UC-PI-007 item 3) — module 17's VERTICAL
+               timeline, the first one on the friend portal.
+               ⚠ `:cycle`, never `:steps`: 17 owns the six steps, their labels and
+               the „now" rule (`stageIndex()` reads `status` before `stage`, which is
+               what keeps three measured stale-`stage` transitions invisible). A
+               consumer that assembled steps would own their `state` field and bring
+               all three back on this one screen.
+               ⚠ §UC-PI-007 also names an `order` input („so 17 can mark hand-over on
+               the last steps"); `CycleTimeline` has no such prop — 17 §UC-CS-006 says
+               „No other props" and CS-T2 shipped it that way. Passing one would land
+               as a stray fallthrough ATTRIBUTE on the root div, so it is not passed;
+               the seam 17 did ship for injected content is `steps`, and using it here
+               would be the fork this comment refuses. -->
+        <div class="card" style="padding:16px 16px 4px" data-testid="where-is-my-coffee">
+          <div class="field-lbl" style="margin-bottom:10px">Kde je vaša káva</div>
+          <CycleTimeline variant="vertical" :cycle="landing.currentCycle" />
+        </div>
+
+        <!-- 4. THE NEXT-ROUND BANNER (§UC-PI-007 item 4). See `nextRoundShort` for
+               why its date is the SHORT form and why that is not a call-site
+               resolution of the recorded PO question: this is module 18's own
+               sentence, not module 17's. `pre-line` because branch 2 is the admin's
+               `plan_note`, verbatim; kept on one source line so the template's
+               indentation cannot become rendered whitespace. -->
+        <div class="banner slim" data-testid="landing-next-round">
+          <span class="dot"></span>
+          <div style="min-width:0;overflow-wrap:anywhere;white-space:pre-line"><b>Ďalšia objednávka</b> <template v-if="nextRoundShort.kind === 'date'">približne <b>{{ nextRoundShort.date }}</b></template><template v-else-if="nextRoundShort.kind === 'note'"><span data-user-copy>{{ nextRoundShort.note }}</span></template><template v-else>— dáme vedieť</template> — ponuku si už môžete prezrieť nižšie.</div>
+        </div>
+      </template>
+
+      <!-- „Locked, NO own order" (§UC-PI-007) — the CLOSED-state treatment with two
+           different strings. ⚠ The SAME `LandingStateModal`, parametrised by PI-T4
+           for exactly this; a second modal component is the defect that
+           parametrisation exists to prevent.
+           ⚠ `timelineCycle` is `currentCycle` HERE, not `nextCycle ?? catalogCycle`
+           as in the closed state — and that is the question the prop exists to let
+           the caller answer. „Kde sme teraz" on a locked landing is the round in
+           flight; handing it the PLANNED round would print „Pripravujeme ďalšiu
+           objednávku" over a round whose coffee is at the roastery. -->
+      <template v-else>
+        <LandingStateModal
+          v-if="showLockedModal"
+          title="Objednávky sú uzavreté"
+          intro="Táto objednávka je už uzavretá — káva je objednaná v pražiarni."
+          :next-cycle="landing.nextCycle"
+          :next-opening="landing.nextOpening"
+          :timeline-cycle="landing.currentCycle"
+          @close="dismissStateModal"
+          @explainer="stateModalToExplainer"
+        />
+
+        <!-- ⚠ The same two-format collision the closed banner carries, for the same
+             recorded reason: `landing.nextText` is module 17's composed sentence and
+             must NOT be reformatted at this call site (learnings 10 §1). -->
+        <div v-else class="banner warn slim" data-testid="landing-locked-banner">
+          <span class="dot"></span>
+          <div style="min-width:0;overflow-wrap:anywhere;white-space:pre-line"><b>Objednávky sú uzavreté.</b> <span v-if="nextIsNote" data-user-copy>{{ landing.nextText }}</span><template v-else>{{ landing.nextText }}</template></div>
+        </div>
+      </template>
+
+      <!-- 5. THE READ-ONLY GRID of `currentCycle` (§UC-PI-007 item 5) — shared by
+             both variants above, because a host with no own order is exactly the
+             party §UC-PI-007's tabgroup rule is about.
+             ⚠ Caption „Ponuka · {name}", NOT „Minulá ponuka · …": this round is the
+             current one, it is simply no longer orderable. -->
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">
+        <span class="field-lbl" style="min-width:0;overflow-wrap:anywhere">Ponuka · <span data-user-copy>{{ landing.currentCycle.name }}</span></span>
+        <span class="sub mono" style="white-space:nowrap;font-size:12px">len na prezretie</span>
+      </div>
+
+      <!-- ⚠ `colleagues-tab` IS THE SPLIT PI-T4 LEFT FOR THIS ROW. `readonly` alone
+           used to carry both „the grid is inert" and „there is no tabgroup"; the
+           locked landing needs the first without the second, because a host's
+           hand-over ticks happen precisely now (05 §UC-KG-004). The closed
+           catalogue passes nothing and keeps PI-T4's behaviour.
+           ⚠ `ref="lockedOrder"` — a SEPARATE ref from the open landing's
+           `landingOrder`, whose two readers (the cart total, the share dialog) mean
+           „the OPEN round's live surface". See its note in the script. -->
+      <FriendOrder
+        ref="lockedOrder"
+        :key="`lk-${landing.currentCycle.id}`"
+        mode="landing"
+        readonly
+        colleagues-tab
+        :cycle-id="landing.currentCycle.id"
+        :friend-id="friendId"
+      />
+    </template>
+
+    <!-- ═══════════════ 18 §UC-PI-009 — „MOJE OBJEDNÁVKY" (PI-T6) ════════════════
+         The rounds the friend ordered in, newest first. It replaces 03 §UC-FL-008's
+         „Archív" fold (supersession map), and the word „Archív" itself is gone —
+         §UC-PI-017's vocabulary rule, pinned in `portal-history.spec.js` §5.
+
+         ⚠ READ-ONLY, AND THE MISSING LINK IS A PRODUCT DECISION, NOT AN OVERSIGHT.
+         §UC-PI-009: „Clicking the card toggles; the card does NOT navigate (03
+         resolved conflict #4 is reversed here: the deep link `/cycle/:id` remains
+         available but history is a reading surface)", and its `OPEN:` for an
+         „Otvoriť" link resolved to omitted. Nothing in this block writes anything.
+
+         ⚠ Its own flex column (`portal2.jsx:201`), because the page column is not
+         one — the landing states space themselves through their children. -->
+    <div v-if="view === 'history'" style="display:flex;flex-direction:column;gap:12px">
+      <!-- 28px on phone / 34px on desktop (§UC-PI-009). `.h-screen .hl` is the
+           theme's own accent-block rule (`friends-theme.css:59`) — the size is the
+           only thing this call site supplies, and it does so through Tailwind
+           because the theme deliberately declares no `font-size` for `.h-screen`. -->
+      <h2 class="h-screen text-[28px] sm:text-[34px]">Moje <span class="hl">objednávky</span></h2>
+
+      <!-- EMPTY STATE. „Lists only rounds with `hasOrder`" (resolved conflict 8), so
+           a friend who has browsed but never submitted sees this rather than a list
+           of rounds they had nothing to do with. -->
+      <div
+        v-if="!historyRounds.length"
+        class="sub"
+        style="text-align:center;padding:24px 0"
+        data-testid="history-empty"
+      >
+        <div>Zatiaľ žiadne objednávky.</div>
+        <router-link to="/" style="font-weight:700;text-decoration:underline">Prezrieť aktuálnu ponuku</router-link>
+      </div>
+
+      <!-- ONE CARD PER ROUND. The current round (`open` or `locked`) carries `.hl`,
+           every past one `.flat` (§UC-PI-009).
+
+           ⚠ `role="button"` + `tabindex` + Enter/Space, the repo's idiom for a
+           clickable non-button (`.p2-mi`, the appbar chips): the whole card is the
+           toggle, as in the prototype, and a keyboard must be able to work it.
+           `aria-expanded` is what makes the state audible. -->
+      <div
+        v-for="round in historyRounds"
+        :key="round.id"
+        class="card"
+        :class="round.status === 'open' || round.status === 'locked' ? 'hl' : 'flat'"
+        style="padding:14px;cursor:pointer"
         role="button"
         tabindex="0"
-        aria-label="Nastavenia odberu"
-        title="Nastavenia odberu"
-        style="color:var(--ink-dim);cursor:pointer;display:flex"
-        @click="openSubscriptionModal"
-        @keydown.enter.prevent="openSubscriptionModal"
-        @keydown.space.prevent="openSubscriptionModal"
+        :aria-expanded="expandedRound === round.id"
+        data-testid="history-round"
+        @click="toggleRound(round)"
+        @keydown.enter.prevent="toggleRound(round)"
+        @keydown.space.prevent="toggleRound(round)"
       >
-        <NeoIcon name="gear" />
-      </span>
-    </div>
-
-    <div v-if="cycles.length === 0" class="sub" style="text-align:center;padding:48px 0">
-      Žiadne dostupné cykly
-    </div>
-
-    <template v-else>
-      <!-- Active cycles — `status !== 'completed'`, so PLANNED, OPEN and
-           LOCKED all render here, in the order the API returns them. -->
-      <div v-if="activeCycles.length === 0" class="sub" style="text-align:center;padding:32px 0">
-        Žiadne aktívne cykly
-      </div>
-      <div v-else style="display:flex;flex-direction:column;gap:16px">
-        <!-- ⚠ PINNED: the card root is a `div` carrying the LITERAL class
-             `p-4` (= the prototype's 16px padding). `guest-link.spec.js`'s
-             `cardFor()` is
-               page.locator('div.p-4', { has: getByRole('heading', { name, exact: true }) })
-             so this element must hold BOTH the `<h3>` cycle name and the
-             share button. Consequences that must survive future edits:
-               · nothing else in this view may carry `p-4` while containing a
-                 cycle-name heading — notably the page column above, which is
-                 deliberately `px-4 sm:px-7 py-4 sm:py-7` and NOT `p-4`, or the
-                 locator would match column AND card and trip strict mode;
-               · `p-4` is a Tailwind utility here, not theme CSS. `.card`
-                 itself declares no padding, so it is also the real padding.
-
-             `.card.hl` (open only) is the white card with the 6px magenta
-             shadow; planned cards are inert per UC-FL-006. -->
-        <div
-          v-for="cycle in activeCycles"
-          :key="cycle.id"
-          class="card p-4"
-          :class="{ hl: cycle.status === 'open' }"
-          :style="{
-            cursor: cycle.status === 'planned' ? 'default' : 'pointer',
-            opacity: cycle.status === 'planned' ? 0.85 : 1
-          }"
-          @click="cycle.status !== 'planned' && goToCycle(cycle.id)"
-        >
-          <!-- Header row: name + date on the left, order total + chevron on
-               the right (non-planned only — a planned cycle leads nowhere and
-               has no order). -->
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
-            <div style="min-width:0">
-              <!-- ⚠ PINNED: an `<h3>` whose text content is EXACTLY the cycle
-                   name — no nested spans, no icon, no whitespace-bearing
-                   children. `guest-link.spec.js` matches it with
-                   `{ exact: true }`, and `mobile-no-h-overflow.spec.js:73`
-                   clicks the name text to navigate (the card-level click).
-                   `.display` uppercases via CSS only, so `textContent` and the
-                   accessible name are untouched. -->
-              <h3 class="display" style="font-size:22px;line-height:1;overflow-wrap:anywhere">{{ cycle.name }}</h3>
-              <!-- ⚠ Figtree BOLD (the body face — product decision 2026-08-18,
-                   matching the order screen's status banner; this replaced the
-                   2026-08-13 Noto Sans Condensed pass), not `.mono`. `.mono` is
-                   REMOVED rather than overridden: other specs read `.mono` as
-                   "this is the mono face". `.sub` stays — it carries the colour,
-                   and it is what keeps A10's `line-height:normal` reaching this
-                   row now that `.mono` is gone. `data-testid` exists because the
-                   shipped locators were `.mono.sub` / `.mono` nth(1), which the
-                   2026-08-13 change retired. No font-family here: the body face
-                   is inherited. -->
-              <div
-                v-if="cycle.expected_date"
-                class="sub"
-                data-testid="cycle-date"
-                style="font-weight:700;font-size:14px;margin-top:7px;display:flex;align-items:center;gap:6px"
-              >
-                <NeoIcon name="cal" /> {{ cycle.expected_date }}
-              </div>
-            </div>
-            <div
-              v-if="cycle.status !== 'planned'"
-              style="display:flex;align-items:center;gap:8px;flex-shrink:0"
-            >
-              <!-- `orderTotal` ALREADY includes the delivery fee (the backend
-                   sums `total + delivery_fee`) — never re-add it here. -->
-              <span v-if="cycle.hasOrder" class="display" style="font-size:18px">{{ fmtEur(cycle.orderTotal) }}</span>
-              <span style="color:var(--accent);display:flex"><NeoIcon name="chev" /></span>
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+          <div style="min-width:0">
+            <!-- ⚠ `line-height` INLINE — `friends-theme.css` loads after Tailwind and
+                 `:where(.app,.modal-layer) .display` matches at the same specificity
+                 as a utility, so the canon's value survives only as a style attribute
+                 (CLAUDE.md §Frontend). `overflow-wrap:anywhere` because a cycle name
+                 is admin free text and `min-w-0` alone is not a wrapping rule. -->
+            <div class="display" style="font-size:20px;line-height:1;overflow-wrap:anywhere" data-user-copy>{{ round.name }}</div>
+            <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+              <!-- ⚠ THE SHORT VOCABULARY, owned by `lib/history-badges.js` and
+                   deliberately NOT module 17's long timeline labels — see that
+                   file's header before „fixing" the duplication. -->
+              <span
+                class="badge"
+                :class="historyBadge(round).tone"
+                data-testid="history-badge"
+              >{{ historyBadge(round).text }}</span>
             </div>
           </div>
-
-          <!-- Plan block — the admin's multiline `plan_note`, one line per row
-               via `white-space:pre-line` (the prototype renders an array).
-               ⚠ `overflow-wrap:anywhere` is REQUIRED, not cosmetic, and does a
-               different job from `pre-line`: pre-line keeps one line per row
-               but will not break a long unbreakable token. `plan_note` is free
-               admin text, so a pasted Google Docs/Sheets URL is the obvious
-               real case — without this the whole DOCUMENT scrolled sideways on
-               a phone (531px against a 320px viewport). Neither `.card` nor the
-               page column clips, so the wrap has to happen here. UC-DS-005:
-               minimum supported width 320px with zero horizontal overflow. -->
-          <!-- ⚠ Figtree REGULAR (inherited body face, weight 400 by default —
-               product decision 2026-08-18, same as the date row above), not
-               `.mono`. The inline `line-height:1.7` is unchanged and still the
-               only thing declaring it, so the A9/A10 invariant
-               `portal-fidelity.spec.js` pins (13.5px × 1.7 = 22.95px) survives. -->
-          <div
-            v-if="cycle.plan_note"
-            data-testid="cycle-plan"
-            style="font-size:13.5px;color:var(--ink-faint);margin-top:10px;line-height:1.7;white-space:pre-line;overflow-wrap:anywhere"
-          >{{ cycle.plan_note }}</div>
-
-          <!-- Badge row: type × status × order.
-               ⚠ resolved conflict #1 — NO delivery-method badge (Packeta /
-               pickup) on the portal card any more; it lives on the order
-               screen (module 04) only.
-               ⚠ resolved conflict #6 — the ordered quantity FOLDS INTO the ok
-               badge ("Objednané · 0.25 kg" / "Objednané · 3 ks"); the separate
-               "☕ 0.25 kg" line is dropped.
-               A locked cycle without an order gets NO third badge. -->
-          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px">
-            <span class="badge" :class="cycle.type === 'bakery' ? 'acc-o' : 'solid'">{{ getCycleTypeLabel(cycle.type) }}</span>
-            <span v-if="cycle.status === 'planned'" class="badge muted">Plánovaný</span>
-            <span v-else-if="cycle.status === 'open'" class="badge acc">Otvorený</span>
-            <span v-else class="badge">Uzamknutý</span>
-            <span v-if="cycle.hasOrder" class="badge ok">Objednané · {{ orderQuantityLabel(cycle) }}</span>
-            <span v-else-if="cycle.status === 'open'" class="badge warn">Neobjednané</span>
-          </div>
-
-          <!-- Share row (UC-FL-007) — OPEN cycles only: a locked cycle offers
-               no share affordance at all (pinned `toHaveCount(0)` in
-               `guest-link.spec.js`), and a planned one has nothing to order
-               into yet. It stays the card's LAST child, directly under the
-               badge row, and keeps the whole affordance inside `div.p-4`.
-
-               ⚠ resolved conflict #2 — the VISIBLE label is the prototype's
-               "Zdieľať", while `aria-label="Zdieľať s kolegami"` carries the
-               accessible name `guest-link.spec.js` locates the button by. Both
-               contracts hold with zero spec edits; neither may be dropped in
-               favour of the other.
-
-               ⚠ `@click.stop` is mandatory, not stylistic: the card root
-               navigates on click, so without it the share tap would leave the
-               portal before the dialog could be seen (pinned — after the click
-               the URL stays `/`).
-
-               The left half is context only. `guestSummaries` is filled by a
-               non-blocking, concurrency-capped batch; while it is in flight,
-               has failed, or the host simply has no colleagues yet, the row
-               reads "Objednávate aj pre kolegov?" — there is deliberately no
-               loading or error state, because a missing count costs the host
-               nothing.
-
-               ⚠ The count is a DECLINED phrase plus the quantity ("3 kolegovia
-               · 4 kg") on its own emphasised line, with "objednali cez váš
-               odkaz" underneath — it replaces the `.tabbadge` chip and the
-               single "N | kolegovia cez váš odkaz" line. The host's question
-               here is how much coffee they are collecting for other people, and
-               a bare count answers it only if every colleague buys one bag.
-               `guestQuantityLabel` yields an empty string rather than "0 kg"
-               when there is no weight to show (see it for why), so the "· "
-               separator is conditional on the label, not on the count. -->
-          <div
-            v-if="cycle.status === 'open'"
-            data-testid="share-row"
-            style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:12px;border-top:2px solid rgba(10,10,10,0.12);padding-top:12px"
-          >
-            <span class="sub" style="display:flex;flex-direction:column;gap:1px;min-width:0">
-              <template v-if="guestSummaries[cycle.id]?.count > 0">
-                <span
-                  data-testid="share-row-count"
-                  style="font-weight:700;font-size:15px;color:var(--ink);overflow-wrap:anywhere"
-                >{{ colleaguesLabel(guestSummaries[cycle.id].count) }}<template v-if="guestQuantityLabel(cycle)"> · {{ guestQuantityLabel(cycle) }}</template></span>
-                <span style="overflow-wrap:anywhere">objednali cez váš odkaz</span>
-              </template>
-              <span v-else style="overflow-wrap:anywhere">Objednávate aj pre kolegov?</span>
-            </span>
-            <button
-              type="button"
-              class="btn sm"
-              aria-label="Zdieľať s kolegami"
-              style="flex-shrink:0"
-              @click.stop="openShareDialog(cycle)"
-            >
-              <NeoIcon name="share" /> Zdieľať
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Archive fold (UC-FL-008). Plain UI state: not persisted, not in the
-           URL, default closed — and re-created closed for the next session,
-           because this whole component is. -->
-      <div v-if="archivedCycles.length > 0">
-        <!-- `.chev.open` is the theme's own rotate-90 + accent transition, so
-             the rotation and the colour come from one class, not from
-             Tailwind. Keyboard layer as on the gear: this toggle is the only
-             route to the archived cycles.
-
-             ⚠ `line-height:normal` is not in the prototype and is not
-             decoration — this row and the archive row's name below are PLAIN
-             TEXT with no theme class, so A10's class list cannot reach them and
-             Tailwind preflight's `html{line-height:1.5}` applies. Measured
-             canon-vs-port at 378 and 1180 px: this row 21 px against the canon's
-             16, the row name 22.5 against 18. See friends-theme.css §A10,
-             "WHAT THIS RULE STILL CANNOT REACH". -->
-        <div
-          role="button"
-          tabindex="0"
-          :aria-expanded="showArchive ? 'true' : 'false'"
-          data-testid="archive-toggle"
-          style="display:flex;align-items:center;gap:8px;margin-top:18px;cursor:pointer;font-weight:600;font-size:14px;line-height:normal;color:var(--ink-dim)"
-          @click="showArchive = !showArchive"
-          @keydown.enter.prevent="showArchive = !showArchive"
-          @keydown.space.prevent="showArchive = !showArchive"
-        >
-          <span class="chev" :class="{ open: showArchive }"><NeoIcon name="chev" /></span>
-          <span>Archív ({{ archivedCycles.length }})</span>
-        </div>
-
-        <div v-if="showArchive" style="display:flex;flex-direction:column;gap:12px;margin-top:12px">
-          <!-- Flat 2px-border rows. ⚠ resolved conflict #4: the prototype's
-               archive rows are inert, the repo navigates — repo is canonical
-               for behaviour, so they keep calling `goToCycle`.
-               The name is a plain bold div, NOT a heading: `guest-link.spec.js`
-               matches cycle cards by `div.p-4` + heading, and an archived row
-               must never be able to answer that locator. -->
-          <div
-            v-for="cycle in archivedCycles"
-            :key="cycle.id"
-            class="card flat"
-            style="padding:14px;display:flex;justify-content:space-between;align-items:center;gap:10px;opacity:.85;cursor:pointer"
-            @click="goToCycle(cycle.id)"
-          >
-            <div style="min-width:0">
-              <div style="font-weight:700;font-size:15px;line-height:normal;overflow-wrap:anywhere">{{ cycle.name }}</div>
-              <div style="display:flex;gap:6px;margin-top:7px;flex-wrap:wrap">
-                <span class="badge" style="font-size:10.5px;padding:2px 7px">{{ getCycleTypeLabel(cycle.type) }}</span>
-                <span class="badge muted" style="font-size:10.5px;padding:2px 7px">Dokončený</span>
-              </div>
-            </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+            <!-- `orderTotal` is the server's `total + delivery_fee`, already rounded
+                 (`routes/friends.js`). ⚠ Once the row is EXPANDED the total is re-quoted
+                 from that fetch instead (`roundLines[id].total`), because `cycles` is
+                 seeded at the handshake and never reloaded in-session — see
+                 `loadRoundLines`. Either way the number is the SERVER's; this view still
+                 derives no money. `EUR` on a total, `€` on the lines below.
+                 ⚠ NO inline `line-height`, unlike the name beside it: the canon sets
+                 `fontSize: 18` and nothing else here (`portal2.jsx:211`), so `.display`
+                 is left to A10's `normal`. PI-T6 shipped `.9` (16.2px, measured by
+                 PI-T12's `portal-fidelity` pin). -->
             <span
-              v-if="cycle.hasOrder"
-              class="mono"
-              style="font-size:13px;flex-shrink:0"
-            >{{ fmtEur(cycle.orderTotal) }}</span>
+              class="display"
+              style="font-size:18px"
+              data-testid="history-total"
+            >{{ fmtEur(roundLines[round.id]?.total ?? round.orderTotal) }}</span>
+            <span class="chev" :class="{ open: expandedRound === round.id }"><NeoIcon name="chev" /></span>
           </div>
         </div>
+
+        <!-- THE LAZY BODY. Fetched on first expand, cached per round for the
+             session, per-row pending and per-row error (§UC-PI-009). -->
+        <div v-if="expandedRound === round.id" style="margin-top:12px">
+          <div v-if="roundPending[round.id]" class="sub" data-testid="history-loading">Načítavam...</div>
+          <div v-else-if="roundError[round.id]" class="banner danger slim" data-testid="history-error">
+            <span class="dot"></span>
+            <div style="min-width:0">{{ roundError[round.id] }}</div>
+          </div>
+          <!-- ⚠ `CartLineList` — THE one home for an ordered-items list. The Packeta
+               fee arrives as an EXTRA, never an item (`lib/order-lines.js`). -->
+          <CartLineList
+            v-else-if="roundLines[round.id]"
+            :items="roundLines[round.id].lines"
+            :extras="roundLines[round.id].extras"
+            line-testid="history-line"
+          />
+        </div>
       </div>
-    </template>
+    </div>
+
+    <!-- ═══════════════ 18 §UC-PI-010 — „ZOSTATOK A PLATBY" (PI-T7) ══════════════
+         The whole money picture, on the one screen that is allowed to show a
+         settled balance. It replaces 03 §UC-FL-005's landing card AND the
+         „Transakcie" modal behind it (`FriendTransactionsModal.vue`, deleted in this
+         commit; the supersession map at 18 §7 records both).
+
+         ⚠ Its own flex column (`portal2.jsx:228`), like the history view — the page
+         column is not one. -->
+    <div v-if="view === 'balance'" style="display:flex;flex-direction:column;gap:14px">
+      <!-- 28px on phone / 34px on desktop (§UC-PI-010), the history heading's rule.
+           `.h-screen .hl` is the theme's own accent-block rule; the size is the only
+           thing this call site supplies. -->
+      <h2 class="h-screen text-[28px] sm:text-[34px]">Zostatok <span class="hl">a platby</span></h2>
+
+      <!-- 1. THE ACCOUNT CARD. It reads the SESSION's balance refs (one fetch per
+              session load, re-run on entering this view) and emits `pay`; the modal
+              it opens is mounted once, below. -->
+      <FriendBalanceCard
+        :balance="balance"
+        :payment="balancePayment"
+        :loading="balanceLoading"
+        :error="balanceError"
+        @pay="openBalancePayment"
+      />
+
+      <!-- 2. THE LEDGER — `FriendTransactionList.vue`, lifted verbatim out of the
+              deleted modal (§UC-PI-010 item 2). It owns its own
+              `api.getTransactions` call and its own loading/empty/error copy; being
+              `v-if`-gated here is what makes „reloads on mount" true for it.
+
+              ⚠ NO `.card.flat` WRAPPER, though `portal2.jsx:236` has one: the
+              lifted markup's `.suborder` is ALREADY a bordered, shadowed card
+              (`friends-theme.css:226`), so wrapping it would double-frame the list.
+              §UC-PI-010 says the rows come over VERBATIM, which settles it — the
+              prototype's `.p2-tx` row and its frame are the thing not adopted. -->
+      <FriendTransactionList :friend-id="friendId" />
+    </div>
+
+    <!-- ═══════════════ 18 §UC-PI-012 — „AKO TO FUNGUJE" (PI-T8) ════════════════
+         ⚠ THE WHOLE VIEW IS ONE COMPONENT, and that is the shape PI-T9 needs
+         (§UC-PI-013): the first-login gate is THIS page with `as-gate` true, not a
+         second screen with the same six paragraphs on it. That row passes the flag
+         here and reads `@done`'s `{ hide }`; it edits neither the component nor
+         `lib/roasters.js`.
+
+         ⚠ NO `CycleTimeline` — deliberately, and it is the one thing about this
+         view that will read as an omission. The six phases below ARE module 17's
+         six steps, but as an explanation of the process rather than a report on one
+         round; §UC-PI-012 item 3 says the live timeline is not mounted here and the
+         component's header argues why. `portal-explainer.spec.js` §1 reds on an
+         import of `lib/cycle-stages.js` into either file.
+
+         ⚠ Its own column: the component declares one, like the two views above. -->
+    <PortalExplainer
+      v-if="view === 'explainer'"
+      :as-gate="explainerGate"
+      :parcel-enabled="explainerParcelEnabled"
+      :parcel-fee="explainerParcelFee"
+      @done="onExplainerDone"
+    />
   </div>
 
-  <!-- Subscription modal (UC-FL-010) — `portal.jsx:149-159` node for node.
-       `.m-body` is already `flex-direction:column; gap:12px`, so the children
-       need no wrapper and no spacing of their own. -->
-  <NeoModal
-    v-if="showSubscriptionModal"
-    title="Nastavenia odberu"
-    @close="showSubscriptionModal = false"
-  >
-    <!-- ⚠ This modal's OWN failure surface (RD-FL-8a item 4), and it is not
-         cosmetic. `saveSubscriptions()` leaves the dialog OPEN on failure, so
-         before this the message went to the page banner — which renders BEHIND
-         the scrim, with its dismiss × unreachable. The user saw a modal that had
-         simply "did nothing". Same `.banner.danger.slim` grammar the profile
-         modal and the modern login card use (02 §UC-DS-013). -->
-    <div v-if="subError" class="banner danger slim">
-      <span class="dot"></span>
-      <div style="min-width:0">{{ subError }}</div>
-    </div>
+  <!-- ⚠⚠ THE ONE BALANCE `PaymentModal` IN THE TREE (§UC-PI-008 / §UC-PI-010; 15
+       §UC-PL-007 item 4 RELOCATED, never duplicated). PL-T4 mounted it inside
+       `FriendBalanceCard.vue`; module 18 gives the same debt two surfaces on two
+       different views, so the mount came UP here where both can reach it —
+       `pay-balance` on the card and `debt-banner-pay` in the landing banner both
+       call `openBalancePayment()`.
 
-    <div class="sub">Vyberte, ktoré typy objednávok chcete vidieť:</div>
+       PROPS IN / LINKS OUT: every value is the server's (`balancePaymentBlock()`),
+       and nothing on this side composes a symbol, a reference or an amount.
 
-    <!-- ⚠ Three click zones, one toggle each — RD-FL-2's remember-me pattern,
-         and the reason it exists: a `<label>` only forwards clicks to LABELABLE
-         elements, and `NeoCheckbox` is a `span[role=checkbox]`, so the wrapper
-         forwards nothing by itself. UC-FL-010 requires the whole label surface
-         to toggle, so each zone gets its own mechanism, and exactly once:
-           · the box     → NeoCheckbox's own handler;
-           · the text    → the `@click` on the span;
-           · the padding → `@click.self` on the label, which fires ONLY when the
-             and gap       label itself is the event target. Without `.self` the
-                           label would also catch the two clicks above and
-                           double-toggle them straight back.
-         The label cannot name the checkbox either (same non-labelable reason),
-         hence `aria-label` on the control — otherwise the box announces as an
-         unnamed checkbox.
-         Default magenta, NOT `ok`: green is reserved for hand-over semantics
-         (UC-DS-009). -->
-    <label
-      class="card flat"
-      style="padding:12px 14px;display:flex;align-items:center;gap:12px;cursor:pointer"
-      @click.self="subCoffee = !subCoffee"
-    >
-      <NeoCheckbox v-model="subCoffee" aria-label="Káva" />
-      <span style="font-weight:700" @click="subCoffee = !subCoffee">Káva</span>
-    </label>
-    <label
-      class="card flat"
-      style="padding:12px 14px;display:flex;align-items:center;gap:12px;cursor:pointer"
-      @click.self="subBakery = !subBakery"
-    >
-      <NeoCheckbox v-model="subBakery" aria-label="Pekáreň" />
-      <span style="font-weight:700" @click="subBakery = !subBakery">Pekáreň</span>
-    </label>
-
-    <div class="field-help">Ak nevyberiete nič, zobrazia sa všetky cykly.</div>
-
-    <template #footer>
-      <button type="button" class="btn" :disabled="subSaving" @click="showSubscriptionModal = false">
-        Zrušiť
-      </button>
-      <button type="button" class="btn accent" :disabled="subSaving" @click="saveSubscriptions">
-        {{ subSaving ? 'Ukladám...' : 'Uložiť' }}
-      </button>
-    </template>
-  </NeoModal>
+       ⚠ `close` deliberately does NOT reload the balance: paying through a link
+       changes nothing in the ledger until the admin records the transfer, and a
+       refreshed-looking balance would tell the friend otherwise. No `transactions`
+       row is written anywhere on this surface. -->
+  <PaymentModal
+    v-if="balancePayment"
+    :open="showBalancePayment"
+    :amount="balancePayment.amount"
+    :reference="balancePayment.reference"
+    :iban="balancePayment.iban"
+    :revolut-username="balancePayment.revolut_username"
+    :variable-symbol="balancePayment.variable_symbol"
+    :creditor-name="balancePayment.creditor_name"
+    @close="showBalancePayment = false"
+  />
 
   <!-- Profile modal (UC-FL-009) — the first CLOSABLE form-bearing NeoModal.
        Composed from `portal.jsx:176-199`: same nodes, same inline styles.
@@ -1741,10 +3149,18 @@ defineExpose({ openProfileModal, openInviteModal })
            re-confirmed by FUP-T20's product decision: the admin renames, and
            module 10's Google login likely removes the need entirely). -->
       <div v-if="friend?.username">
-        <label id="pp-profile-username-lbl" class="field-lbl">Užívateľské meno</label>
+        <!-- ⚠ 18 §UC-PI-015 (PI-T10) — the label is „Login", not „Užívateľské meno".
+             §19 (newest) renames THIS row and only this row: the LOGIN SCREEN keeps
+             „Užívateľské meno" (03 §UC-FL-002) and so do both username-setup dialogs
+             further down this file (`pp-first-username`, `pp-setup-username`). The help
+             line is worded „…ktorým sa prihlasujete…" — a VERB — on purpose: FUP-T20's
+             source grep covers this file and the forbidden ADJECTIVE may not appear in
+             it, copy or comment (CLAUDE.md / 07 §UC-IA-007). -->
+        <label id="pp-profile-username-lbl" class="field-lbl">Login</label>
         <div class="copyrow">
           <div class="val" aria-labelledby="pp-profile-username-lbl" data-testid="profile-username">{{ friend.username }}</div>
         </div>
+        <div class="field-help">Meno, ktorým sa prihlasujete. Nemení sa.</div>
       </div>
     </div>
 
@@ -1758,52 +3174,71 @@ defineExpose({ openProfileModal, openInviteModal })
          ⚠ THE GUARD NOW COVERS THIS FILE TOO — see CLAUDE.md / 07 §UC-IA-007: it
          must return nothing for `AdminFriends.vue` AND `FriendPortalSession.vue`,
          which is why no string here (copy or comment) spells out the forbidden
-         adjective. The login is the read-only `Užívateľské meno` box above (and it
+         adjective. The login is the read-only `Login` box above (⚠ relabelled from
+         „Užívateľské meno" by PI-T10, 18 §UC-PI-015 row 1 — this sentence named the
+         old label for eight lines after the label moved, and the grep guard cannot
+         see a stale reference, only a forbidden stem) (and it
          stays read-only by product decision); `friends.name` is the PACKETA
          DELIVERY name, which is why it is required and why the help text says so. -->
     <div>
       <label class="field-lbl" for="pp-profile-name">Meno a priezvisko *</label>
+      <!-- ⚠ `maxlength` ADDED BY PI-T10 (§UC-PI-015 row 2 names 120 = MAX_NAME_LENGTH).
+           It was the ONE server bound on this form with no mirror — measured, not
+           assumed: the field contract test reddened on `maxlength=null` here while the
+           phone/e-mail/Packeta mirrors were all in place. CLAUDE.md's rule („server
+           length bounds are mirrored as maxlength in the UI") had a hole exactly here. -->
       <input
         id="pp-profile-name"
         v-model="profileName"
         class="inp"
+        maxlength="120"
         :disabled="profileSaving"
       />
       <div class="field-help">Celé meno. Uvádza sa na zásielke pri doručení Packetou a vidí ho správca aj kolegovia.</div>
     </div>
 
-    <div>
-      <label class="field-lbl" for="pp-profile-packeta">Adresa Packeta výdajného miesta</label>
-      <input
-        id="pp-profile-packeta"
-        v-model="profilePacketaAddress"
-        class="inp"
-        placeholder="napr. Z-BOX Hlavná 15, Bratislava"
-        :disabled="profileSaving"
-      />
-      <div class="field-help">Predvolená adresa pre doručenie Packetou (voliteľné).</div>
-    </div>
-
     <!-- UC-FC-009: the friend's own contact data. Mobil keeps its format-example
          placeholder (a format example, not a label substitute — the admin modal
-         does the same); Email has NO placeholder (the 2026-08-10 no-placeholder
-         login decision) and carries the vy-form recovery hint verbatim.
-         `maxlength` mirrors the server bounds (MAX_PHONE_LENGTH 32 /
-         MAX_EMAIL_LENGTH 160 — the GSO-T3 mirror convention). -->
+         does the same); E-mail has NO placeholder (the 2026-08-10 no-placeholder
+         login decision). `maxlength` mirrors the server bounds (MAX_PHONE_LENGTH 32 /
+         MAX_EMAIL_LENGTH 160 — the GSO-T3 mirror convention).
+
+         ⚠ 18 §UC-PI-015 (PI-T10) — THE ORDER OF THIS BODY IS THE CONTRACT, and it
+         changed: Login → Meno a priezvisko → Mobil → E-mail → Adresa Packeta. The
+         Packeta address moved to LAST (it is the optional one), and Mobil moved ahead
+         of E-mail because Mobil is now REQUIRED. `portal-profile-modal.spec.js` pins
+         the `.field-help` sequence, so a field moved here without its help moving reds
+         that test. -->
     <div>
-      <label class="field-lbl" for="pp-profile-phone">Mobil</label>
+      <!-- ⚠ REQUIRED since PI-T10 (§UC-PI-015 row 3): the star is not decoration —
+           `PATCH /friends/:id/profile` answers 400 `{field:'phone'}` on a blank phone
+           (this route only; the admin PATCH may still clear one), and „Uložiť" is
+           disabled while it is empty. `type="tel"` is new too. -->
+      <label class="field-lbl" for="pp-profile-phone">Mobil *</label>
       <input
         id="pp-profile-phone"
         v-model="profilePhone"
         class="inp"
+        type="tel"
         maxlength="32"
         placeholder="+421 900 000 000"
         :disabled="profileSaving"
       />
+      <div class="field-help">Pre koordináciu objednávky a odovzdanie.</div>
     </div>
 
+    <!-- ⚠⚠ MODULE 21 SLOT — `friends.whatsapp_opt_in` (18 §UC-PI-015 row 3½, backlog
+         WA-T1). The WhatsApp opt-in `NeoCheckbox` row goes HERE, directly under Mobil
+         and directly above E-mail, and its label + privacy sentence are module 21's
+         strings, not this module's. PI-T10 renders NOTHING for it on purpose: an empty
+         marker is what keeps the field ORDER above stable when the checkbox lands.
+         Do not move this comment when adding fields. -->
+
     <div>
-      <label class="field-lbl" for="pp-profile-email">Email</label>
+      <!-- ⚠ „E-mail", with the hyphen (§UC-PI-015 row 4). It used to be „Email"; the
+           two are DIFFERENT strings to `getByLabel`, which substring-matches, so the
+           rename is a real retarget rather than cosmetics. -->
+      <label class="field-lbl" for="pp-profile-email">E-mail</label>
       <input
         id="pp-profile-email"
         v-model="profileEmail"
@@ -1812,7 +3247,26 @@ defineExpose({ openProfileModal, openInviteModal })
         maxlength="160"
         :disabled="profileSaving"
       />
-      <div class="field-help">Bez e-mailu vám nevieme poslať odkaz na obnovenie prístupu.</div>
+      <!-- ⚠ REPLACES „Bez e-mailu vám nevieme poslať odkaz na obnovenie prístupu."
+           (§UC-PI-015 row 4). The recovery half survives inside the new sentence; the
+           Packeta half is new, and it is why the field is worth keeping at all now
+           that Mobil carries the coordination duty. The ADMIN modal's own hint („Bez
+           e-mailu sa priateľovi nedá poslať…") is a different string on a different
+           surface and is untouched. -->
+      <div class="field-help">Voliteľné. Packeta naň posiela informácie o zásielke; slúži aj na obnovenie prístupu.</div>
+    </div>
+
+    <div>
+      <label class="field-lbl" for="pp-profile-packeta">Adresa Packeta výdajného miesta</label>
+      <input
+        id="pp-profile-packeta"
+        v-model="profilePacketaAddress"
+        class="inp"
+        maxlength="160"
+        placeholder="napr. Z-BOX Hlavná 15, Bratislava"
+        :disabled="profileSaving"
+      />
+      <div class="field-help">Predvolená adresa pre doručenie Packetou (voliteľné).</div>
     </div>
 
     <!-- Password-change fold — only for friends who HAVE a password (repo
@@ -1893,6 +3347,102 @@ defineExpose({ openProfileModal, openInviteModal })
           @click="changePassword()"
         >
           {{ changePasswordSaving ? 'Mením heslo...' : 'Zmeniť heslo' }}
+        </button>
+      </div>
+    </div>
+
+    <!-- FIRST-password fold (GA-T11) — the OTHER half of the fold above, and the two
+         are mutually exclusive by construction: that one needs `hasCredentials` truthy,
+         this one needs it strictly `false`. It exists because the friend it serves
+         could previously see NEITHER — `needsCredentialSetup` fires only in transition
+         mode, and the change fold is hidden exactly when there is nothing to change.
+
+         ⚠ The toggle says "Nastaviť heslo", NOT "Zmeniť heslo", and the difference is
+         pinned in `google-auth.spec.js`: setting a first password and changing an
+         existing one are different acts with different endpoints, and a friend who has
+         never had a password must not be asked for a current one.
+         ⚠ Same two-state trick as the fold above: the toggle reads "Skryť nastavenie
+         hesla" exactly when the submit button exists, so
+         `getByRole('button', { name: 'Nastaviť heslo' })` stays unambiguous in both. -->
+    <div
+      v-if="canSetFirstPassword"
+      data-testid="profile-set-password"
+      style="border-top:2px solid rgba(10,10,10,0.12);padding-top:12px"
+    >
+      <button
+        type="button"
+        class="btn ghost sm"
+        style="color:var(--accent);font-weight:700;padding:0"
+        @click="showPasswordSet = !showPasswordSet"
+      >
+        {{ showPasswordSet ? 'Skryť nastavenie hesla' : 'Nastaviť heslo' }}
+      </button>
+      <div v-if="!showPasswordSet" class="field-help" style="margin-top:6px">
+        Zatiaľ nemáte vlastné heslo. Nastavte si ho a budete sa môcť prihlásiť menom a heslom.
+      </div>
+
+      <div
+        v-if="showPasswordSet"
+        style="display:flex;flex-direction:column;gap:12px;margin-top:12px"
+      >
+        <div v-if="firstPasswordError" class="banner danger slim">
+          <span class="dot"></span>
+          <div style="min-width:0">{{ firstPasswordError }}</div>
+        </div>
+
+        <!-- Rendered only when there is no name to log in with yet. It is the ONE
+             place this view writes `friends.username`, and it writes it exactly once:
+             the server honours it while the column is NULL and never as a rename, so
+             the read-only box at the top of this modal stays the only view of an
+             existing one (FUP-T20's product decision).
+             ⚠ `maxlength` mirrors the server bound (`validateUsername`: 3–30) — the
+             GSO-T3 mirror convention. -->
+        <div v-if="firstNeedsUsername">
+          <label class="field-lbl" for="pp-first-username">Užívateľské meno *</label>
+          <input
+            id="pp-first-username"
+            v-model="firstUsername"
+            class="inp"
+            maxlength="30"
+            autocapitalize="none"
+            autocomplete="username"
+            :disabled="firstPasswordSaving"
+          />
+          <div class="field-help">3 – 30 znakov: malé písmená, čísla, bodka, podtržník a pomlčka.</div>
+        </div>
+
+        <div>
+          <label class="field-lbl" for="pp-first-password">Heslo</label>
+          <input
+            id="pp-first-password"
+            v-model="firstPassword"
+            class="inp"
+            type="password"
+            autocomplete="new-password"
+            :disabled="firstPasswordSaving"
+          />
+          <div class="field-help">Aspoň 8 znakov.</div>
+        </div>
+        <div>
+          <label class="field-lbl" for="pp-first-password-confirm">Potvrdiť heslo</label>
+          <input
+            id="pp-first-password-confirm"
+            v-model="firstPasswordConfirm"
+            class="inp"
+            type="password"
+            autocomplete="new-password"
+            :disabled="firstPasswordSaving"
+            @keyup.enter="submitFirstPassword()"
+          />
+        </div>
+
+        <button
+          type="button"
+          class="btn sm dark"
+          :disabled="firstPasswordSaving || (firstNeedsUsername && !firstUsername) || !firstPassword || !firstPasswordConfirm"
+          @click="submitFirstPassword()"
+        >
+          {{ firstPasswordSaving ? 'Nastavujem heslo...' : 'Nastaviť heslo' }}
         </button>
       </div>
     </div>
@@ -2015,7 +3565,7 @@ defineExpose({ openProfileModal, openInviteModal })
       <button
         type="button"
         class="btn accent"
-        :disabled="!profileName.trim() || profileSaving"
+        :disabled="!profileName.trim() || !profilePhone.trim() || profileSaving"
         @click="saveProfile"
       >
         {{ profileSaving ? 'Ukladám...' : 'Uložiť' }}
@@ -2325,13 +3875,31 @@ defineExpose({ openProfileModal, openInviteModal })
     </template>
   </NeoModal>
 
-  <!-- Share with colleagues (guest link) — shared with FriendOrder -->
-  <GuestShareDialog
-    :open="!!shareCycle"
-    :cycle-id="shareCycle?.id"
-    :cycle-name="shareCycle?.name || ''"
-    @update:open="val => !val && (shareCycle = null)"
+  <!-- The hamburger drawer (18 §UC-PI-004). `v-if`, exactly like every NeoModal
+       on this screen, and for one extra reason of its own: it carries
+       `role="dialog"`, and 28 shipped spec files resolve `getByRole('dialog')`.
+       Rendered-but-hidden it would turn every one of them into a strict-mode
+       violation; mounted only while open, `getByRole('dialog')` still returns
+       exactly one element on every screen that had one before.
+
+       It teleports to `.modal-layer` — never a `position:fixed` child of `.app`,
+       which `.app > * { position:relative; z-index:1 }` would silently flatten
+       (CLAUDE.md §Frontend). `.app .p2-drawer` therefore counts 0. -->
+  <NeoDrawer
+    v-if="menuOpen"
+    :friend-name="friendName"
+    :items="menuItems"
+    @select="onMenuSelect"
+    @logout="onMenuLogout"
+    @close="menuOpen = false"
   />
+
+  <!-- ⚠ THE SECOND `GuestShareDialog` THAT USED TO MOUNT HERE IS GONE (18
+       §UC-PI-011). It served the cycle card's share row; the card is retired, and the
+       dialog now has exactly ONE instance on the friend surface, inside
+       `FriendOrder.vue`. The drawer's „Zdieľať s kolegami" row reaches it through
+       `requestShareDialog()` → the `defineExpose`d `openShareDialog()`. Two instances
+       is how one of them stops receiving updates. -->
 
   <!-- Voucher modal — markup deliberately untouched (out of scope, 00-overview).
        It only needs the teleport: `.app>*{position:relative;z-index:1}`
@@ -2346,8 +3914,16 @@ defineExpose({ openProfileModal, openInviteModal })
         <div class="text-center mb-5">
           <div class="text-4xl mb-2">🎁</div>
           <div class="text-xl font-bold mb-1.5">Máš voucher!</div>
+          <!-- ⚠ COPY-ONLY EDIT (18 §UC-PI-017's table). „z cyklu {name}" → the name in
+               PARENTHESES: the vocabulary rule bans „cyklus" on every friend surface,
+               and this modal is one. Everything else about this modal — its markup,
+               its ty-form, its shadcn look — is deliberately out of scope
+               (00-overview: the voucher modal is out of the restyle).
+               ⚠ `data-user-copy` on the NAME ONLY (FUP-T22): a cycle name is admin
+               free text, and this suite's own fixtures name cycles „… cyklus". The
+               sentence around it is app copy and must stay readable to the sweep. -->
           <div class="text-sm text-muted-foreground">
-            Za tvoju objednávku z cyklu <span class="font-semibold text-foreground">{{ currentVoucher.cycle_name }}</span> ti patrí zľavový voucher.
+            Za tvoju objednávku (<span class="font-semibold text-foreground" data-user-copy>{{ currentVoucher.cycle_name }}</span>) ti patrí zľavový voucher.
           </div>
         </div>
         <div class="bg-muted rounded-xl p-4 text-center mb-5">

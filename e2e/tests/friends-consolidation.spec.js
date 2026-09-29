@@ -1,6 +1,12 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { ackExplainer, expectLanding, logout, openProfile as portalOpenProfile } from '../helpers/portal.js'
 import { DatabaseSync } from 'node:sqlite'
 import { ADMIN_PASSWORD, fixtureEmail } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // FC-T1 / 11 §UC-FC-004,005,007 — the API half of the friends-consolidation module:
 // type guards + bounds on the two admin write routes, the response-stripping
@@ -39,12 +45,14 @@ function uniqueName(label) {
   return `E2E FC ${label} ${uniq}${++seq}`
 }
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data !== undefined ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 // A plain friend via the admin route (valid string name — the same shape
 // invitation-approval.spec.js uses, which UC-FC-008 item 3 keeps working).
@@ -76,9 +84,16 @@ function uniqueUsername(label) {
   return `${String(label).toLowerCase().replace(/[^a-z0-9]/g, '')}`.slice(0, 30 - suffix.length) + suffix
 }
 
-async function makeFriendWithSession(label) {
+// ⚠ 18 §UC-PI-015 (PI-T10) — THE FIXTURE PHONE, and it is load-bearing for the UI
+// half of this file. „Mobil *" is now required and the profile modal AUTO-OPENS on a
+// LOGIN for a friend whose stored phone is empty, so a phone-less fixture that then
+// logs in through the card would find its own modal already up: „Uložiť" disabled,
+// and the drawer (which `openProfile` goes through) behind that modal's scrim. Every
+// friend this helper builds is a friend that logs in, so every one gets a phone —
+// exactly the containment shape PI-T9 used for `ackExplainer` one line below.
+async function makeFriendWithSession(label, { phone = uniquePhone() } = {}) {
   const username = uniqueUsername(label)
-  const friend = await makeFriend(label)
+  const friend = await makeFriend(label, { phone })
   expect((await admin(`/api/friends/${friend.id}/admin-username`, { method: 'put', data: { username } })).status()).toBe(200)
   expect((await admin(`/api/friends/${friend.id}/reset-password`, { method: 'put', data: { password: 'initPass1' } })).status()).toBe(200)
 
@@ -91,7 +106,12 @@ async function makeFriendWithSession(label) {
   })
   expect(chg.status(), 'forced change').toBe(200)
   const token = (await chg.json()).token || first
-  return { id: friend.id, username, token, auth: { Authorization: `Bearer ${token}` } }
+  // ⚠ 18 §UC-PI-013 (PI-T9) — a friend created here has never acknowledged „Ako to
+  // funguje", so a UI LOGIN would send them to `/ako-to-funguje` instead of the
+  // portal this file's UI half measures. One round trip through the real route with
+  // the friend's own session; see `helpers/portal.js ackExplainer`.
+  await ackExplainer(ctx, { id: friend.id, token })
+  return { id: friend.id, username, token, phone, auth: { Authorization: `Bearer ${token}` } }
 }
 
 async function makeInviter(label) {
@@ -287,17 +307,28 @@ test.describe('API — UC-FC-004 name required', () => {
     expect(row.phone).toBe('0900111222')
   })
 
-  test('module-03 pin: PATCH /:id/profile keeps its own "Prihlasovacie meno" message', async () => {
-    // 11 §UC-FC-004 explicitly leaves the friend-profile route's copy to module 03
-    // (it serves FriendPortalSession.vue's pinned label). Only the ADMIN route was
-    // relabelled — this pin fails if the relabel over-reaches.
+  test('PATCH /:id/profile refuses a blank name with the SAME message as the admin route', async () => {
+    // ⚠ FUP-T21 (e2e-immutability case (a), RETARGET not weaken). This test used to pin
+    // the OPPOSITE: that UC-FC-004's relabel must NOT reach `PATCH /:id/profile`, because
+    // that route served the friend portal's own label. FUP-T20 retired that label (the
+    // field is `Meno a priezvisko *`, the Packeta delivery name — `friends.name` never was
+    // a login), so the old copy named a field that no longer exists on screen, and FUP-T21
+    // relabelled the route. The real, current invariant — and what this now pins — is:
+    // a blank/whitespace `name` still 400s (behaviour unchanged, the row is untouched), and
+    // the message is the SAME STRING the admin route uses, because the relabel covers both.
     const friend = await makeFriendWithSession('m03pin')
+    const before = (await friendRow(friend.id)).name
+    expect(before, 'fixture name is non-blank, so the read-back below is not vacuous').toBeTruthy()
     const res = await ctx.patch(`/api/friends/${friend.id}/profile`, {
       headers: friend.auth,
       data: { name: '   ' },
     })
     expect(res.status()).toBe(400)
-    expect((await res.json()).error).toContain('Prihlasovacie meno je povinné')
+    // `toBe`, not `toContain`: the rule this pins is BYTE-IDENTITY with the admin
+    // route's string, so a superset message must red here too.
+    expect((await res.json()).error).toBe('Meno a priezvisko je povinné')
+    // Refusal tests read the row back (CLAUDE.md spec hygiene): the blank never landed.
+    expect((await friendRow(friend.id)).name).toBe(before)
   })
 })
 
@@ -750,14 +781,31 @@ test.describe('API — UC-FC-009 profile contact fields', () => {
     expect(row.phone).toBe('0900101010')
     expect(row.email).toBe(email)
 
-    // Clearing is allowed with NO confirm — null-clears, same as the admin route.
-    const clear = await ctx.patch(`/api/friends/${friend.id}/profile`, {
+    // ⚠ RETARGETED (case (a)) — 18 §UC-PI-015 row 3 (PI-T10) made „Mobil" REQUIRED on
+    // THIS route: `{phone: null}` is now a 400 `{field:'phone'}`. The property this
+    // test exists for is „clearing needs no confirm", and it survives on the field
+    // that is still optional. The phone's refusal (and the fact that the ADMIN route
+    // may still clear one) is pinned in `portal-profile-modal.spec.js`'s PI-T10
+    // route describe.
+    const clearBoth = await ctx.patch(`/api/friends/${friend.id}/profile`, {
       headers: friend.auth,
       data: { phone: null, email: null },
     })
+    expect(clearBoth.status(), 'the phone half is now refused').toBe(400)
+    expect((await clearBoth.json()).field).toBe('phone')
+    row = await friendRow(friend.id)
+    expect(row.phone, 'a refused PATCH writes neither field').toBe('0900101010')
+    expect(row.email, 'a refused PATCH writes neither field').toBe(email)
+
+    // Clearing the E-MAIL alone is allowed with NO confirm — null-clears, same as
+    // the admin route.
+    const clear = await ctx.patch(`/api/friends/${friend.id}/profile`, {
+      headers: friend.auth,
+      data: { email: null },
+    })
     expect(clear.status()).toBe(200)
     row = await friendRow(friend.id)
-    expect(row.phone).toBeNull()
+    expect(row.phone, 'an absent phone is not a clear').toBe('0900101010')
     expect(row.email).toBeNull()
   })
 
@@ -841,13 +889,15 @@ test.describe('UI — UC-FC-009 portal profile modal', () => {
     await page.getByLabel(/^užívateľské meno$/i).fill(friend.username)
     await page.getByLabel(/^heslo$/i).fill('ownPass1')
     await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
   }
 
   // `hydrateCurrentFriend` is fire-and-forget; the username box only exists once
   // the profile GET landed, so it is the hydration gate (portal-profile-modal idiom).
+  // ⚠ RETARGETED BY PI-T2 (18 §UC-PI-019 item 5): the trigger moved from the appbar
+  // `.titles` block to the drawer's „Profil" row. Same wait, same protected property.
   async function openProfile(page) {
-    await page.locator('.appbar .titles').click()
+    await portalOpenProfile(page)
     const dialog = page.getByRole('dialog')
     await expect(dialog.locator('.m-title')).toHaveText('Upraviť profil')
     await expect(dialog.getByTestId('profile-username')).toBeVisible()
@@ -860,22 +910,34 @@ test.describe('UI — UC-FC-009 portal profile modal', () => {
     await uiFriendLogin(page, friend)
     const dialog = await openProfile(page)
 
-    const mobil = dialog.getByLabel('Mobil')
+    // ⚠ RETARGETED (case (a)) — 18 §UC-PI-019 item 11 / §UC-PI-015's field table:
+    // „Mobil" became „Mobil *" (required on the self-edit route) and „Email" became
+    // „E-mail". Both are re-pointed at the mandated labels; every property this test
+    // exists for (`.inp` skin, the maxlength mirror, `type=email`, the placeholder
+    // policy, the verbatim vy-form help) is kept, and `type="tel"` on Mobil joins it.
+    const mobil = dialog.getByLabel('Mobil *')
     await expect(mobil).toBeVisible()
+    await expect(mobil).toHaveAttribute('type', 'tel')
     await expect(mobil).toHaveClass(/\binp\b/)
     await expect(mobil).toHaveAttribute('maxlength', String(BOUNDS.phone))
     // A format example, not a label substitute — the admin modal does the same.
     await expect(mobil).toHaveAttribute('placeholder', '+421 900 000 000')
 
-    const email = dialog.getByLabel('Email')
+    const email = dialog.getByLabel('E-mail')
     await expect(email).toBeVisible()
     await expect(email).toHaveClass(/\binp\b/)
     await expect(email).toHaveAttribute('type', 'email')
     await expect(email).toHaveAttribute('maxlength', String(BOUNDS.email))
-    // NO placeholder on Email (the 2026-08-10 no-placeholder login decision).
+    // NO placeholder on E-mail (the 2026-08-10 no-placeholder login decision).
     await expect(email).not.toHaveAttribute('placeholder', /./)
-    // The pinned vy-form field-help, verbatim (11 §UC-FC-009).
-    await expect(dialog.getByText('Bez e-mailu vám nevieme poslať odkaz na obnovenie prístupu.')).toBeVisible()
+    // The pinned vy-form field-help, verbatim (11 §UC-FC-009 — ⚠ RETARGETED to
+    // §UC-PI-015 row 4's replacement text, case (a): the recovery half survives
+    // inside it, and the Packeta half is the new half).
+    await expect(dialog.getByText('Voliteľné. Packeta naň posiela informácie o zásielke; slúži aj na obnovenie prístupu.')).toBeVisible()
+    // The string it REPLACES is really gone from this dialog. ⚠ The ADMIN modal's own
+    // hint („Bez e-mailu sa priateľovi nedá poslať…") is a DIFFERENT string on a
+    // different surface and is pinned, unchanged, in the UC-FC-003 describe above.
+    await expect(dialog).not.toContainText('Bez e-mailu vám nevieme poslať odkaz na obnovenie prístupu.')
   })
 
   test('round-trip: a friend setting their email removes the admin "Bez e-mailu" badge; clearing it restores it', async ({ page }) => {
@@ -887,8 +949,8 @@ test.describe('UI — UC-FC-009 portal profile modal', () => {
     // The friend fills BOTH fields and saves.
     await uiFriendLogin(page, friend)
     let dialog = await openProfile(page)
-    await dialog.getByLabel('Mobil').fill('0900303030')
-    await dialog.getByLabel('Email').fill(newEmail)
+    await dialog.getByLabel('Mobil *').fill('0900303030')
+    await dialog.getByLabel('E-mail').fill(newEmail)
     await dialog.getByRole('button', { name: 'Uložiť' }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
 
@@ -904,11 +966,11 @@ test.describe('UI — UC-FC-009 portal profile modal', () => {
     // the modal PREFILLS from the saved values, and clearing the email is
     // allowed with NO confirm (11 §UC-FC-009 — the badge is the signal).
     await page.goto('/')
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
     dialog = await openProfile(page)
-    await expect(dialog.getByLabel('Email')).toHaveValue(newEmail)
-    await expect(dialog.getByLabel('Mobil')).toHaveValue('0900303030')
-    await dialog.getByLabel('Email').fill('')
+    await expect(dialog.getByLabel('E-mail')).toHaveValue(newEmail)
+    await expect(dialog.getByLabel('Mobil *')).toHaveValue('0900303030')
+    await dialog.getByLabel('E-mail').fill('')
     await dialog.getByRole('button', { name: 'Uložiť' }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
 
@@ -953,12 +1015,12 @@ test.describe('UI — UC-FC-009 portal profile modal', () => {
       (r) => r.url().includes(`/api/friends/${friend.id}/profile`) && r.request().method() === 'GET' && r.status() === 200
     )
     await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
     await hydrated
 
     const dialog = await openProfile(page)
-    await expect(dialog.getByLabel('Mobil')).toHaveValue('0900404040')
-    await expect(dialog.getByLabel('Email')).toHaveValue(storedEmail)
+    await expect(dialog.getByLabel('Mobil *')).toHaveValue('0900404040')
+    await expect(dialog.getByLabel('E-mail')).toHaveValue(storedEmail)
   })
 
   // ⚠ THE RACE `hydrateCurrentFriend`'s `sessionSeq`/id GUARD EXISTS FOR.
@@ -999,26 +1061,33 @@ test.describe('UI — UC-FC-009 portal profile modal', () => {
     await page.getByLabel(/^užívateľské meno$/i).fill(a.username)
     await page.getByLabel(/^heslo$/i).fill('ownPass1')
     await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
 
     // Log out WITHOUT ever letting A's hydrate resolve — the held GET is still
     // pending in the browser's network layer; app-level logout does not abort it.
-    await page.locator('.appbar span[aria-label="Odhlásiť sa"]').click()
+    await logout(page)
     await expect(page.getByRole('heading', { name: 'Kto klope?' })).toBeVisible()
 
     // Log B in on the SAME document — no reload, so the pending request survives.
     await page.getByLabel(/^užívateľské meno$/i).fill(b.username)
     await page.getByLabel(/^heslo$/i).fill('ownPass1')
     await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
 
     // NOW let A's stale response land — straight into what is now B's session.
     releaseA()
     await page.waitForTimeout(300)
 
+    // ⚠ RETARGETED (case (a), 18 §UC-PI-015): B used to be a contactless friend, so
+    // the leak showed as „B's empty fields are suddenly full". Every friend this
+    // file logs in now carries a phone (the auto-open would otherwise be sitting on
+    // the drawer this line goes through), so the assertion is B'S OWN value instead
+    // of an empty one — which is a STRICTER statement of the same property: A's
+    // response landing would replace it, and the e-mail half is still empty because
+    // only A has one.
     const dialog = await openProfile(page)
-    await expect(dialog.getByLabel('Mobil')).toHaveValue('')
-    await expect(dialog.getByLabel('Email')).toHaveValue('')
+    await expect(dialog.getByLabel('Mobil *')).toHaveValue(b.phone)
+    await expect(dialog.getByLabel('E-mail')).toHaveValue('')
     expect(await page.content(), 'friend A’s email must never render on B’s screen').not.toContain(aEmail)
     expect(await page.content(), 'friend A’s phone must never render on B’s screen').not.toContain(aPhone)
   })
@@ -1047,14 +1116,14 @@ test.describe('UI — UC-FC-009 portal profile modal', () => {
       (r) => r.url().includes(`/api/friends/${friend.id}/profile`) && r.request().method() === 'GET' && r.status() === 200
     )
     await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
     await hydrated
 
     const dialog = await openProfile(page)
     // Non-vacuity: both fields really are populated, so "absent" means the delta
     // suppressed them and not that there was nothing to send.
-    await expect(dialog.getByLabel('Mobil')).toHaveValue('0900505050')
-    await expect(dialog.getByLabel('Email')).toHaveValue(storedEmail)
+    await expect(dialog.getByLabel('Mobil *')).toHaveValue('0900505050')
+    await expect(dialog.getByLabel('E-mail')).toHaveValue(storedEmail)
 
     // Change something ELSE so there is a real save to inspect.
     const packeta = dialog.getByLabel(/Adresa.*Packet/i)
@@ -1085,7 +1154,7 @@ test.describe('UI — UC-FC-009 portal profile modal', () => {
 
     // `maxlength` blocks over-bound TYPING, so the reachable server rejection is
     // the @-leniency one — a real 400 through the real modal.
-    await dialog.getByLabel('Email').fill('chyba-bez-zavinaca')
+    await dialog.getByLabel('E-mail').fill('chyba-bez-zavinaca')
     await dialog.getByRole('button', { name: 'Uložiť' }).click()
     const banner = dialog.locator('.banner.danger.slim')
     await expect(banner).toHaveCount(1)

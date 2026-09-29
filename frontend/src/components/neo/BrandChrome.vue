@@ -32,6 +32,15 @@ const props = defineProps({
   // (`.appbar .titles .t`) — the wordmark override is a bare
   // `<span class="t">Pod<span style="color:var(--accent)">pult</span>ovka</span>`
   // and must keep its `.titles` ancestor to pick up the display font.
+  //
+  // ⚠ THE FALLBACK'S TWO SPANS CARRY `data-user-copy` (FUP-T22 / 18 §UC-PI-017), and
+  // that is a statement about the ONE consumer that uses the fallback:
+  // `FriendOrder.vue` passes the CYCLE NAME as `title` and the FRIEND'S NAME as
+  // `subtitle` — both person-typed, both free text. Every other consumer fills the
+  // `#titles` slot with the wordmark, which is app copy and is NOT marked, so
+  // `portal-vocabulary.spec.js`'s rendered sweep still reads „Podpultovka" and every
+  // view subtitle. A consumer that ever passes APP copy through these props would be
+  // hiding it from that sweep — fill the slot instead.
   title: { type: String, default: '' },
   subtitle: { type: String, default: '' },
   ticker: {
@@ -103,8 +112,8 @@ defineOptions({ inheritAttrs: false })
     <slot name="leading" />
     <div class="titles" v-bind="titlesAttrs">
       <slot name="titles">
-        <span class="t">{{ title }}</span>
-        <span v-if="subtitle" class="s">{{ subtitle }}</span>
+        <span class="t" data-user-copy>{{ title }}</span>
+        <span v-if="subtitle" class="s" data-user-copy>{{ subtitle }}</span>
       </slot>
     </div>
     <slot name="after-titles" />

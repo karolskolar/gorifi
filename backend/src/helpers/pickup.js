@@ -26,8 +26,9 @@ import { bindValue } from './bind-value.js';
 // screen then reading back its own half. `pickupTargetFor()` answers "does an
 // `orders` row exist", which is a fact about the database and not about the caller.
 //
-// ⚠ NOTHING HERE TOUCHES MONEY except the Packeta clearance below, which is
-// explicitly asked for and provably ledger-neutral (see `applyPickup`).
+// ⚠ NOTHING HERE TOUCHES MONEY except the two Packeta clearances below — the friend
+// one in `applyPickup` and the guest one in `applyGuestDelivery` (GP-T5) — which are
+// explicitly asked for and provably ledger-neutral.
 
 /**
  * The row a party's pickup is stored on, or null when there is nowhere to put one
@@ -44,6 +45,44 @@ export function pickupTargetFor(cycleId, friendId) {
   if (link) return { kind: 'guest_link', row: link };
 
   return null;
+}
+
+/**
+ * Is this pickup point referenced by ANY party's pickup, in either store?
+ *
+ * ⚠ FUP-T23 — THE SAME TWO-STORE RULE AS `pickupTargetFor()`, ASKED THE OTHER WAY
+ * ROUND, and it belongs here for exactly the reason that one does.
+ * `DELETE /api/pickup-locations/:id` used to guard itself with a hand-written
+ * `SELECT COUNT(*) FROM orders WHERE pickup_location_id = ?` — `orders` ONLY. A host
+ * with no own order keeps their pickup on `guest_order_links`, so their reference was
+ * invisible to that count and the row was really deleted: the party's pickup point
+ * silently became a dangling id. Data loss, reached through the public API alone
+ * (found by DP-T2 while it was building a dangling-label fixture).
+ *
+ * The fix is not a second `COUNT` at the call site — that would be a THIRD statement
+ * of "where does a party's pickup live", and it would drift the next time the rule
+ * moves (module 20 adds guest Packeta). Callers ask this module; this module answers.
+ *
+ * ⚠ DELIBERATELY BROADER THAN `pickupTargetFor()`: it counts a reference in EITHER
+ * table, not only in the one that is effective today. A friend with an `orders` row
+ * can also carry a stale `guest_order_links.pickup_location_id` that would become the
+ * effective store the moment the order row went away — and a delete guard that is
+ * wrong in the conservative direction only keeps a row nobody can see any more, while
+ * being wrong the other way destroys a reference that is live.
+ */
+export function pickupLocationInUse(rawId) {
+  const id = bindValue(rawId);
+  // Fail CLOSED (the `helpers/stock.js` NaN rule): an id this module cannot bind is
+  // an id whose references it cannot count, and the safe answer for a DELETE guard is
+  // "in use". The route resolves the row first, so this is a backstop, not a path.
+  if (id === undefined) return true;
+
+  const row = db.prepare(`
+    SELECT (SELECT COUNT(*) FROM orders             WHERE pickup_location_id = ?)
+         + (SELECT COUNT(*) FROM guest_order_links  WHERE pickup_location_id = ?) AS count
+  `).get(id, id);
+
+  return (row?.count || 0) > 0;
 }
 
 /** An active pickup location by id, or null — including for an unbindable id. */
@@ -110,6 +149,43 @@ export function applyPickup(target, value) {
 }
 
 /**
+ * The admin's correction of a GUEST sub-order's delivery back to „cez {host}"
+ * (GP-T5, 20 §UC-GP-009 / D5) — the guest mirror of `applyPickup`'s Packeta clearance
+ * above, and it lives HERE for the reason this module exists: „where does this party
+ * get its bag, and what does that cost" has one home.
+ *
+ * `value` is `{ method: 'via_host' }` — the ONLY method v1 accepts (PO: the admin
+ * cannot SET a Packeta point for a guest; the guest's own edit URL is the recovery
+ * path). The route has already refused every other body.
+ *
+ * Writes exactly TWO literal columns: `packeta_address = NULL, delivery_fee = 0`.
+ * ⚠ It does NOT touch `delivery_fee_paid` — that snapshot has exactly TWO writers
+ * (`softCancelGuestOrder` + the paid toggle, learnings 12 §6, source-pinned). On a PAID
+ * row the snapshot the tick froze survives as a TRACE only: the switch SETTLES the fee
+ * (the admin returns it by hand at the confirm — orchestrator decision 2026-09-23,
+ * option (a), PENDING PO, learnings 12 §31), and `/unpaid` stops counting the snapshot
+ * once `packeta_address` is NULL, so ~~a later cancel still refunds items + the fee~~ a
+ * later cancel refunds the items only.
+ * ⚠ No `transactions` row and nothing else — ledger-neutral by construction (guests
+ * have no ledger at all). `pickupTargetFor()` stays host-keyed and untouched: a guest
+ * is not a pickup party of the link; the via_host bag inherits the host's pickup.
+ *
+ * Returns `{ cleared_parcel, parcel_fee_removed }` exactly like `applyPickup`.
+ */
+export function applyGuestDelivery(guestOrder, value) {
+  if (!value || value.method !== 'via_host') {
+    throw new Error('applyGuestDelivery: only { method: "via_host" } is supported');
+  }
+  const clearedParcel = !!guestOrder.packeta_address || (guestOrder.delivery_fee || 0) > 0;
+  const feeRemoved = clearedParcel ? (guestOrder.delivery_fee || 0) : 0;
+
+  db.prepare('UPDATE guest_orders SET packeta_address = NULL, delivery_fee = 0 WHERE id = ?')
+    .run(guestOrder.id);
+
+  return { cleared_parcel: clearedParcel, parcel_fee_removed: feeRemoved };
+}
+
+/**
  * The effective pickup of a party, in the uniform shape both admin payloads publish.
  * Reads through the same target resolution as the write, so a screen can never show
  * one store while the picker writes the other.
@@ -132,7 +208,14 @@ export function pickupOf(row) {
     // ⚠ Looked up WITHOUT `active = 1`: a location soft-deleted after an order chose
     // it must still render its name, or the badge would go blank on a party whose
     // pickup is perfectly well defined (`DELETE /api/pickup-locations/:id`
-    // deactivates rather than deletes once an order references it).
+    // deactivates rather than deletes once ~~an order~~ **anything** references it —
+    // `pickupLocationInUse()` above, FUP-T23; it used to count `orders` alone).
+    //
+    // ⚠ THE SAME RULE HAS A SECOND HOME: `helpers/delivery.js` `locationRow()`
+    // (DP-T1), which labels the distribution board's groups. Reuse was not clean —
+    // that one answers a different shape — so the two copies must be changed
+    // TOGETHER: drop the rule in one place only and the board's group title
+    // disagrees with this badge for the same party.
     pickup_location_name: location ? location.name : null,
   };
 }

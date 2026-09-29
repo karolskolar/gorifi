@@ -1,5 +1,6 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // RD-GX-3 — `GuestOrderStatus.vue` on the Neobrutal shell: 06 §UC-GX-006 (the read
 // view's four states), §UC-GX-007 (edit mode) and §UC-GX-008 (the shared cancel
@@ -36,12 +37,14 @@ const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
 const PHONE = { width: 378, height: 900 }
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 let hostSeq = 0
 async function makeHost(label) {
@@ -250,14 +253,14 @@ test.describe('RD-GX-3 · the `.app` root (§UC-GX-006)', () => {
 
     const subtitle = page.locator('.appbar .titles .s')
     await expect(page.locator('.appbar'), 'one chrome, not one per branch').toHaveCount(1)
-    await expect(subtitle).toHaveText('Vaša objednávka')
+    await expect(subtitle).toHaveText('Tvoja objednávka')
 
     await page.getByTestId('start-edit').click()
     await expect(subtitle).toHaveText('Úprava objednávky')
     await expect(page.locator('.appbar'), 'remounting would restart the ticker').toHaveCount(1)
 
     await page.getByTestId('abort-edit').click()
-    await expect(subtitle).toHaveText('Vaša objednávka')
+    await expect(subtitle).toHaveText('Tvoja objednávka')
   })
 })
 
@@ -353,7 +356,14 @@ test.describe('RD-GX-3 · the read view, four states (§UC-GX-006)', () => {
     await expect(banner).toHaveClass(/\bslim\b/)
     // Resolved conflict #1: guest.jsx's SHORT wording wins over the README's, which
     // additionally promised a cancel the backend 409s after the lock.
-    await expect(banner).toHaveText('Objednávanie v tomto cykle je uzavreté, objednávku už nie je možné upraviť.')
+    //
+    // ⚠ RETARGETED BY CS-T4 (17 §UC-CS-008 / §UC-CS-009 item 5) — sanctioned, and
+    // case (a) of the e2e-immutability rule: the protected property („read-only is
+    // explained, in the guest's own terms") is unchanged; only the VOCABULARY moved,
+    // because „cyklus" is an admin word (00-overview glossary, 17 resolved conflict
+    // 2). The other seven `status-readonly` pins in this file assert visibility and
+    // classes and needed no edit.
+    await expect(banner).toHaveText('Objednávky sú uzavreté, objednávku už nie je možné upraviť.')
 
     await expect(page.getByTestId('start-edit')).toHaveCount(0)
     await expect(page.getByTestId('cancel-order'), 'a PUT would 409 here — do not offer it').toHaveCount(0)
@@ -434,7 +444,7 @@ test.describe('RD-GX-3 · the read view, four states (§UC-GX-006)', () => {
     await page.goto(`/g/${link.token}/o/${created.order.order_token}`)
 
     const first = host.name.split(' ')[0]
-    await expect(page.locator('.sub').first()).toHaveText(`Vaša objednávka · organizuje a odovzdá ${first}`)
+    await expect(page.locator('.sub').first()).toHaveText(`Tvoja objednávka · organizuje a odovzdá ${first}`)
 
     // ⚠ 2026-08-12: this list is `components/CartLineList.vue` — the same component
     // the host's colleague view and both cart bars render. The size left the name
@@ -473,7 +483,7 @@ test.describe('RD-GX-3 · edit mode (§UC-GX-007)', () => {
 
     // The intro banner names whose order is being edited.
     const intro = page.locator('.banner.slim').first()
-    await expect(intro).toContainText('Upravujete objednávku pre')
+    await expect(intro).toContainText('Upravuješ objednávku pre')
     await expect(intro.locator('b')).toHaveText(IDENTITY.guest_name)
 
     // Seeded from the PERSISTED items, not from an empty grid.

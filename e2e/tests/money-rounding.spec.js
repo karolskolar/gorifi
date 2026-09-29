@@ -1,4 +1,9 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding, gotoCycle as portalGotoCycle } from '../helpers/portal.js'
 import { DatabaseSync } from 'node:sqlite'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 // ⚠ CROSS-TREE IMPORT, DELIBERATE — the same precedent (and the same reason) as
@@ -8,6 +13,7 @@ import { ADMIN_PASSWORD } from '../fixtures.js'
 // A second copy under `e2e/` would let the two drift.
 import { encode, decode, PaymentOptions, CurrencyCode, Version } from '../../frontend/node_modules/bysquare/lib/index.js'
 import QRCode from '../../frontend/node_modules/qrcode/lib/index.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE PRODUCTION MONEY BUG, and the rule that closes it.
@@ -61,13 +67,15 @@ function expect2dp(value, label) {
   expect(value, `${label} = ${value} carries float noise past 2 decimals`).toBe(round2(value))
 }
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-    timeout: TIMEOUT,
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+  timeout: TIMEOUT,
+})
 
 /**
  * A friend with real credentials and a Bearer session. Each test that touches a
@@ -590,8 +598,19 @@ test.describe('the guest sub-order (control)', () => {
 
 const IBAN = 'SK31 1200 0000 1987 4263 7541'
 
-/** Reproduces `FriendOrder.generateSuccessQr()` in Node, for a given amount. */
-function independentQr(amount, reference) {
+/**
+ * Reproduces `FriendOrder.generateSuccessQr()` in Node, for a given amount.
+ *
+ * ⚠ SANCTIONED EDIT — 15 §UC-PL-009 item 2 (PL-T4). `variableSymbol` was `''` at both
+ * friend encode sites until module 15; it is now `String(order.id)` (§UC-PL-001: a
+ * friend order's variable symbol IS its order id), so this independent encode takes it
+ * as a parameter. `beneficiary.name` deliberately STAYS `'Gorifi'`: `primePage()`'s
+ * `payment-settings` mock below carries no creditor name, and §UC-PL-004/D3 makes
+ * `creditorName || 'Gorifi'` the fallback — so that absence is now ALSO what this file
+ * proves. The drifting-vs-rounded amount logic, which is what this file is about, is
+ * untouched.
+ */
+function independentQr(amount, reference, variableSymbol) {
   const t = new Date()
   const dateStr = t.getFullYear().toString()
     + (t.getMonth() + 1).toString().padStart(2, '0')
@@ -603,7 +622,7 @@ function independentQr(amount, reference) {
       amount,
       currencyCode: CurrencyCode.EUR,
       paymentDueDate: dateStr,
-      variableSymbol: '',
+      variableSymbol,
       constantSymbol: '',
       specificSymbol: '',
       originatorsReferenceInformation: '',
@@ -704,9 +723,11 @@ async function primePage(page, friend) {
 
 /** A cold deep-link to /cycle/:id bounces to `/` — enter through the portal. */
 async function gotoCycle(page, cycle) {
-  await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
-  await page.getByRole('heading', { name: cycle.name, exact: true }).click()
+  // ⚠ PI-T3 · 18 §UC-PI-019 item 3 — the cycle CARDS are retired (§UC-PI-005), so
+  // `goto('/')` + a heading click is no longer a route to an order screen.
+  // `portalGotoCycle` (helpers/portal.js) is the ONE home of that navigation; it
+  // still enters cold and still proves state came back from the server.
+  await portalGotoCycle(page, cycle.id)
   await expect(page.locator('.app .cartbar')).toBeVisible()
 }
 
@@ -715,14 +736,17 @@ async function gotoCycle(page, cycle) {
  * `expected` — and that the DRIFTING candidate really is a different payload, so
  * the comparison cannot be vacuous.
  */
-async function expectQrAmount(page, dialog, friend, cycle, expected, drifting) {
+async function expectQrAmount(page, dialog, friend, cycle, expected, drifting, orderId) {
   await expect(dialog.locator('.qr img')).toBeVisible()
   const scanned = await readModules(page)
   expect(scanned.error).toBeUndefined()
 
   const reference = `${friend.name} / ${cycle.name}`
-  const good = independentQr(expected, reference)
-  const bad = independentQr(drifting, reference)
+  // The VS is the order id at BOTH friend encode sites (15 §UC-PL-007 item 1), so the
+  // same expectation serves the success modal and the shared Platba modal.
+  const vs = String(orderId)
+  const good = independentQr(expected, reference, vs)
+  const bad = independentQr(drifting, reference, vs)
 
   expect(drifting, 'the drifting candidate really drifts').not.toBe(expected)
   expect(bad.qrString, 'float noise reaches the payload verbatim').not.toBe(good.qrString)
@@ -741,7 +765,7 @@ test.describe('the Pay-by-Square QR', () => {
     const cycle = await makeCycle('Q1')
     const a = await addProduct(cycle.id, { name: `Qr Sinaloa ${uniq}`, purpose: 'Espresso', price_1kg: 15.0 })
     const b = await addProduct(cycle.id, { name: `Qr Druha ${uniq}`, purpose: 'Espresso', price_250g: 11.19 })
-    await cart(friend, cycle.id, [
+    const { order } = await cart(friend, cycle.id, [
       { product_id: a.id, variant: '1kg', quantity: 1 },
       { product_id: b.id, variant: '250g', quantity: 1 },
     ])
@@ -759,7 +783,7 @@ test.describe('the Pay-by-Square QR', () => {
     // exactly how this reached production. Asserting it is the control, not the find.
     await expect(d.locator('.banner.ok.slim b.mono')).toHaveText('26.19 EUR')
 
-    await expectQrAmount(page, d, friend, cycle, 26.19, 15.0 + 11.19)
+    await expectQrAmount(page, d, friend, cycle, 26.19, 15.0 + 11.19, order.id)
   })
 
   test('⚠ the shared PaymentModal rounds its own payload, on the same order', async ({ page }) => {
@@ -772,7 +796,7 @@ test.describe('the Pay-by-Square QR', () => {
     const cycle = await makeCycle('Q3')
     const a = await addProduct(cycle.id, { name: `Qr3 Sinaloa ${uniq}`, purpose: 'Espresso', price_1kg: 15.0 })
     const b = await addProduct(cycle.id, { name: `Qr3 Druha ${uniq}`, purpose: 'Espresso', price_250g: 11.19 })
-    await cart(friend, cycle.id, [
+    const { order } = await cart(friend, cycle.id, [
       { product_id: a.id, variant: '1kg', quantity: 1 },
       { product_id: b.id, variant: '250g', quantity: 1 },
     ])
@@ -793,7 +817,7 @@ test.describe('the Pay-by-Square QR', () => {
     await expect(d.locator('.m-title')).toHaveText('Platba')
     await expect(d).toContainText('26.19 EUR')
 
-    await expectQrAmount(page, d, friend, cycle, 26.19, 15.0 + 11.19)
+    await expectQrAmount(page, d, friend, cycle, 26.19, 15.0 + 11.19, order.id)
   })
 
   test('⚠ the DELIVERY-FEE addition cannot re-introduce the drift', async ({ page }) => {
@@ -804,7 +828,7 @@ test.describe('the Pay-by-Square QR', () => {
     for (const [i, price] of [9.04, 13.33, 11.19].entries()) {
       p.push(await addProduct(cycle.id, { name: `Qr2 ${i} ${uniq}`, purpose: 'Espresso', price_250g: price }))
     }
-    await cart(friend, cycle.id, p.map((x) => ({ product_id: x.id, variant: '250g', quantity: 1 })))
+    const { order } = await cart(friend, cycle.id, p.map((x) => ({ product_id: x.id, variant: '250g', quantity: 1 })))
 
     await primePage(page, friend)
     await gotoCycle(page, cycle)
@@ -816,6 +840,6 @@ test.describe('the Pay-by-Square QR', () => {
     await expect(d).toContainText('Hotovo!')
     await expect(d.locator('.banner.ok.slim b.mono')).toHaveText('37.06 EUR')
 
-    await expectQrAmount(page, d, friend, cycle, 37.06, 9.04 + 13.33 + 11.19 + 3.5)
+    await expectQrAmount(page, d, friend, cycle, 37.06, 9.04 + 13.33 + 11.19 + 3.5, order.id)
   })
 })

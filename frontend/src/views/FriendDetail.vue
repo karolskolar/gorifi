@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, watchEffect } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
 import { Card, CardContent } from '@/components/ui/card'
@@ -30,6 +30,103 @@ const friendId = route.params.id
 
 onMounted(async () => {
   await loadData()
+  // Non-blocking and AFTER the detail: the standing row is a tool on this page, never
+  // a precondition for it (its own error line, below).
+  await loadStanding()
+})
+
+// ── 19 PO block 2026-09-19 (GL-T6) — the friend's STANDING guest link ────────────
+//
+// The admin's read + „Vygenerovať nový" over `GET/POST /api/friends/:id/guest-link/
+// standing[/regenerate]` — one helper, two guards (GL-T1). The PO's case: a host who
+// cannot reach their own share dialog and asks the admin for their link.
+//
+// ⚠ THE TOKEN NEVER REACHES THE DOM — not as text, not as an attribute, not in a
+// bound value. `standingPath` holds it in JS only; the URL is composed at CLICK time
+// and handed to the clipboard (CycleDetail's §UC-GR-007 admin rule: a rendered token
+// is a credential in every screenshot and screen-share).
+//
+// ⚠ PO-VISIBLE FACT: the admin GET MINTS LAZILY (19 D1, GL-T1 §8), so merely OPENING
+// this page gives the friend a standing token — a gradual back-fill of every friend the
+// admin opens (module 19 has no bulk back-fill). Kept deliberately (orchestrator,
+// GL-T6): a read that answered „none yet" would leave the admin nothing to forward.
+// An INACTIVE friend with NO token is never minted one — the route answers 409
+// `inactive_host`, rendered as the stated refusal with no control; one WITH a token
+// keeps it copyable and rotatable (revocation matters most for a deactivated host).
+const standingPath = ref('')      // `url_path` — JS only, never rendered
+const standingLoaded = ref(false)
+const standingRefusal = ref('')   // the 409 `inactive_host` message
+const standingError = ref('')     // any other failure of the READ
+const standingRegenError = ref('') // a failed ROTATION — its own sentence (GL-T6a review)
+const standingCopied = ref(false)
+const standingConfirm = ref(false)
+const standingPending = ref(false)
+const standingRegenerated = ref(false)
+let standingCopiedTimer = null
+// `loadSeq` convention: a regenerate supersedes an in-flight read, never the reverse.
+let standingSeq = 0
+
+async function loadStanding() {
+  const seq = ++standingSeq
+  try {
+    const data = await api.adminGetFriendStandingLink(friendId)
+    if (seq !== standingSeq) return
+    standingPath.value = data?.standing?.url_path || ''
+    standingLoaded.value = !!standingPath.value
+    standingRefusal.value = ''
+    standingError.value = ''
+  } catch (e) {
+    if (seq !== standingSeq) return
+    standingLoaded.value = false
+    if (e.reason === 'inactive_host') standingRefusal.value = e.message
+    else standingError.value = e.message
+  }
+}
+
+function copyStanding() {
+  if (!standingPath.value) return
+  const url = `${window.location.origin}${standingPath.value}`
+  // Same semantics as the view's other copy controls: the flip happens whether or not
+  // the clipboard write succeeded (a non-secure origin has no clipboard at all).
+  try {
+    const written = navigator.clipboard?.writeText(url)
+    if (written && typeof written.catch === 'function') written.catch(() => {})
+  } catch (e) {
+    // Clipboard API missing — fall through to the flip.
+  }
+  if (standingCopiedTimer) clearTimeout(standingCopiedTimer)
+  standingCopied.value = true
+  standingCopiedTimer = setTimeout(() => {
+    standingCopied.value = false
+    standingCopiedTimer = null
+  }, 2000)
+}
+
+async function regenerateStanding() {
+  // ⚠ The JS guard, not only `:disabled` — a dispatched click reaches the handler.
+  if (standingPending.value) return
+  const seq = ++standingSeq
+  standingPending.value = true
+  standingRegenError.value = ''
+  standingRegenerated.value = false
+  try {
+    const data = await api.adminRegenerateFriendStandingLink(friendId)
+    if (seq !== standingSeq) return
+    standingPath.value = data?.standing?.url_path || standingPath.value
+    standingLoaded.value = !!standingPath.value
+    standingConfirm.value = false
+    standingRegenerated.value = true
+  } catch (e) {
+    if (seq !== standingSeq) return
+    standingRegenError.value = e.message
+  } finally {
+    standingPending.value = false
+  }
+}
+
+onBeforeUnmount(() => {
+  if (standingCopiedTimer) clearTimeout(standingCopiedTimer)
+  standingCopiedTimer = null
 })
 
 watchEffect(() => {
@@ -170,6 +267,76 @@ function getTransactionTypeVariant(type) {
                 </Button>
               </div>
             </div>
+          </CardContent>
+        </Card>
+
+        <!-- Stály odkaz pre hostí (19 PO block, GL-T6). ⚠ No token in the DOM — see
+             the script. Admin shadcn skin only. Copy is DRAFT pending the PO's staging
+             sign-off; the confirm's two sentences are the host dialog's (§UC-GL-008
+             item 2) — the same fact about the same rotation. -->
+        <Card class="mb-6" data-testid="standing-link-admin">
+          <CardContent class="p-4 space-y-2">
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+              <span class="font-medium">Stály odkaz pre hostí</span>
+              <template v-if="standingLoaded">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  data-testid="standing-link-admin-copy"
+                  @click="copyStanding"
+                >{{ standingCopied ? 'Skopírované!' : 'Kopírovať odkaz' }}</Button>
+                <Button
+                  v-if="!standingConfirm"
+                  size="sm"
+                  variant="ghost"
+                  data-testid="standing-link-admin-regen"
+                  @click="standingConfirm = true; standingRegenerated = false"
+                >Vygenerovať nový</Button>
+              </template>
+            </div>
+            <p class="text-xs text-muted-foreground max-w-3xl">
+              Jeden odkaz, cez ktorý si kolegovia priateľa objednávajú v každej objednávke,
+              alebo sa zapíšu, keď je zatvorená.
+            </p>
+            <p
+              v-if="standingLoaded && !friend.active"
+              class="text-xs text-amber-700"
+              data-testid="standing-link-admin-dead"
+            >Priateľ je deaktivovaný - odkaz teraz nefunguje.</p>
+            <div
+              v-if="standingLoaded && standingConfirm"
+              class="text-sm flex flex-wrap items-center gap-2"
+              data-testid="standing-link-admin-confirm"
+            >
+              <span class="text-muted-foreground">Starý stály odkaz prestane fungovať. Objednávky, ktoré kolegovia už vytvorili, zostanú funkčné.</span>
+              <Button
+                size="sm"
+                variant="destructive"
+                :disabled="standingPending"
+                @click="regenerateStanding"
+              >{{ standingPending ? 'Generujem...' : 'Áno, vygenerovať' }}</Button>
+              <Button size="sm" variant="ghost" @click="standingConfirm = false">Nie</Button>
+            </div>
+            <p
+              v-if="standingRegenerated"
+              class="text-xs text-green-700"
+              data-testid="standing-link-admin-regenerated"
+            >Nový odkaz je vygenerovaný - skopírujte ho a pošlite priateľovi.</p>
+            <p
+              v-if="standingRefusal"
+              class="text-sm text-muted-foreground"
+              data-testid="standing-link-admin-refused"
+            >{{ standingRefusal }}</p>
+            <p
+              v-if="standingError"
+              class="text-sm text-destructive"
+              data-testid="standing-link-admin-error"
+            >Stály odkaz sa nepodarilo načítať: {{ standingError }}</p>
+            <p
+              v-if="standingRegenError"
+              class="text-sm text-destructive"
+              data-testid="standing-link-admin-regen-error"
+            >Nový odkaz sa nepodarilo vygenerovať: {{ standingRegenError }}</p>
           </CardContent>
         </Card>
 

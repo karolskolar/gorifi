@@ -1,4 +1,10 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+import { makeAdmin } from '../helpers/admin.js'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding, gotoCycle as portalGotoCycle } from '../helpers/portal.js'
 import { DatabaseSync } from 'node:sqlite'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -57,12 +63,14 @@ let ctx
 let adminToken
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 // The backend keeps exactly ONE live admin session, overwritten on every
 // /api/admin/login — a UI login elsewhere invalidates a token captured earlier.
@@ -192,18 +200,30 @@ async function signInAsHost(page, host) {
 
 async function gotoPortal(page) {
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+  await expectLanding(page)
 }
 
 // A hard load of /cycle/:id bounces to the portal, so a real host arrives through it.
 async function gotoCycle(page, cycle) {
-  await gotoPortal(page)
-  await page.getByRole('heading', { name: cycle.name, exact: true }).click()
-  await expect(page).toHaveURL(new RegExp(`/cycle/${cycle.id}$`))
+  // ⚠ PI-T3 · 18 §UC-PI-019 item 3 — the cycle CARDS are retired (§UC-PI-005), so
+  // `goto('/')` + a heading click is no longer a route to an order screen.
+  // `portalGotoCycle` (helpers/portal.js) is the ONE home of that navigation; it
+  // still enters cold and still proves state came back from the server.
+  await portalGotoCycle(page, cycle.id)
 }
 
-const portalCard = (page, name) =>
-  page.locator('div.card.p-4', { has: page.getByRole('heading', { name, exact: true }) })
+// ⚠ PI-T3 · 18 §UC-PI-005/011 — `portalCard()` IS GONE. It located module 03's cycle
+// CARD (`div.card.p-4` + the cycle's `<h3>`), whose share ROW was entry point B into
+// the dialog. The card is retired with the cycle list; the landing IS the current open
+// round's order screen, and its share affordance is the `.cartbar` icon — whose
+// accessible name §UC-PI-011 fixes to the SAME „Zdieľať s kolegami" the card carried.
+// The locator moved; the accessible-name contract did not.
+//
+// ⚠ It resolves only for the CURRENT OPEN round, which every caller satisfies by
+// creating its cycle immediately before navigating (the newest open round is the
+// landing's — `lib/portal-state.js`).
+const landingShare = (page) =>
+  page.locator('.app .cartbar').getByRole('button', { name: 'Zdieľať s kolegami' })
 
 // Entry point A — the "Kolegovia" panel in FriendOrder (module 05's own).
 async function openFromOrderPage(page, host, cycle, { width = 378 } = {}) {
@@ -217,13 +237,14 @@ async function openFromOrderPage(page, host, cycle, { width = 378 } = {}) {
   return dialog
 }
 
-// Entry point B — the portal cycle card's share row. ONE shared component
-// (GSO-T2), so both entry points must render the same standing copy.
+// Entry point B — the LANDING's cartbar share icon (18 §UC-PI-011; it was the portal
+// cycle card's share row until PI-T3). ONE shared component (GSO-T2), so both entry
+// points must render the same standing copy.
 async function openFromPortal(page, host, cycle, { width = 378 } = {}) {
   await page.setViewportSize({ width, height: 900 })
   await signInAsHost(page, host)
   await gotoPortal(page)
-  await portalCard(page, cycle.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+  await landingShare(page).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog).toBeVisible()
   return dialog
@@ -292,7 +313,8 @@ test.describe('UC-GR-009 — share dialog standing copy', () => {
     await shareLink(host, cycle.id)
 
     const dialog = await openFromOrderPage(page, host, cycle)
-    await expect(dialog.locator('.copyrow')).toHaveCount(1)
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').locator('.copyrow')).toHaveCount(1)
     // Presence first, so a MISSING line fails by name instead of as a null
     // dereference inside the evaluate below.
     await expect(dialog.getByTestId('share-standing-copy')).toHaveText(STANDING_COPY)
@@ -334,7 +356,8 @@ test.describe('UC-GR-009 — share dialog standing copy', () => {
 
     // Creating the link flips the state in place — and the copy comes with it.
     await dialog.getByRole('button', { name: 'Vytvoriť odkaz' }).click()
-    await expect(dialog.locator('.copyrow')).toHaveCount(1)
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').locator('.copyrow')).toHaveCount(1)
     await expect(dialog.getByTestId('share-standing-copy')).toHaveText(STANDING_COPY)
     await expect(dialog.getByTestId('regen-guidance')).toHaveText(REGEN_GUIDANCE)
   })
@@ -366,7 +389,9 @@ test.describe('UC-GR-009 — share dialog standing copy', () => {
     await expect(dialog.getByTestId('share-standing-copy')).toHaveText(STANDING_COPY)
   })
 
-  // ⚠ THE ADDITIVITY GUARD. `share-dialog.spec.js` must pass UNMODIFIED
+  // ⚠ THE ADDITIVITY GUARD. `share-dialog.spec.js` must pass ~~UNMODIFIED~~ (true for
+  // GR-T7; SUPERSEDED — GL-T6b retargeted its `.copyrow`/`Kopírovať`/native-share pins
+  // under 19 §UC-GL-008, and PI-T3 its entry point; the three pins below still hold)
   // (§UC-GR-009, UC-GR-010 item 8), so this row may not introduce a second
   // `p.sub` in the dialog, a second `<b>` in the subtitle slot, or touch the
   // `.confirmbox`. Asserted here so a later refactor toward those primitives
@@ -414,7 +439,7 @@ test.describe('UC-GR-009 — share dialog standing copy', () => {
     await page.setViewportSize({ width: 320, height: 900 })
     await signInAsHost(page, host)
     await gotoPortal(page)
-    await portalCard(page, cycle.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    await landingShare(page).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog.getByTestId('share-standing-copy')).toBeVisible()
 
@@ -589,7 +614,7 @@ test.describe('UC-GR-001/002 — order_token alone is the credential', () => {
     await refreshAdminToken()
     const { host, cycle, link, created, orderToken } = await orderScenario('readonly')
 
-    // Locked cycle — the GSO-T4 asymmetry: the listing 410s, the status URL must not.
+    // Locked cycle — the GSO-T4 asymmetry: the listing ~~410s~~ closes (pre-open page, 19 §UC-GL-002), the status URL must not.
     await setCycleStatus(cycle.id, 'locked')
     const locked = await ctx.get(canonicalPath(orderToken))
     expect(locked.status()).toBe(200)
@@ -598,7 +623,8 @@ test.describe('UC-GR-001/002 — order_token alone is the credential', () => {
     expect(lockedBody.items_editable).toBe(false)
     expect(lockedBody.payment.reference).toBe(`G${created.order.id} / ${IDENTITY.guest_name} / ${cycle.name}`)
     // …and the orderable listing is NOT published while un-editable (that is what
-    // stops the status GET leaking what a locked cycle 410s).
+    // stops the status GET leaking what a locked cycle's listing withholds — ~~410s~~,
+    // the pre-open page since 19 §UC-GL-002).
     expect(lockedBody.products, 'no product grid while not editable').toBeUndefined()
     expect(lockedBody.availability).toBeUndefined()
 
@@ -1269,10 +1295,28 @@ test.describe('UC-GR-004 — admin reads + creates host share links', () => {
     const host = await makeHost('linklocked')
     await setCycleStatus(cycle.id, 'locked')
 
+    const product = await addProduct(cycle.id, { name: `Linklocked Coffee ${uniq}`, purpose: 'Espresso', price_250g: 10 })
     const res = await adminCreateLink(cycle.id, host.id)
     expect(res.status()).toBe(201)
-    // Inert, as the spec says: `resolveLink` 410s a non-open cycle.
-    expect((await ctx.get(`/api/guest/${(await res.json()).link.token}`)).status()).toBe(410)
+    const token = (await res.json()).link.token
+    // Inert, as the spec says. SANCTIONED RETARGET (GL-T2, 19 §UC-GL-002 rule 4 / D7): the listing was 410; it is now 200 `page:'preopen'`.
+    const listing = await ctx.get(`/api/guest/${token}`)
+    expect(listing.status()).toBe(200)
+    const listingBody = await listing.json()
+    expect(listingBody.page, 'a non-open cycle lists the pre-open page').toBe('preopen')
+    expect(listingBody.products, 'no orderable catalogue').toBeUndefined()
+    // Counter-pin (rule 5): still INERT for ordering — a submit through it is the 409 `closed`.
+    const submit = await ctx.post(`/api/guest/${token}/orders`, {
+      data: { ...IDENTITY, items: [{ product_id: product.id, variant: '250g', quantity: 1 }] },
+    })
+    expect(submit.status(), 'the link grants no ordering').toBe(409)
+    expect((await submit.json()).reason).toBe('closed')
+    // Read back: the refused submit wrote no sub-order on that cycle.
+    const view = await ctx.get(`/api/guest-links/cycle/${cycle.id}`, { headers: host.auth })
+    expect(view.status()).toBe(200)
+    const viewBody = await view.json()
+    expect(viewBody.link?.token, 'non-vacuity: the host view is the admin-created link').toBe(token)
+    expect(viewBody.guest_orders, 'no sub-order written').toEqual([])
   })
 
   test('BOTH auth directions: the new admin routes refuse anonymous and friend tokens; the three host routes refuse an admin token', async () => {
@@ -2649,7 +2693,7 @@ const MAIL_SUBJECT = 'Potvrdenie objednávky - Podpultovka'
 // ⚠ DRAFT copy pending PO sign-off (14 §OPEN), hoisted for the GR-T7/T5/T6 reason:
 // sign-off is then a known TWO-PLACE edit (these constants + `routes/guest.js`),
 // never a grep for quoted Slovak across the suite.
-const MAIL_INTRO = 'Dobrý deň, vaša objednávka bola prijatá.'
+const MAIL_INTRO = 'Ahoj, tvoja objednávka bola prijatá.'
 const MAIL_ORDER_HEADING = 'Objednávka:'
 const MAIL_PAYMENT_HEADING = 'Platba:'
 const MAIL_TOTAL_LABEL = 'Spolu'
@@ -2661,9 +2705,15 @@ const MAIL_IBAN_LABEL = 'IBAN'
 // asserted. Both halves fixed: the constant below and `setRevolut()` in the body test.
 const MAIL_REVOLUT_LABEL = 'Revolut'
 const MAIL_AMOUNT_LABEL = 'Suma'
+// 20 §UC-GP-004 (GP-T1) — ADDITIVE, the two-place-edit convention: the Packeta fee row
+// and the point row. A via_host order (every fixture in this file) carries NEITHER, so
+// its mail stays byte-identical to the shipped one; guest-packeta.spec.js pins the
+// Packeta mail that does.
+const MAIL_DELIVERY_LABEL = 'Doručenie Packetou'
+const MAIL_PACKETA_LABEL = 'Výdajné miesto'
 // Reuses the confirmation screen's own signed line, recast declaratively — one voice
 // for one fact across mail and screen (plain hyphen, as on the screen).
-const MAIL_SAVE_LINK = 'Stav objednávky uvidíte na tomto odkaze - uložte si ho:'
+const MAIL_SAVE_LINK = 'Stav objednávky uvidíš na tomto odkaze - ulož si ho:'
 
 const MAIL_ENV = { MAILGUN_API_KEY: FAKE_MAILGUN_KEY, MAILGUN_DOMAIN: STUB_MAILGUN_DOMAIN }
 const NEEDS_SOURCE = 'needs the backend source beside e2e/ (skipped against a deployment)'
@@ -2819,6 +2869,11 @@ test.describe('UC-GR-011 — the guest order-confirmation mail', () => {
         `2× GR mailbody ${uniq} (250g) - 15.20 €`
       )
       expect(fields.text, 'the total, EUR on totals').toContain(`${MAIL_TOTAL_LABEL}: 15.20 EUR`)
+      // 20 §UC-GP-004: a via_host order has no fee row and no point row (the Spolu
+      // line above is the non-vacuity gate — the order block WAS read).
+      expect(fields.text, 'via_host: no Packeta fee row').not.toContain(`${MAIL_DELIVERY_LABEL}:`)
+      expect(fields.text, 'via_host: no Packeta point row').not.toContain(`${MAIL_PACKETA_LABEL}:`)
+      expect(fields.html).not.toContain(MAIL_DELIVERY_LABEL)
       expect(fields.text).toContain(MAIL_PAYMENT_HEADING)
       // ⚠ The SHARED formatter — the guest's mail and the admin's unpaid overview can
       // never disagree about the reference (the GSO-T6 one-formatter rule).
@@ -2826,6 +2881,22 @@ test.describe('UC-GR-011 — the guest order-confirmation mail', () => {
       expect(fields.text, 'the reference the 201 carries, byte-identical').toContain(
         `${MAIL_REFERENCE_LABEL}: ${created.payment.reference}`
       )
+      // ⚠ ADDITIVE (15 §UC-PL-003 item 2, PL-T2): the variable symbol, directly after
+      // the reference, as TEXT. The 08 §UC-EM-005 one-origin pin is why it is not a
+      // payment link — the `payme.sk`/`revolut.me` buttons live on the payment modal,
+      // and the `hosts` assertion at the end of this test is what keeps them out of
+      // the html.
+      expect(created.payment.variable_symbol, 'the 201 carries a guest-scheme VS').toBe(
+        `9${String(created.order.id).padStart(6, '0')}`
+      )
+      expect(fields.text, 'the VS the 201 carries, byte-identical').toContain(
+        `Variabilný symbol: ${created.payment.variable_symbol}`
+      )
+      expect(fields.html, 'and it reaches the html part through the same one-array mechanism')
+        .toContain(created.payment.variable_symbol)
+      expect(fields.text, 'a symbol is not a payment button').not.toContain('payme.sk')
+      expect(fields.html).not.toContain('payme.sk')
+      expect(fields.html, 'the Revolut USERNAME here too, never a revolut.me link').not.toContain('revolut.me')
       expect(fields.text).toContain(`${MAIL_IBAN_LABEL}: ${IBAN}`)
       expect(fields.text).toContain(`${MAIL_REVOLUT_LABEL}: ${REVOLUT_USERNAME}`)
       expect(fields.text, 'the Revolut USERNAME, never a revolut.me link').not.toContain('revolut.me')

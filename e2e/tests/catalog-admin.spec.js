@@ -28,6 +28,11 @@
 // first run (residue from other suites legitimately migrates alongside).
 
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding, gotoCycle as portalGotoCycle } from '../helpers/portal.js'
 import { DatabaseSync } from 'node:sqlite'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 
@@ -2414,10 +2419,9 @@ test.describe('UC-PC-012/013 — admin UI (picker + retired import section)', ()
       localStorage.setItem('gorifi_friend_auth', value)
     }, stored)
 
-    await page.goto('/')
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
-    await page.getByRole('heading', { name: cycleName, exact: true }).click()
-    await expect(page).toHaveURL(new RegExp(`/cycle/${cycleId}$`))
+    // ⚠ PI-T3 · 18 §UC-PI-019 item 3 — the cycle CARDS are retired (§UC-PI-005);
+    // `helpers/portal.js gotoCycle()` is the one home of portal → order navigation.
+    await portalGotoCycle(page, cycleId)
 
     const card = page.getByTestId('product-card').filter({ has: page.getByRole('heading', { name, exact: true }) })
     await expect(card).toHaveCount(1)

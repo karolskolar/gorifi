@@ -9,7 +9,11 @@ import PaymentModal from '@/components/PaymentModal.vue'
 import GuestProductGrid from '@/components/GuestProductGrid.vue'
 import GuestInviteRequest from '@/components/GuestInviteRequest.vue'
 import CartLineList from '@/components/CartLineList.vue'
+import CycleTimeline from '@/components/CycleTimeline.vue'
+import GuestDeliveryChoice from '@/components/GuestDeliveryChoice.vue'
 import { fmtEur } from '@/lib/money'
+import { EMAIL_SHAPE } from '@/lib/email-shape'
+import { deliveryExtras } from '@/lib/order-lines'
 import { purposeOrder } from '@/lib/purposes'
 import {
   availabilityMap,
@@ -138,6 +142,47 @@ const isPaid = computed(() => !!order.value?.paid)
 const isDelivered = computed(() => !!order.value?.delivered)
 const hasPaymentDetails = computed(() => !!(payment.value?.iban || payment.value?.revolut_username))
 
+// ─── 20 §UC-GP-007 — the Packeta state (GP-T4) ───────────────────────────────
+// ⚠ THE MARKER IS THE ADDRESS, never the fee (learnings 12 §1): a fee of 0 is legal,
+// and a CANCELLED Packeta order keeps its point with the fee zeroed — which is exactly
+// why the point card below stays on a cancelled order (the record, item 5).
+const isPacketaOrder = computed(() => !!order.value?.packeta_address)
+// `cycle.parcel_enabled` (0/1) and `parcel_fee` ride `statusPayload` since GP-T1.
+// DISPLAY only — the server re-reads the fee inside the write transaction.
+const parcelEnabled = computed(() => Number(cycle.value?.parcel_enabled) === 1)
+const parcelFee = computed(() => {
+  const n = Number(cycle.value?.parcel_fee)
+  return Number.isFinite(n) ? n : 0
+})
+// The amount to pay is the SERVER's (§UC-GP-004: `payment.amount = total +
+// delivery_fee`, never composed from the cart). For a via_host order it equals
+// `order.total`, so every shipped `status-total` pin reads the same figure.
+const amountDue = computed(() => payment.value?.amount ?? order.value?.total)
+// The fee is a CartLineList EXTRA through `lib/order-lines.js` — the friend cart's and
+// g-confirm's own mapping, never new markup. Fee 0 (via_host, or cancelled) ⇒ no line.
+const statusExtras = computed(() => deliveryExtras(order.value?.delivery_fee)
+  .map((extra) => ({ ...extra, testid: 'status-delivery-fee' })))
+
+// Edit mode's delivery block. `GuestDeliveryChoice` owns the PRESENTATION; this view
+// owns the payload (learnings 12 §14). ⚠ Guarded on `parcelEnabled`, exactly as the
+// checkout does: a stale 'packeta' must never reach a payload or a label on a round
+// that no longer offers parcels.
+const editMethod = ref('via_host') // 'via_host' | 'packeta'
+const editAddress = ref('')
+const editEmail = ref('')
+const editIsPacketa = computed(() => parcelEnabled.value && editMethod.value === 'packeta')
+// ⚠ WRITE-ONCE (20 resolved conflict 2 / GP-T2 §10): the ONE identity field this PUT
+// may set, and only while the loaded order has no USABLE one — ~~none~~ → GP-T7 (PO
+// decision (1) 2026-09-24): missing OR failing the ONE client `EMAIL_SHAPE`, the
+// mirror of the server's `storedEmailUsable()` (an unshaped via_host e-mail is
+// ABSENT for Packeta, and the body's replaces it). Never shown when a valid e-mail
+// exists — no edit of a valid e-mail anywhere on this surface.
+const editNeedsEmail = computed(() => editIsPacketa.value && !EMAIL_SHAPE.test(order.value?.guest_email || ''))
+// §UC-GP-005 rule 5: parcels switched OFF after the guest chose Packeta. The card is
+// hidden, the warn banner explains, and the save sends `false` (it clears both columns).
+const editParcelGone = computed(() => !parcelEnabled.value && isPacketaOrder.value)
+const editFee = computed(() => (editIsPacketa.value ? parcelFee.value : 0))
+
 const cartItems = computed(() => cartLines(cart.value, products.value))
 const cartTotal = computed(() => linesTotal(cartItems.value))
 
@@ -162,10 +207,18 @@ const statusLines = computed(() => items.value.map((item) => ({
 
 // Why editing is impossible, in the guest's terms. The backend owns the decision;
 // this only words it.
+//
+// ⚠ CS-T4 (17 §UC-CS-008): the first branch used to say „Objednávanie v tomto
+// CYKLE je uzavreté…". „cyklus" is an ADMIN word (00-overview glossary, resolved
+// conflict 2) — every friend- and guest-facing string in this area says
+// „objednávka". The sentence keeps its job (read-only is explained) and only its
+// vocabulary changed, which is why `guest-status-shell.spec.js:356` was retargeted
+// rather than deleted. The SECOND branch (the dead link) never said it and is
+// untouched.
 const readOnlyReason = computed(() => {
   if (editable.value || isCancelled.value) return ''
   if (cycle.value && cycle.value.status !== 'open') {
-    return 'Objednávanie v tomto cykle je uzavreté, objednávku už nie je možné upraviť.'
+    return 'Objednávky sú uzavreté, objednávku už nie je možné upraviť.'
   }
   return 'Odkaz na túto spoločnú objednávku už nie je aktívny, objednávku už nie je možné upraviť.'
 })
@@ -177,7 +230,7 @@ const unavailableTitle = computed(() => {
 })
 
 watchEffect(() => {
-  document.title = cycle.value?.name ? `${cycle.value.name} - Vaša objednávka` : 'Vaša objednávka'
+  document.title = cycle.value?.name ? `${cycle.value.name} - Tvoja objednávka` : 'Tvoja objednávka'
 })
 
 onMounted(load)
@@ -293,6 +346,10 @@ function refreshStoredEntry() {
 function startEditing() {
   editError.value = ''
   cart.value = cartFromOrderItems(items.value)
+  // Seeded from the STORED state (§UC-GP-007 item 6), re-seeded on every entry.
+  editMethod.value = order.value?.packeta_address ? 'packeta' : 'via_host'
+  editAddress.value = order.value?.packeta_address || ''
+  editEmail.value = ''
   editing.value = true
 }
 
@@ -317,12 +374,41 @@ function stopEditing() {
 // Emptying the cart cancels the sub-order, which is irreversible — so the empty
 // save funnels into the same confirmation as the explicit "Zrušiť objednávku",
 // rather than quietly PUTting `items: []` on the guest's behalf.
+//
+// ⚠ THE DELIVERY BLOCK IS ALWAYS SENT on a save (§UC-GP-007 item 9 — it is the guest's
+// current choice, and a `true` re-reads the fee). `use_parcel_delivery` is `true` only
+// for a Packeta choice on a round that offers parcels; otherwise `false`, which is
+// also the parcels-gone banner's contract (rule 5). The GP-T2 „absent = untouched"
+// half of the contract is for OTHER clients: this screen never omits the flag on a
+// save. The CANCEL payload is untouched — `confirmCancel()` still sends the literal
+// `{ items: [] }` and nothing else (delivery keys in a cancel are ignored anyway).
+function editDeliveryProblem() {
+  if (!editIsPacketa.value) return ''
+  if (!editAddress.value.trim()) return 'Zadaj výdajné miesto Packety.'
+  if (editNeedsEmail.value) {
+    const email = editEmail.value.trim()
+    if (!email) return 'Pri doručení Packetou zadaj e-mail.'
+    if (!EMAIL_SHAPE.test(email)) return 'Zadaj platný e-mail.'
+  }
+  return ''
+}
+
 function saveEdit() {
   if (cartItems.value.length === 0) {
     showCancelConfirm.value = true
     return
   }
-  submitEdit(itemsPayload(cartItems.value))
+  const problem = editDeliveryProblem()
+  if (problem) {
+    editError.value = problem
+    return
+  }
+  const body = { items: itemsPayload(cartItems.value), use_parcel_delivery: editIsPacketa.value }
+  if (editIsPacketa.value) {
+    body.packeta_address = editAddress.value.trim()
+    if (editNeedsEmail.value) body.guest_email = editEmail.value.trim()
+  }
+  submitEdit(body)
 }
 
 function requestCancel() {
@@ -332,15 +418,15 @@ function requestCancel() {
 
 function confirmCancel() {
   showCancelConfirm.value = false
-  submitEdit([])
+  submitEdit({ items: [] })
 }
 
-async function submitEdit(payloadItems) {
+async function submitEdit(body) {
   const seq = ++loadSeq
   saving.value = true
   editError.value = ''
   try {
-    const data = await api.updateGuestOrder(token.value, orderToken.value, { items: payloadItems })
+    const data = await api.updateGuestOrder(token.value, orderToken.value, body)
     if (seq !== loadSeq) return
     applyStatus(data)
     editing.value = false
@@ -400,7 +486,7 @@ async function submitEdit(payloadItems) {
          resolver is deliberately 404-only), so they land on the read-only banner
          below — never here. -->
     <template v-if="unavailable">
-      <GuestBrandHeader subtitle="Vaša objednávka" />
+      <GuestBrandHeader subtitle="Tvoja objednávka" />
 
       <div class="flex-1 flex items-center justify-center p-5 sm:p-10">
         <div
@@ -416,7 +502,7 @@ async function submitEdit(payloadItems) {
           <span class="badge danger" style="font-size:13px;padding:6px 14px;transform:rotate(-2deg);display:inline-flex;align-items:center;gap:4px"><NeoIcon name="lock" /><span>Slepá ulička</span></span>
           <h1 class="h-screen text-[32px] sm:text-[38px]">{{ unavailableTitle }}</h1>
           <div class="sub" style="font-size:14px">{{ unavailable.message }}</div>
-          <div class="sub" style="font-size:13.5px">Skontrolujte, či je odkaz skopírovaný celý. Ak nie, požiadajte kolegu, ktorý objednávku organizuje.</div>
+          <div class="sub" style="font-size:13.5px">Skontroluj, či je odkaz skopírovaný celý. Ak nie, požiadaj kolegu, ktorý objednávku organizuje.</div>
         </div>
       </div>
     </template>
@@ -427,16 +513,19 @@ async function submitEdit(payloadItems) {
            `GuestBrandHeader`s under separate `v-if`s would remount the ticker on
            every entry into edit mode. Also mounted ABOVE the loading state, so the
            chrome never flashes in and out. -->
-      <GuestBrandHeader :subtitle="editing ? 'Úprava objednávky' : 'Vaša objednávka'" />
+      <GuestBrandHeader :subtitle="editing ? 'Úprava objednávky' : 'Tvoja objednávka'" />
 
       <div v-if="loading" class="mx-auto w-full max-w-[520px] px-4 sm:px-7 py-4 sm:py-7 flex-1">
         <div class="sub" style="text-align:center;padding:32px 0">Načítavam…</div>
       </div>
 
       <!-- ===================== g-status EDIT MODE (§UC-GX-007) =====================
-           Items-only by construction: there is no name/phone/email field anywhere in
-           here. Identity is frozen at submit (GSO-T4) precisely because anyone
-           holding the URL could otherwise rewrite someone else's contact details.
+           ~~Items-only by construction: there is no name/phone/email field anywhere in
+           here.~~ → AMENDED by GP-T4 (20 §UC-GP-007 items 6-7): the delivery card and
+           ONE write-once „E-mail *" input, shown only while the loaded order has NO
+           usable e-mail (GP-T7: missing or unshaped). Name/phone stay absent and an existing e-mail is never editable:
+           identity is frozen at submit (GSO-T4) precisely because anyone holding the
+           URL could otherwise rewrite someone else's contact details.
 
            The column WIDENS to the grid layout (760, not the read view's 520) — the
            product cards need it, and it is the same scaffold as `/g/:token`. -->
@@ -444,7 +533,7 @@ async function submitEdit(payloadItems) {
         <div class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7 pb-2 sm:pb-2 flex flex-col gap-[14px] flex-1">
           <div class="banner slim">
             <span class="dot"></span>
-            <span style="min-width:0">Upravujete objednávku pre <b>{{ order?.guest_name }}</b>. Zmeny sa prejavia po uložení.</span>
+            <span style="min-width:0">Upravuješ objednávku pre <b>{{ order?.guest_name }}</b>. Zmeny sa prejavia po uložení.</span>
           </div>
 
           <!-- A 400 (bounds, or a stock limit whose per-product detail lines ride in
@@ -452,6 +541,39 @@ async function submitEdit(payloadItems) {
                409/410 exits and reloads, so it surfaces as `status-error` instead. -->
           <div v-if="editError" class="banner danger slim" role="alert">
             <span class="dot"></span><span data-testid="edit-error" style="min-width:0">{{ editError }}</span>
+          </div>
+
+          <!-- 20 §UC-GP-007 items 6-7 — the delivery choice, ABOVE the grid. The ONE home
+               (`GuestDeliveryChoice`, GP-T3) — mounted, never forked. Its root is itself
+               `v-if="parcelEnabled"`; the card is gated the same way so a parcel-off
+               round has no empty card. -->
+          <div v-if="parcelEnabled" class="card" style="padding:16px;display:flex;flex-direction:column;gap:12px" data-testid="edit-delivery-card">
+            <GuestDeliveryChoice
+              v-model="editMethod"
+              v-model:packeta-address="editAddress"
+              :host-first-name="host?.first_name || ''"
+              :parcel-fee="parcelFee"
+              :parcel-enabled="parcelEnabled"
+            />
+            <!-- The write-once e-mail (GP-T2 §10): only while the loaded order has no usable one (GP-T7). -->
+            <div v-if="editNeedsEmail">
+              <label class="field-lbl" for="edit-guest-email">E-mail *</label>
+              <input
+                id="edit-guest-email"
+                v-model="editEmail"
+                class="inp"
+                type="text"
+                data-testid="edit-guest-email"
+                placeholder="meno@example.com"
+                inputmode="email"
+                maxlength="160"
+              />
+              <div class="field-help" data-testid="edit-guest-email-help">Packeta ti naň pošle informácie o zásielke.</div>
+            </div>
+          </div>
+          <!-- §UC-GP-005 rule 5 — parcels OFF, order still Packeta: the save sends `false`. -->
+          <div v-else-if="editParcelGone" class="banner warn slim" data-testid="edit-parcel-unavailable">
+            <span class="dot"></span><span style="min-width:0">Doručenie Packetou už nie je dostupné — objednávku ti odovzdá <span data-user-copy>{{ host?.first_name }}</span>.</span>
           </div>
 
           <!-- The SHARED grid (GSO-T4: one home, two screens — extend, never fork).
@@ -474,7 +596,11 @@ async function submitEdit(payloadItems) {
              144px of dead space at the end of the page. -->
         <div class="cartbar">
           <div class="meta" style="align-items:center">
-            <span class="sum" data-testid="edit-total">Celkom: {{ fmtEur(cartTotal) }}</span>
+            <!-- §UC-GP-007 item 8 — the fee the save will charge (`cycle.parcel_fee`). -->
+            <span style="display:flex;flex-direction:column;gap:4px;min-width:0">
+              <span class="sum" data-testid="edit-total">Celkom: {{ fmtEur(cartTotal + editFee) }}</span>
+              <span v-if="editIsPacketa" class="sub" style="font-size:13px" data-testid="edit-delivery-fee">+ {{ fmtEur(parcelFee) }} doručenie Packetou</span>
+            </span>
             <span class="sub" style="font-size:13px">Položiek: {{ cartItems.length }}</span>
           </div>
           <div class="actions">
@@ -519,7 +645,8 @@ async function submitEdit(payloadItems) {
           <h1 class="h-screen text-[30px] sm:text-[36px]">{{ cycle?.name }}</h1>
           <!-- The prototype adds "a odovzdá" to the shipped line; the separate
                "Tovar vám odovzdá {host}." footer line is dropped as a result. -->
-          <div class="sub" style="margin-top:8px">Vaša objednávka · organizuje a odovzdá {{ host?.first_name }}</div>
+          <!-- 20 §UC-GP-007 item 1 — ONE line each (Vue's condense would eat a newline). -->
+          <div class="sub" style="margin-top:8px"><template v-if="isPacketaOrder">Tvoja objednávka · organizuje {{ host?.first_name }} · doručí Packeta</template><template v-else>Tvoja objednávka · organizuje a odovzdá {{ host?.first_name }}</template></div>
           <div style="font-weight:700;margin-top:4px">{{ order?.guest_name }}</div>
         </div>
 
@@ -528,7 +655,7 @@ async function submitEdit(payloadItems) {
              replaces the pills outright rather than adding a third one. -->
         <div v-if="isCancelled" class="banner danger" data-testid="status-cancelled">
           <span class="dot"></span>
-          <span style="min-width:0">Táto objednávka bola <b>zrušená</b>. Ak si chcete objednať znova, požiadajte kolegu o odkaz na spoločnú objednávku.</span>
+          <span style="min-width:0">Táto objednávka bola <b>zrušená</b>. Ak si chceš objednať znova, požiadaj kolegu o odkaz na spoločnú objednávku.</span>
         </div>
 
         <!-- Flags with SINGLE OWNERS (GSO-T6 Decision 2): `paid` is the ADMIN's,
@@ -536,7 +663,40 @@ async function submitEdit(payloadItems) {
              offers no control that could write one. -->
         <div v-else class="flex flex-wrap gap-2">
           <span class="statuspill" :class="isPaid ? 'ok' : 'warn'" data-testid="status-paid"><span class="sq"></span>{{ isPaid ? 'Zaplatené' : 'Nezaplatené' }}</span>
-          <span class="statuspill" :class="isDelivered ? 'ok' : 'off'" data-testid="status-delivered"><span class="sq"></span>{{ isDelivered ? 'Odovzdané' : 'Zatiaľ neodovzdané' }}</span>
+          <!-- 20 §UC-GP-007 item 2 — on a Packeta order the delivered pill is REPLACED:
+               the host's hand-over flag means nothing for a bag the host never holds.
+               `isDelivered` is still read from the payload, just not rendered here. -->
+          <span v-if="isPacketaOrder" class="statuspill off" data-testid="status-packeta"><span class="sq"></span>Doručí Packeta</span>
+          <span v-else class="statuspill" :class="isDelivered ? 'ok' : 'off'" data-testid="status-delivered"><span class="sq"></span>{{ isDelivered ? 'Odovzdané' : 'Zatiaľ neodovzdané' }}</span>
+        </div>
+
+        <!-- ================= „Kde je vaša káva" (17 §UC-CS-008) =================
+             The ROUND's state, which is a different fact from the two pills above:
+             those are this guest's own bag (`paid` is the ADMIN's flag, `delivered`
+             the HOST's), this is where everyone's coffee is. Both read-only — the
+             guest owns none of these three values.
+
+             ⚠ `:cycle`, never `:steps`. The optional `steps` prop is module 18's
+             desc-injection seam; a consumer that builds its own array also owns the
+             `state` field, and that is exactly where stage-before-status ordering —
+             the defect this module exists to keep off a screen (CS-T1 §10) — gets
+             back in. The component calls `timelineSteps()` itself.
+
+             The three fields ride `statusPayload` (§UC-CS-004), so this costs no
+             request. It is rendered in the OPEN state too (step 1 tells a guest who
+             can still edit how long they have), and hidden only when the sub-order
+             is `cancelled` — a cancelled guest has no coffee to locate, and the
+             danger banner above carries that state instead. Edit mode hides it with
+             the whole read view (one `v-if`, the `GuestInviteRequest` pattern), and
+             the status-404 card is a separate branch with no cycle at all. -->
+        <div
+          v-if="cycle && !isCancelled"
+          class="card"
+          style="padding:16px"
+          data-testid="guest-timeline-card"
+        >
+          <div class="field-lbl">Kde je tvoja káva</div>
+          <CycleTimeline :cycle="cycle" />
         </div>
 
         <!-- Items + total. A cancelled sub-order KEEPS its lines — GSO-T4 cancels by
@@ -558,6 +718,7 @@ async function submitEdit(payloadItems) {
           <CartLineList
             v-if="items.length > 0"
             :items="statusLines"
+            :extras="statusExtras"
             :purpose-order="purposeOrder(products)"
             line-testid="status-item"
             :style="isCancelled ? 'text-decoration:line-through' : null"
@@ -570,9 +731,17 @@ async function submitEdit(payloadItems) {
             <hr class="divider" style="margin:12px 0" />
             <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">
               <span class="field-lbl" style="margin:0">Celkom</span>
-              <span class="display" style="font-size:22px" data-testid="status-total">{{ fmtEur(order?.total) }}</span>
+              <span class="display" style="font-size:22px" data-testid="status-total">{{ fmtEur(amountDue) }}</span>
             </div>
           </template>
+        </div>
+
+        <!-- 20 §UC-GP-007 items 4-5 — the point card. On `packeta_address`, never on the
+             fee, so a CANCELLED Packeta order (fee zeroed, point kept) still shows it. -->
+        <div v-if="isPacketaOrder" class="card" style="padding:16px" data-testid="status-packeta-card">
+          <span class="field-lbl">Výdajné miesto Packeta</span>
+          <div style="font-weight:700;overflow-wrap:anywhere" data-testid="status-packeta-address" data-user-copy>{{ order.packeta_address }}</div>
+          <div v-if="order.guest_email" class="sub" style="margin-top:6px;overflow-wrap:anywhere">Packeta ti pošle informácie o zásielke na <span data-user-copy>{{ order.guest_email }}</span>.</div>
         </div>
 
         <!-- ================= actions, by state (§UC-GX-006 item 4) =================
@@ -670,7 +839,7 @@ async function submitEdit(payloadItems) {
     <NeoModal
       v-if="showCancelConfirm"
       title="Zrušiť objednávku?"
-      subtitle="Objednávka sa zruší a už ju nebude možné obnoviť. Ak si budete chcieť objednať znova, požiadajte kolegu o odkaz."
+      subtitle="Objednávka sa zruší a už ju nebude možné obnoviť. Ak si budeš chcieť objednať znova, požiadaj kolegu o odkaz."
       @close="showCancelConfirm = false"
     >
       <div class="banner danger slim">
@@ -699,6 +868,8 @@ async function submitEdit(payloadItems) {
       :reference="payment.reference"
       :iban="payment.iban"
       :revolut-username="payment.revolut_username"
+      :variable-symbol="payment.variable_symbol"
+      :creditor-name="payment.creditor_name"
       @close="showPaymentModal = false"
     />
   </div>

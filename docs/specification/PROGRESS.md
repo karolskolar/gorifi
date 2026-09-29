@@ -4,7 +4,7 @@ Task definitions live in **`docs/specification/02…06-*.md`** (UC IDs are those
 bundle is `docs/design/friends-portal-redesign/`, its `theme.css` + 17 screenshots are the fidelity
 reference). This file is the dependency-ordered build plan derived from them.
 
-**Legend** — `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked.
+**Legend** — `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked · `[-]` split (see sub-rows).
 One row = one shippable pipeline run (`/next-task`). **Top-to-bottom = dependency order** — never
 start a row before the rows above it that it depends on. `⚠` marks a cross-task seam: what an earlier
 task deliberately left unfinished and which later row completes it. ` · model=heavy` tags slices worth
@@ -248,7 +248,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 - [x] FUP-T13  ⚠ **The residual non-string 500s — bind errors and numeric coercion, NOT string methods.** Enumerated and **measured** by FUP-T12 (three of the eight originally claimed did NOT reproduce as described — these are the verified shapes, not the guesses): `cycles.js` POST/PATCH `name` with `{toString:1}` ⇒ 500 +1142/+1141 B (`RangeError: Too few parameter values`); `products.js:61` `name` with `{}` ⇒ 500 +1110 B; `products.js` `stock_limit_g` POST+PATCH ⇒ 500 **only** with `{toString:1}` (`{}` is accepted 201/200); `bakery-products.js:64/89` `name`/variant `price` with `{}` ⇒ 500 +1126 B each; `admin.js:173` settings ⇒ 500 +1140 B — ⚠ **the key is `friendsPassword`, not `friends_password`** (a `friends_password` body is a silent no-op, which is why an earlier probe missed it). All `requireAdmin`, so lower exposure than FUP-T10/T11/T12's public ones. ⚠ **`rewards.js:11` (`parseInt(req.query.limit)`) is NOT in this class** — 500 but only **+72 B and NO stack**, because its own try/catch logs `e.message` only: a wrong status, not a log-flood. Fix it for correctness, not hygiene. ⚠ Follow the family's established rules: keep each route's existing status/message/`field`, loosen nothing, and **assert the STORED value read back** where a coercing guard could pass a status check while writing garbage (FUP-T12 found `String()` silently storing `"[object Object]"` into an audit field).
 - [x] FUP-T14  ⚠ **`transactions.js` date handling — two distinct bugs, and NEITHER is a non-string bug.** Corrected by FUP-T12 after the review mis-classed it: (1) `new Date(date).toISOString()` at `transactions.js:68` and `:179` throws `RangeError: Invalid time value` ⇒ **500 + 1071 B stack** for an ordinary **string** — `{"date":"garbage"}` is enough, on `POST /transactions/payment` and `PATCH /transactions/:id`, both `requireAdmin`; (2) the looseness half — `{"date":12345678}` is **silently accepted** and stores `1970-01-01T…`, i.e. a plausible-looking wrong date in a financial ledger. ⚠ Fix both together: a rejected date must 400 with an existing message, and a numeric/undated body must not silently become the epoch. The ledger is money — prefer refusing to guessing.
 - [x] FUP-T15  ⚠ **The bind-guard class outside FUP-T13's five files — enumerated and measured, not fixed.** Same mechanism (`helpers/bind-value.js` already exists; `bindValue`/`bindRecord` is the fix, and the helper carries **no policy**, so each call site keeps its own "absent" handling). Three throws to cover: `{}` ⇒ `RangeError: Too few parameter values` (better-sqlite3 reads a plain object as a **named**-param map), a multi-element array ⇒ `Too many` (an array argument is **spread**), `true` ⇒ `TypeError: can only bind…`, plus `{toString:1}` through `parseInt`/`parseFloat`. ⚠ **Do the PUBLIC/token ones first:** `guest.js:273-275` (`items[i].product_id`, public via token, `guestWriteLimiter`) and `friends.js:178` (`friendId`, public behind the shared password). Then friend-auth: `friends.js:456/509`, `vouchers.js:146`, `invitations.js:218` (⚠ the last is *caught* and still 500s). Then `requireAdmin`: `orders.js:183/199/322/335`; `transactions.js:48/55/73`, `:106/113/125`, `:164/189`; `vouchers.js:38/49/57/69`, `:93/98/103`; `invitations.js:242-249`, `:534-552`; `friend-groups.js:79/89`, `:117/123`. ⚠ **LATENT, with blockers — do not re-litigate:** `vouchers.js:197` (`voucher.friend_id !== Number(friendId)` is NaN-true ⇒ 403 first); `products.js:70/119` (the route requires `req.file`, so the body is multipart and every field is a string); `admin.js:58/68` (FUP-T11's recorded bcrypt exception, different class). ⚠ Family rules apply verbatim: keep each route's existing status/message/`field`, **assert the STORED value read back** (FUP-T13 found a malformed PATCH silently *removing* a stock limit with a 200), never coerce on an UPDATE, and cover a **one-element array** — FUP-T13 found it was a silent *success* that stored the bare string.
-- [!] FUP-T4  Retire the legacy shared-password mode (`auth_mode = 'legacy'`/`'transition'`): the shared-password auth branch, the `login-list` dropdown, the legacy login card in `FriendPortal.vue`, the AdminInvitations amber banner — `07 §Accepted risks` + memory FUP-3 ⚠ **BLOCKED, and the blocker is production data, not code.** Removing shared-password login LOCKS OUT any active friend who has no personal `username` + `password_hash`. That coverage must be measured on the prod DB first (count active friends missing either), and any gap closed by issuing credentials (the per-friend "Nastaviť username" + "Resetovať heslo" actions, or the module 07 approval path for new members) BEFORE this row can start. ⚠ It also wants its own spec module: several shipped specs pin legacy behaviour (`public-flow` asserts the legacy card, `friend-login-list`, `modern-login` stubs the mode probe, `forced-change-ui`), so the sanctioned-edit list is non-trivial. Product owner has confirmed they want it gone (2026-08-13).
+- [!] FUP-T4  Retire the legacy shared-password mode (`auth_mode = 'legacy'`/`'transition'`): the shared-password auth branch, the `login-list` dropdown, the legacy login card in `FriendPortal.vue`, the AdminInvitations amber banner — `07 §Accepted risks` + memory FUP-3 ⚠ **BLOCKED, and the blocker is production data, not code.** Removing shared-password login LOCKS OUT any active friend who has no personal `username` + `password_hash`. That coverage must be measured on the prod DB first (count active friends missing either), and any gap closed by issuing credentials (the per-friend "Nastaviť username" + "Resetovať heslo" actions, or the module 07 approval path for new members) BEFORE this row can start. ⚠ It also wants its own spec module: several shipped specs pin legacy behaviour (`public-flow` asserts the legacy card, `friend-login-list`, `modern-login` stubs the mode probe, `forced-change-ui`), so the sanctioned-edit list is non-trivial. Product owner has confirmed they want it gone (2026-08-13). ⚠ GL-T1 residual for the flip runbook: standing guest-link tokens minted during the legacy window OUTLIVE the flip (it deletes sessions, not `friends.guest_link_token`) — rotate every standing token at the flip (learnings 11 §Seams).
 
 ---
 
@@ -299,9 +299,9 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 - [x] GA-T6  ⚠ **Same mode-gate question as GA-T7** (GA-T5): the prompt keys only on `googleClientId` + `googleLinked` + `googlePromptDismissed`, so on a legacy deployment it would offer a link the API now 409s. · ⚠⚠ **BEFORE ANYTHING ELSE — THE TRIGGER MUST BE THE LITERAL `googleLinked === false`, NEVER `!entry.googleLinked`** (GA-T4 review). `POST /magic-link/redeem` deliberately does **NOT** publish `googleLinked`/`googlePromptDismissed`, so on a magic-link login the field is **absent**; `!undefined` is `true`, which would fire the link prompt **for a friend who is already linked**, stacked on ML-T6's `showMagicPrompt` (`FriendPortalSession.vue:287`) — the exact modal-stacking §UC-GA-006's "one modal per login, maximum" forbids. The omission is the ENFORCEMENT MECHANISM; do not "fix" redeem to publish the fields. Same reasoning covers the legacy shared-password branch. Recorded at `magic-link.js:378`. · Post-login link prompt on NeoModal: Áno teraz / Teraz nie / Už sa nepýtať, ONE prompt per login max, gate-skip rule, session-boundary safe — `10 §UC-GA-006` · model=heavy ⚠ "Teraz nie" is CLIENT-ONLY, never a server write — the flag endpoint serves only "už sa nepýtať"; prompt state lives on the handshake entry + a local declined-ref — NO module-level state, NO localStorage, NO friend-id-keyed state (the six-leak-bugs hazard restated as a spec requirement); trigger matrix: non-Google modern login only, SKIP when the forced-password-change/credential-setup gate fired, never on session restore; the mandatory two-friend session-boundary e2e is UC-GA-013 item 5; small print points at GA-T7's profile section.
 - [x] GA-T7  ⚠⚠ **CALL `gis.initialize()` UNCONDITIONALLY before `renderButton`, never behind an "already initialised" flag** (GA-T6): GIS registers **ONE GLOBAL CALLBACK**, and the profile modal and GA-T6's prompt can both exist in one session — whichever renders last owns it. GA-T6 found this live: the prompt re-registered the callback, so after a logout the login card's guard skipped `initialize` and its button **rendered perfectly and did nothing**, wired to an unmounted component. Prove it by FIRING a credential at the other surface's callback, not by counting calls. · ⚠⚠ **GATE THE SECTION ON `googleClientId && authMode === 'modern'`, NOT ON `googleClientId` ALONE** (GA-T5). §UC-GA-007 says client-id alone — but GA-T5 put a modern-mode guard on `PUT /:id/google-link`, so on a legacy deployment the spec's condition ships a **GIS button whose every link attempt 409s**. Either gate on both (the §UC-GA-005 condition) or render the `field:'auth_mode'` 409 in the error slot. ⚠ Also consumes GA-T5's `warning:'no_password'` on unlink. ⚠ **And the affordance it is specced to key on DOES NOT EXIST** (GA-T4): `hasCredentials` gates the **change**-password fold, which is *hidden* when false, so a friend with no `password_hash` has **no on-screen path to set one** — GA-T7 must BUILD it, not assume it. · Profile-modal Google section: linked/unlinked states, manual link + unlink with the no-password warning — `10 §UC-GA-007` ⚠ purely ADDITIVE to module 03's "Upraviť profil" (which FC-T4 and ML-T6 have also touched by now) — `portal-profile-modal.spec.js` passes UNCHANGED; updates the handshake-scoped `googleLinked` in place so GA-T6's prompt logic stays consistent within the session; never touches `google_prompt_dismissed`; seeds from the login handshake if the profile fetch doesn't carry the derivation.
 - [x] FUP-T20  ⚠ **The friend profile modal mislabels the display name as a LOGIN name — the SAME bug module 11 fixed on the admin side, which survived because the guard only greps `AdminFriends.vue`.** Found by the product owner on staging. `FriendPortalSession.vue:1743` labels the field `Prihlasovacie meno *` while it binds `profileName` → writes **`friends.name`**, and its own helper text says *"Toto meno vidí správca a kolegovia"*. The real login is the read-only `Užívateľské meno` two rows above. A friend edits "login name", their login does not change, and their display name silently does. ⚠ **PRODUCT-OWNER MAPPING, confirmed 2026-08-17:** `friends.name` = **Meno a priezvisko**, provided BY THE FRIEND and **required for Packeta delivery**; `friends.username` = the login, the friend's own choice; `friends.display_name` = the **admin-only sidenote** ("recommended by X") that must **never** appear in the friend portal. ⚠⚠ **AND THE SIDENOTE IS CURRENTLY SENT TO THE FRIEND'S BROWSER.** `GET /friends/:id/profile` does `SELECT *` and `sanitizeFriend` strips only `password_hash`/`access_token`/`invite_code`/`google_sub` — **not `display_name`**. Nothing renders it, so nobody has noticed, but it is one DevTools tab from visible. ⚠⚠ **DO NOT strip it in `sanitizeFriend`** — that function has **7 call sites including admin ones**, and `AdminFriends.vue` reads `display_name` **6 times** for the Poznámka column. Strip it on the **friend-facing route only**. Scope: (1) relabel to `Meno a priezvisko *` with helper text naming delivery; (2) **remove `Jedinečné ID`** (an internal id, no friend value); (3) strip `display_name` from the friend payload only; (4) **widen the guard** so it covers `FriendPortalSession.vue` too, not just `AdminFriends.vue`; (5) measure the modal at 320px and fix any overflow. ⚠ **Username stays READ-ONLY** — product-owner decision: editing it can wait, Google auth likely removes the need, and the admin can rename. Do **not** build it. ⚠ `portal-profile-modal.spec.js` carries **13** label/field pins on this modal — the relabel and the removed field are e2e-immutability **case (a)** edits; retarget, never weaken, and cite this row.
-- [ ] FUP-T21  ⚠ **The LAST copy of the "login name" lie, plus two stale spec pins** — all three found by FUP-T20 and left deliberately. (1) ⚠ **`friends.js:1004` still answers `Prihlasovacie meno je povinné`** when a friend PATCHes their profile without a name — the field is now labelled `Meno a priezvisko *`, so the error names something that no longer exists on screen. **Unreachable from the UI** (client guard + disabled save), and it is pinned as a deliberate module-03 assertion in `friends-consolidation.spec.js:290` **and** `nonstring-body-shape.spec.js:56`, so changing it is a two-file case (a) edit — which is exactly why FUP-T20 did not fold it in. (2) `03-friend-login-portal.md §UC-FL-009` **still specifies the retired UI verbatim**: its field table lists the `Jedinečné ID + Užívateľské meno` row, the label `Prihlasovacie meno *`, the help text `Toto meno vidí správca a kolegovia.`, and a business rule that the ID is "read-only by design". The product-owner mapping in FUP-T20 supersedes it, but **a reviewer diffing code against the spec will hit this and think the code is wrong.** (3) `11-friends-consolidation.md §UC-FC-002`'s guard sentence **still names one file** (`AdminFriends.vue`) — the exact narrowness that let FUP-T20's bug survive. `CLAUDE.md` now carries the two-file form; the spec line is stale in the same way. ⚠ Cheap and worth doing together, since all three are the same drift: the shipped UI is right and three artefacts still describe the old one.
-- [ ] FUP-T19  ⚠ **`POST /api/admin/logout` is PUBLIC and deletes the single `admin_token` row — any anonymous caller can end the admin session.** Pre-existing, unrelated to module 10, surfaced by GA-T10's review because that row's "ONE admin token app-wide" reasoning makes it visible. Not a data breach and not privilege escalation — it grants no access — but it is an **unauthenticated denial of the admin surface**: a loop of anonymous POSTs keeps an admin permanently logged out, and the admin has no way to tell it from a bug. ⚠ **Decide the shape before coding.** A logout that requires the token it destroys is the obvious fix and is *usually* right, but check the two callers first (`AdminLogin`/`AdminDashboard`) — if any relies on logging out with an already-invalid token (e.g. after the OTHER login path rotated it, which module 10 now makes routine), a naive `requireAdmin` turns a recoverable state into a stuck one. **Consider accepting the token in the body and no-op-ing on mismatch (idempotent 200, GSO-T5 convergence)** rather than 401-ing. ⚠ Add the route to `ADMIN_ENDPOINTS` in `api-security.spec.js` only if it ends up guarded — if it stays deliberately public, record WHY at the route, since the sweep's reader will otherwise assume an omission. ⚠ **Also in scope, same file, one line:** a corrupt `settings.admin_google_subs` is treated as empty (correct, fails closed) but **the next successful POST OVERWRITES it**, destroying entries a human could have salvaged from truncated JSON. `admin.js:100`'s `console.error` names the condition but not the value. Log the bounded raw value, or park it under a `_corrupt` key before overwriting.
-- [ ] GA-T11  ⚠ **A friend with `hasCredentials === false` has NO on-screen path to set a password — a real gap, deferred from GA-T7 with reasoning.** Found by GA-T4, scoped by GA-T7: `hasCredentials` gates the **change**-password fold, which is *hidden* when false. ⚠ **It is a BACKEND row, not an additive UI one, which is why GA-T7 did not build it:** `PUT /:id/change-password` **400s** without an existing password and `POST /:id/setup-credentials` **409s** once a username exists — **a Google-registered friend (GA-T8/T9) fits NEITHER**, so this needs a new credential-minting route with its own security review. ⚠ That review must start from GA-T5's finding: a route that writes a credential needs a **modern-mode guard**, not merely an ownership guard, because a shared password can mint anybody's session. ⚠ **CORRECTED (GA-T7 review): the original absence pin did NOT do its job.** `'Zmeniť heslo'` `toHaveCount(0)` both duplicated a shipped assertion (`portal-profile-modal.spec.js:265`, same locator, same condition) **and would not have detected this gap at all** — a set-a-password affordance is labelled **`Nastaviť heslo`**, so it would have sailed straight past. Retargeted to the real invariant: a credential-less friend's dialog offers **no** password-setting control (zero buttons matching `/heslo/i`). **That is the pin to delete as part of this row.** ⚠ Also corrected: `POST /:id/setup-credentials` 409s only when `password_hash` **AND** `username` are both present (`friends.js:444`), so it is narrower than "once a username exists". The scope call stands — a Google-login-only friend has neither, so the route is still not a fit — but start from what the code does, not this row's first summary of it. Until then GA-T7's unlink warning is truthful, not a placeholder: §UC-GA-004 defines the admin reset as the recovery path, and the copy says so (`Bez hesla sa nebudete môcť prihlásiť, kým vám správca nenastaví nové heslo.`). ⚠ Becomes materially more urgent once **GA-T9** lands, since a Google-signup friend may never have had a password at all.
+- [x] FUP-T21  ⚠ **The LAST copy of the "login name" lie, plus two stale spec pins** — all three found by FUP-T20 and left deliberately. (1) ⚠ **`friends.js:1004` still answers `Prihlasovacie meno je povinné`** when a friend PATCHes their profile without a name — the field is now labelled `Meno a priezvisko *`, so the error names something that no longer exists on screen. **Unreachable from the UI** (client guard + disabled save), and it is pinned as a deliberate module-03 assertion in `friends-consolidation.spec.js:290` **and** `nonstring-body-shape.spec.js:56`, so changing it is a two-file case (a) edit — which is exactly why FUP-T20 did not fold it in. (2) `03-friend-login-portal.md §UC-FL-009` **still specifies the retired UI verbatim**: its field table lists the `Jedinečné ID + Užívateľské meno` row, the label `Prihlasovacie meno *`, the help text `Toto meno vidí správca a kolegovia.`, and a business rule that the ID is "read-only by design". The product-owner mapping in FUP-T20 supersedes it, but **a reviewer diffing code against the spec will hit this and think the code is wrong.** (3) `11-friends-consolidation.md §UC-FC-002`'s guard sentence **still names one file** (`AdminFriends.vue`) — the exact narrowness that let FUP-T20's bug survive. `CLAUDE.md` now carries the two-file form; the spec line is stale in the same way. ⚠ Cheap and worth doing together, since all three are the same drift: the shipped UI is right and three artefacts still describe the old one.
+- [x] FUP-T19  ⚠ **`POST /api/admin/logout` is PUBLIC and deletes the single `admin_token` row — any anonymous caller can end the admin session.** Pre-existing, unrelated to module 10, surfaced by GA-T10's review because that row's "ONE admin token app-wide" reasoning makes it visible. Not a data breach and not privilege escalation — it grants no access — but it is an **unauthenticated denial of the admin surface**: a loop of anonymous POSTs keeps an admin permanently logged out, and the admin has no way to tell it from a bug. ⚠ **Decide the shape before coding.** A logout that requires the token it destroys is the obvious fix and is *usually* right, but check the two callers first (`AdminLogin`/`AdminDashboard`) — if any relies on logging out with an already-invalid token (e.g. after the OTHER login path rotated it, which module 10 now makes routine), a naive `requireAdmin` turns a recoverable state into a stuck one. **Consider accepting the token in the body and no-op-ing on mismatch (idempotent 200, GSO-T5 convergence)** rather than 401-ing. ⚠ Add the route to `ADMIN_ENDPOINTS` in `api-security.spec.js` only if it ends up guarded — if it stays deliberately public, record WHY at the route, since the sweep's reader will otherwise assume an omission. ⚠ **Also in scope, same file, one line:** a corrupt `settings.admin_google_subs` is treated as empty (correct, fails closed) but **the next successful POST OVERWRITES it**, destroying entries a human could have salvaged from truncated JSON. `admin.js:100`'s `console.error` names the condition but not the value. Log the bounded raw value, or park it under a `_corrupt` key before overwriting.
+- [x] GA-T11  ⚠ **A friend with `hasCredentials === false` has NO on-screen path to set a password — a real gap, deferred from GA-T7 with reasoning.** Found by GA-T4, scoped by GA-T7: `hasCredentials` gates the **change**-password fold, which is *hidden* when false. ⚠ **It is a BACKEND row, not an additive UI one, which is why GA-T7 did not build it:** `PUT /:id/change-password` **400s** without an existing password and `POST /:id/setup-credentials` **409s** once a username exists — **a Google-registered friend (GA-T8/T9) fits NEITHER**, so this needs a new credential-minting route with its own security review. ⚠ That review must start from GA-T5's finding: a route that writes a credential needs a **modern-mode guard**, not merely an ownership guard, because a shared password can mint anybody's session. ⚠ **CORRECTED (GA-T7 review): the original absence pin did NOT do its job.** `'Zmeniť heslo'` `toHaveCount(0)` both duplicated a shipped assertion (`portal-profile-modal.spec.js:265`, same locator, same condition) **and would not have detected this gap at all** — a set-a-password affordance is labelled **`Nastaviť heslo`**, so it would have sailed straight past. Retargeted to the real invariant: a credential-less friend's dialog offers **no** password-setting control (zero buttons matching `/heslo/i`). **That is the pin to delete as part of this row.** ⚠ Also corrected: `POST /:id/setup-credentials` 409s only when `password_hash` **AND** `username` are both present (`friends.js:444`), so it is narrower than "once a username exists". The scope call stands — a Google-login-only friend has neither, so the route is still not a fit — but start from what the code does, not this row's first summary of it. Until then GA-T7's unlink warning is truthful, not a placeholder: §UC-GA-004 defines the admin reset as the recovery path, and the copy says so (`Bez hesla sa nebudete môcť prihlásiť, kým vám správca nenastaví nové heslo.`). ⚠ Becomes materially more urgent once **GA-T9** lands, since a Google-signup friend may never have had a password at all.
 - [x] GA-T8  Invite-registration Google attach: optional `google_id_token` in `POST /invitations/register` (verify → freeze `google_sub`/`google_email` on the invitation row) + InviteRegister optional GIS block — `10 §UC-GA-008` ⚠ absent token ⇒ BYTE-IDENTICAL flow (pin it); 400 `field:'google'` — registration is not a login; two courtesy 409 dedupes (existing friend / other pending invitation, app-check only); the invitation row's google fields are FROZEN at submit (07's convention) — GA-T9 copies them, never re-verifies; the register handler becomes async (07's hardened path — care); the AdminInvitations "Google" badge is assigned to GA-T9; rides abuseLimiter (⚠ local-run caveat: repeated runs exhaust the invite-code lookup — raise `RATE_LIMIT_ABUSE_MAX`).
 - [x] GA-T9  ⚠ **`google_email` can be NULL while `google_sub` is SET** (unverified address — GA-T8): the approval dialog's Google line needs the same fallback the invite view has, and this is exactly why `GET /api/invitations` deliberately keeps the raw sub (see GA-T8's recorded decision — if it is ever stripped, replace it with a derived `googleLinked` boolean, **never** with the e-mail alone). ⚠ GA-T8 deliberately did NOT build the AdminInvitations "Google" badge — the row assigns it here; `SELECT i.*` already carries the data, so no route change. · Approval of a Google-attached invitation: friend INSERT carries the two google columns, interim-collision 409 + "approve without the Google link" (`drop_google_link: true` re-submit, resolved 2026-08-15) + dialog Google line + invitations-list badge — `10 §UC-GA-009` · model=heavy ⚠ IA-T3's STRUCTURAL INVARIANTS preserved: still ONE friend INSERT, exactly TWO writes inside the tx, bcrypt/collision loops/pre-checks OUTSIDE it, NO token verification at approval (the stored sub is data, not a credential) — restate as code comments, no test can hold them; the 409 leaves NO friend row written; the 201 body gains NOTHING (strip rule — the dialog learns link state from the invitation row it already has); `invitation-approval.spec.js` passes unchanged + gains the Google cases. OPEN (recorded): the "…alebo sa prihlás cez Google" sentence is unsigned — the credentials message ships UNCHANGED until the product owner signs it.
 - [x] GA-T10  ⚠ **YOUR DESCRIBE ROTATES THE ONE APP-WIDE ADMIN TOKEN** (§UC-GA-011 adds a second minting path) **in the same file as GA-T9's UI tests.** GA-T9 pre-hardened — `loginAsAdminUI(page)` is now the first statement of all four of its UI tests — but any test of yours doing setup on a stale token will 401 on its first call and **read as someone else's regression**. Adopt the browser token after every mint. · Admin surface: google-allowlist CRUD (`settings.admin_google_subs`, GET strips sub values — `/"sub"/` zero times) + `POST /api/admin/google-login` + AdminSettings section + AdminLogin GIS button (password stays, permanent backup) — `10 §UC-GA-010,011` ⚠ the three allowlist routes join `ADMIN_ENDPOINTS` in `api-security.spec.js`; the two PUBLIC Google login endpoints must NOT (UC-GA-013 item 1); the mint is byte-identical to password login — ONE admin token app-wide, Google login ROTATES it too, so any e2e mixing UI login with API-minted tokens must adopt the browser's token (the IA trap); allowlist add proves possession via an id_token — no hand-typed identities; removing the LAST entry is allowed (password backup is the guarantee, brief item 3); no `auth_mode` dependency (that governs the friend surface only); admin screens stay shadcn.
@@ -367,9 +367,1924 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 - [x] GR-T6  Admin UI in CycleDetail: guest-link copy / "Vytvoriť hosťovský odkaz" per friend row, resend URL + "Zrušiť" (inline confirm incl. paid/refund warning) per nested sub-order + `api.js` methods — 14 §UC-GR-008 ⚠ terminal row of the admin arc — needs GR-T3 (links), GR-T4 (cancel), GR-T5 (token in payload), GR-T2 (target page). D9: resend on nested sub-order rows ONLY (refund-card widening is a rejected-for-now alternative; the payload already carries the token, so it would be UI-only later). Admin skin: shadcn only, ZERO neo/theme classes in the CycleDetail diff (asserted). Conventions load-bearing: non-blocking fetch (loadGuestUnpaid precedent), `loadSeq` guard, per-row `rowSeq` pending on create AND cancel (money screen), client-side join by `host_friend_id` — never a backend fold (the GSO-T6/T8 JOIN-multiplication class). Cancelled row STAYS listed (now a pinned requirement — the PO's "svieti ako potvrdenie"). All admin labels DRAFT.
 - [x] GR-T8  Guest order-confirmation e-mail on submit: `deliverGuestConfirmation` (module-08 seam), fire-and-forget POST-COMMIT, canonical URL via `resolveLoginUrl`/`PUBLIC_BASE_URL` — 14 §UC-GR-011 · model=heavy ⚠ needs GR-T1+T2 (the mailed URL must resolve). Heavy despite small surface — the GA-T8 hazard class IS the design: the submit handler stays a plain synchronous `(req,res)` function (no `async`, no `await` anywhere — an awaited send both fails the 201 on mail trouble and reopens the out-of-transaction stock-check race); the send fires strictly after the insert transaction commits as a floating promise (deliverMagicLink template verbatim in structure, D11). Send ONLY when `guest_email` present (existing `validateIdentity` + the mailer's own `EMAIL_SHAPE` gate — no new validation invented); content = the 201's facts via `guestPaymentReference` (one formatter); send-on-CREATE only (D10 — edit/cancel mails are a NAMED follow-up, must not be "completed" here); no new rate-limit bucket (rides `guestWriteLimiter`; the deliberate contrast to the magic-link split is recorded). e2e on the shared `e2e/mailgun-harness.js` (reuse, never fork; self-skips without the spawn env): one send with reference/total/canonical URL in BOTH parts, zero sends without e-mail, 201 survives stub 500, no send on PUT/`items:[]`, `PUBLIC_BASE_URL` beats Origin. ⚠ Operator note: verify `PUBLIC_BASE_URL` on prod before enabling `MAILGUN_*`. Subject/body DRAFT.
 
-- [ ] GR-T9  **The shared e2e DB DEGRADES the suite as fixtures accumulate — measured, and it has already produced three wrong diagnoses** ⚠ Symptom: `share-dialog.spec.js` fails 2/15 and takes **3.7 minutes** against `/tmp/gorifi-e2e.sqlite` after a day of module-14 runs; the SAME tree against a **freshly seeded** DB passes **15/15 in 19 seconds**. Cause is fixture accumulation, not code and not a test race: every `makeCycle`/`makeHost` helper adds rows nothing ever removes, the friend portal renders ALL cycles, and once the page is slow enough the tests that live on short budgets fall over — `share-dialog.spec.js:260`'s 1500 ms `page.route` window, `:187`'s locator counts, and (sporadically) `guest-admin-view.spec.js:1111` and `guest-host-view.spec.js:774` at their 30 s timeouts. ⚠ **Three successive wrong readings are recorded because each was plausible and each cost time:** (1) GR-T2 — "a race that fails alone and passes in a batch" (one lucky green batch); (2) GR-T3 — "simply racy, timing is the variable" (right that it is not invocation shape, wrong about the cause); (3) GR-T5 — "pre-existing on the baseline" (true but uninformative — it is pre-existing on EVERY baseline, including ones where it passes). The orchestrator bisected `bc432b5` and `723f77e` looking for a regression that does not exist before the fresh-DB run settled it. Fix direction: make DB state a controlled input rather than an accumulating side effect — a per-run fresh `DB_PATH` in the documented recipe (cheapest, and `e2e/seed.mjs` already supports it), and/or fixture cleanup in the heavy helpers. Then re-check whether `share-dialog.spec.js:260`'s 1500 ms budget is still too tight on a slow machine and widen it if so. ⚠ This row is the ONE sanctioned edit to `share-dialog.spec.js` in module 14. ⚠ **Until it lands, a red `share-dialog` (or a 30 s timeout anywhere) means "reseed and re-measure", NOT "you broke something".** ⚠ **SECOND INSTANCE, found during GR-T6 and the same root cause:** `item-packed.spec.js` fails 2/3 on **any DB it has already run against once** — its `beforeAll` creates products by FIXED NAME in the seeded cycle and never asserts the create status, so module 12's `duplicate_in_cycle` guard now answers 409, `prod1.id` is `undefined`, the cart prices nothing, `total 0` deletes the order and the submit 404s. Passes 3/3 on a fresh DB. That one is a missing status assertion as much as it is DB state — fix both here: assert the create, and make DB state a controlled input.
+- [x] GR-T9  **The shared e2e DB DEGRADES the suite as fixtures accumulate — measured, and it has already produced three wrong diagnoses** ⚠ Symptom: `share-dialog.spec.js` fails 2/15 and takes **3.7 minutes** against `/tmp/gorifi-e2e.sqlite` after a day of module-14 runs; the SAME tree against a **freshly seeded** DB passes **15/15 in 19 seconds**. Cause is fixture accumulation, not code and not a test race: every `makeCycle`/`makeHost` helper adds rows nothing ever removes, the friend portal renders ALL cycles, and once the page is slow enough the tests that live on short budgets fall over — `share-dialog.spec.js:260`'s 1500 ms `page.route` window, `:187`'s locator counts, and (sporadically) `guest-admin-view.spec.js:1111` and `guest-host-view.spec.js:774` at their 30 s timeouts. ⚠ **Three successive wrong readings are recorded because each was plausible and each cost time:** (1) GR-T2 — "a race that fails alone and passes in a batch" (one lucky green batch); (2) GR-T3 — "simply racy, timing is the variable" (right that it is not invocation shape, wrong about the cause); (3) GR-T5 — "pre-existing on the baseline" (true but uninformative — it is pre-existing on EVERY baseline, including ones where it passes). The orchestrator bisected `bc432b5` and `723f77e` looking for a regression that does not exist before the fresh-DB run settled it. Fix direction: make DB state a controlled input rather than an accumulating side effect — a per-run fresh `DB_PATH` in the documented recipe (cheapest, and `e2e/seed.mjs` already supports it), and/or fixture cleanup in the heavy helpers. Then re-check whether `share-dialog.spec.js:260`'s 1500 ms budget is still too tight on a slow machine and widen it if so. ⚠ This row is the ONE sanctioned edit to `share-dialog.spec.js` in module 14. ⚠ **Until it lands, a red `share-dialog` (or a 30 s timeout anywhere) means "reseed and re-measure", NOT "you broke something".** ⚠ **SECOND INSTANCE, found during GR-T6 and the same root cause:** `item-packed.spec.js` fails 2/3 on **any DB it has already run against once** — its `beforeAll` creates products by FIXED NAME in the seeded cycle and never asserts the create status, so module 12's `duplicate_in_cycle` guard now answers 409, `prod1.id` is `undefined`, the cart prices nothing, `total 0` deletes the order and the submit 404s. Passes 3/3 on a fresh DB. That one is a missing status assertion as much as it is DB state — fix both here: assert the create, and make DB state a controlled input.
+
+---
+
+# Roadmap October 2026 — modules 15–21 (added 2026-09-19)
+
+> Source: `docs/superpowers/specs/2026-09-03-roadmap-requirements.md` §18 (roadmap v3) + module files
+> `15…21-*.md` (each ends with the binding „PO decisions 2026-09-19“ block). **Sections 13–19 below are
+> ONE dependency-ordered sequence**: 15 → 16 → 17 → 18 → 19 → 20 → 21, which is also the roadmap order.
+> Rules inherited by every row: every new admin route joins `ADMIN_ENDPOINTS`; new public guest routes join
+> the zero-external-requests sweep and NEVER `ADMIN_ENDPOINTS`; hand-over and notifications are
+> ledger-neutral (pin `transactions` unmoved); friend/guest copy says „objednávka“, never „cyklus“/„kolo“;
+> full suite only at each module's closeout row; targeted files per row otherwise. ` · model=heavy` marks
+> money / state-machine / public-write rows.
+>
+> Cross-module seams that the ORDER resolves (do not re-litigate per row): `helpers/cycle-stage.js
+> markCycleReady()` — stub in DP-T1, body in CS-T1, called by DP-T3/T4; `notifications` table — CREATE in
+> DP-T1, rows written by DP-T3, rendered/released/sent by module 21; `helpers/phone.js toE164` — shipped by
+> GL-T3, adopted unchanged by WA-T1; `lib/roasters.js` — created by PI-T8, imported by GL-T4;
+> `helpers/delivery.js` — DP-T1, consumed by GP-T6 and WA-T3; `CycleTimeline.vue` — CS-T2, mounted FIRST by
+> CS-T3 (admin header, `compact`), then PI-T4/T5 and CS-T4; balance „Zaplatiť“ trigger — PL-T4 on `FriendBalanceCard`, RELOCATED (never
+> duplicated) by PI-T7.
+
+## 13. Payment links (15) — Revolut amount link, PayMe.sk, variable symbol
+
+- [x] PL-T1  `helpers/payment.js` (VS scheme: friend = order id, guest = `9`+id, balance = `8`+friend id; one `paymentSettings()` reader; `guestPaymentBlock()`) + admin setting `payment_creditor_name` (70-char bound, `maxlength`, AdminSettings „Meno príjemcu“, public `payment-settings`) + seed 3b — `15 §UC-PL-001,002` · model=heavy ⚠ no new admin route (settings GET/PUT already listed; `/api/admin/payment-settings` stays PUBLIC); VS derived, never stored; starts `payment-links.spec.js` (settings pins only). ⚠ Module-20 seam: `guestPaymentBlock().amount` is `order.total` until GP-T1 flips that ONE line to `total + delivery_fee` — leave the comment.
+- [x] PL-T2  VS + `creditor_name` in every server payload (guest 201/status, friend order `payment:{variable_symbol}`, balance `payment` block „{Meno} / zostatok“, admin unpaid overview + orders tab, mail row „Variabilný symbol“) + CycleDetail „VS …“ on receivables card AND orders tab — `15 §UC-PL-003,008` · model=heavy ⚠ payloads only GROW; `amount/reference/iban/revolut_username` byte-identical; no revolut.me/payme.sk URL in mail (08 one-origin pin); balance „Zaplatiť“ UI is PL-T4.
+- [x] PL-T3  `lib/payment-links.js` (`revolutLink` amount variant behind `REVOLUT_AMOUNT_LINK`, `paymeLink`, `payBySquarePayload` with `variableSymbol` + `beneficiary = creditorName || 'Gorifi'`) + PaymentModal additive props, amount-suffixed Revolut label, PayMe button (`pointer: coarse`, `v-if`), VS `NeoCopyRow`, guest confirmation/status wiring — `15 §UC-PL-004,005,006,007(guest)` · model=heavy ⚠ SANCTIONED edits ONLY in `guest-payment-modal.spec.js` (`independentQr` gains VS/beneficiary, `:366` href → amount variant, new `hasTouch` PayMe + VS-row tests); `money-rounding.spec.js` stays UNMODIFIED here (friend encode site is PL-T4's). D4 discipline: strike the „FROZEN props“ claim in 06 §UC-GX-005, the component header and the spec header. ⚠ PO verification, not a gate: Revolut `?amount=&currency=` on a phone (flag = one-line fallback), PayMe `CN` 70 / `MSG` 140 caps.
+- [x] PL-T4  Friend surfaces: FriendOrder PaymentModal props + success modal re-pointed at the shared helper + NEW balance „Zaplatiť“ trigger (`data-testid="pay-balance"`, `balanceState==='neg'`) + PaymentModal mount on `FriendBalanceCard` + sanctioned `money-rounding.spec.js` `independentQr` edit (`variableSymbol: String(order.id)`, beneficiary stays `'Gorifi'`) + **module-15 closeout (full suite)** — `15 §UC-PL-007(friend, balance),009` · model=heavy ⚠ `FriendTransactionsModal.vue` UNTOUCHED (one-modal rule); `order-modals.spec.js` :877/:881 pass unmodified. ⚠ Module-18 seam: PI-T7 RELOCATES this trigger + mount into „Zostatok a platby“ and the landing debt banner — never a second PaymentModal for the balance. ⚠ Module-21 seam: messages reuse `helpers/payment.js` VS, never re-derive.
+- [x] FUP-T22  ⚠ **The full suite CANNOT be green against the shipped e2e template — one test fails on DATA, and it blocks every future module closeout.** Found by PL-T4's module-15 closeout run (1841 passed / **1 failed** / 26 skipped). `admin-friends-labels.spec.js:119` sweeps the WHOLE rendered friends list (text + `placeholder`/`title`/`aria-label`/`alt`) and asserts nothing matches `/prihlasovac/i` — the machine-checked half of FUP-T20/T21's "no view that edits `friends.name` may call it a login" rule. GR-T9's production-shaped template (`e2e/fixtures/prod-template.sqlite`, names KEPT by PO decision) contains an **active friend `id 72` whose NAME is literally `Prihlasovacie.meno`**, so the friend's own name trips a guard about the APP'S OWN COPY. ⚠ **Orchestrator-verified as data, not code:** reproduced, then stashed ONLY PL-T4's three view files, rebuilt, reproduced **identically** — and no code change can make it pass while that row renders. ⚠ **Do NOT weaken the sweep** — it is the guard that would have caught the original bug, and any friend could be named anything. ⚠ ~~**Decide the shape before coding.**~~ **RESOLVED — (a) shipped, by DOM subtree; the options below are kept as the record of what was weighed.** (a) Scope the sweep to the app's own COPY and exclude friend-SUPPLIED data (a name is data the admin typed; the rule is about what the view CALLS the field) — the correct fix in principle, but `collectCopy()` deliberately walks attributes too, so the exclusion must be precise or it hollows the guard out; (b) rename that ONE row in `e2e/scrub-template.sql` — cheap and preserves the PO's "screens read like the real thing", and this particular value is a UI string masquerading as a name rather than a person's, but it hides a class of false positive that will recur; (c) both. ⚠ Whatever ships, the acceptance criterion is the same: **a full-suite run against a freshly built template is GREEN**, and the guard still fails when a view genuinely calls the name a login (mutation-prove it, do not assume). ~~⚠ Until this lands, a module closeout must report "1841/1 — the known template/guard conflict", never "green".~~ **SUPERSEDED — this landed; the suite is GREEN at 1865/0/4.**
+
+## 14. Distribution pipeline (16) — delivery types, hand-over stage, board
+
+- [x] DP-T1  Schema `handed_over_at` (orders + guest_orders, CREATE+ALTER) + `notifications` CREATE (verbatim from 01-architecture, no index, no writer) + `helpers/delivery.js` (`deliveryOf`/`deliveryGroupOrder`/`TARGET_LABELS`, read-only; guest `packeta_address` own-property + type-safe) + `helpers/cycle-stage.js` `markCycleReady()` NO-OP STUB + `GUEST_ORDER_FIELDS += handed_over_at` — `16 §UC-DP-001,002,009` ⚠ `helpers/pickup.js` stays the sole WRITER of pickup/Packeta/fee columns; module 21 adds its columns via its own ALTERs and never re-declares the CREATE; CS-T1 replaces ONLY the stub symbol.
+- [x] DP-T2  `GET /cycles/:id/distribution` grows `phone`, `handed_over_at`, `stage`, `delivery`, `kg` per party + guest; top-level `plan[]` (zero-count active locations included) / `totals` / `locations[]`; **the shipped GET joins `ADMIN_ENDPOINTS`** (verified missing today) — `16 §UC-DP-003,013` · model=heavy ⚠ ADDITIVE shape: `guest-distribution.spec.js` / `order-pickup-edit.spec.js` pass unmodified; guest kg merged in JS (never a second LEFT JOIN); starts `distribution-handover.spec.js`.
+- [x] FUP-T23  ⚠ **`DELETE /api/pickup-locations/:id` HARD-DELETES a pickup point that is still in use — data loss, and it is the ONE-HOME rule broken again.** Found by DP-T2 while building a dangling-label fixture (it reached the state through the public API alone, no direct DB write, so it is reachable in prod). `routes/pickup-locations.js:96` guards the delete with `SELECT COUNT(*) FROM **orders** WHERE pickup_location_id = ?` — **`orders` ONLY**. But CLAUDE.md names `helpers/pickup.js` as the ONE HOME for *which row stores a party's pickup*, and that rule is: the `orders` row **if one exists (any status), else `guest_order_links`**. A host with **no own order** stores their pickup on `guest_order_links`, so the reference is invisible to this check and the row is really deleted — the party's pickup point silently becomes a dangling id. ⚠ **Severity is data loss, not a security issue:** the route is `requireAdmin`. DP-T2's payload already TOLERATES the dangling state (target key kept, `target_label: null`, the bag is never dropped), so this is not urgent — but the tolerance is a symptom, not the fix. ⚠ **The fix is to ASK `helpers/pickup.js`, not to add a second `COUNT`** — a hand-written `OR EXISTS (SELECT … guest_order_links …)` here would be a THIRD statement of the rule and would drift the next time the storage rule changes (module 20 adds guest Packeta). Export a `pickupLocationInUse(locationId)` from that helper if one is missing, and have this route call it. ⚠ Acceptance: a host with **no own order** whose pickup sits on `guest_order_links` makes the DELETE soft-delete (or refuse) exactly as an `orders`-referenced one does; **mutation-prove it** — the current check passes the `orders` case today, so a test that only covers that case proves nothing. Also sweep for other places that ask "is this location referenced?" and make them all one call. ⚠ **SEAM, from DP-T2:** `distribution-handover.spec.js`'s second `beforeAll` builds its dangling-location fixture by leaning on THIS BUG — it deletes a location still referenced from `guest_order_links`, through the public API alone. When this row lands that DELETE starts soft-deleting (`active = 0`) instead, so `loc<id>` resolves a label and the fixture stops dangling. **That spec needs a new way to dangle a location as part of this row** (a hard DELETE of a genuinely unreferenced point, then re-pointing a party at the retired id, or a `DB_PATH`-gated direct write behind the documented skip). The payload behaviour it tests stays correct either way — only the fixture breaks.
+- [x] FUP-T25  ⚠ **`routes/orders.js` submit inlines a byte copy of `helpers/pickup.js` `activeLocation()` — the SECOND pickup rule with two statements of itself.** Filed by FUP-T23, which fixed the FIRST one (`DELETE /api/pickup-locations/:id` counted `orders` alone instead of asking `pickupLocationInUse()`) and deliberately left this one alone: it is a DIFFERENT question — „is this point CHOOSABLE?" (`active = 1`), not „is it REFERENCED?" — and the two must not be merged. ⚠ The duplicate: `POST /orders/cycle/:cycleId/friend/:friendId/submit` runs `db.prepare('SELECT * FROM pickup_locations WHERE id = ? AND active = 1').get(pickupLocationId)` and 400s on a miss, which is `activeLocation()` verbatim; `PATCH /orders/cycle/:cycleId/friend/:friendId/pickup` already calls the helper for the same gate and the same message. ⚠ **Not a defect — a DRIFT SURFACE**, and a load-bearing one: these two are the ONLY writers of `pickup_location_id`, and FUP-T23's "no API path can dangle a location" claim rests on BOTH refusing an inactive point. Drop the `active = 1` from one copy and that claim silently becomes false, with only a `DB_PATH`-gated fixture in `distribution-handover.spec.js` left standing in its place. ⚠ Scope: convert the submit site to `activeLocation(pickup_location_id)` — behaviour-identical, incl. the FUP-T15 bind semantics (the helper applies the same `bindValue()`, and the route's presence test stays on the RAW value so a present-but-unbindable id still reaches the 400). ⚠ Acceptance: `order-pickup-edit.spec.js` + the FUP-T15 400 tests pass UNMODIFIED (the message and status may not move by a byte); a grep for `pickup_locations WHERE id = ? AND active = 1` returns the ONE home; and a mutation in `activeLocation()` reddens BOTH writers, which is the property that does not exist today.
+- [x] DP-T3  `PATCH /orders/:id/handed-over` + `PATCH /guest-orders/:id/handed-over` (admin, explicit boolean, 409 `not_packed`, idempotent, host→`via_host` guest inheritance both ways, cancelled skipped) + outbox ENQUEUE/DEQUEUE inside the transaction (`queued` rows, template keys `pickup|packeta|host`, NONE for `in_person`, `body`/`phone_e164` NULL, `segment_key` `loc<id>|packeta|host:<id>`) + `markCycleReady()` call + `api.js` + `ADMIN_ENDPOINTS` — `16 §UC-DP-004,005,008,013` · model=heavy ⚠ ONE synchronous transaction, literal columns, re-check `packed = 1 AND handed_over_at IS NULL` inside; NO `transactions` row (pin `MAX(id)` filtered to the friend). ⚠ guest-orders is a MIXED router — `requireAdmin` per route; `PATCH …/delivered` stays HOST-only. ⚠ Seam → CS-T1: `cycle_stage` echoes `null` until 17 fills the body; seam → WA-T4: the inline enqueue is later REFACTORED into `helpers/outbox.js` (same rows, plus e-mail/opt-out/skipped rules) — keep the write in one function so the swap is mechanical. ⚠ **Seam ← DP-T2: REWRITE its two `DB_PATH`-gated tests to drive these routes and DROP the gate** — `distribution-handover.spec.js` „handed_over_at moves stage to handed, on the party and on the guest" and „derived handed_over_at: only when EVERY live sub-order carries one" stamp `handed_over_at` DIRECTLY with `node:sqlite` (marked `⚠ DP-T3:` at both sites) purely because no writer existed; a test that writes the column itself stops being evidence about a route the moment that route ships, and the skip makes it disappear SILENTLY when `DB_PATH` is unset. Also rewrite `distribution-foundation.spec.js` „nothing in the app writes a notifications row" per its own recorded note (this row is the first writer).
+- [x] DP-T4  Bulk `POST /cycles/:id/distribution/hand-over` (all-or-nothing 409 naming offenders, 400 `foreign_id`, `already_handed` skip, one timestamp, guest-under-host dedupe) + stage-order gates: un-pack / item-uncheck / guest-item-uncheck on a handed-over bag ⇒ 409 `handed_over` (read+409 before AND predicate inside the tx; `helpers/packing.js` UNTOUCHED) + `api.js` + `ADMIN_ENDPOINTS` — `16 §UC-DP-006,007(backend),013` · model=heavy ⚠ bulk REVERSAL is Phase 2 by spec — not built; `item-packed.spec.js` passes unmodified; FE disabled states are DP-T6's. ⚠ **UNOWNED SEAM, recorded by DP-T3 (review finding, 2026-09-20): a sub-order CANCELLED AFTER a hand-over is unreachable in both directions.** The host reversal skips cancelled bags (`COALESCE(status,'submitted') <> 'cancelled'`) and `PATCH /guest-orders/:id/handed-over` refuses them outright (409 `cancelled`, terminal), while the soft cancel (`softCancelGuestOrder`, three doors) clears neither `handed_over_at` nor the `queued` notification. The row is left permanently stamped as handed over, and a „odovzdané priateľovi" message stays queued for a bag nobody will receive. ⚠ Both predicates are literally what §UC-DP-004/005 specify, so this is NOT a DP-T3 defect and was deliberately not patched there. **Cheapest fix identified: the ADMIN cancel (`POST /guest-orders/:id/cancel`) either reverses the hand-over for that bag first, or refuses with 409 when it is already handed over** — ~~one door, not three, because the host's DELETE and the guest's empty cart are both gated to an OPEN cycle and a hand-over cannot have happened yet.~~ ⚠⚠ **THAT PREMISE IS FALSE — corrected by DP-T4, and it was the ORCHESTRATOR's error, propagated to BOTH rows.** `PATCH /guest-orders/:id/handed-over` carries **NO cycle-status gate at all** (verified: zero status references in that handler), so a bag CAN be handed over while the cycle is still `open` — which is exactly when the host's `DELETE` (`guest-orders.js:195`, gated `cycle_status !== 'open'`) and the guest's empty cart ARE allowed. **All three doors are reachable after a hand-over**, so a fix at the admin cancel alone would be the half-way fix that was explicitly ruled out. The complete cheap fixes are `softCancelGuestOrder()` — the one home all three share, though that is module 14 policy — or WA-T5's release-time `skipped` guard. ⚠ The lesson is the session's own: a premise stated in a backlog row is a CLAIM, and this one was never checked against the handler before being written into two rows. ⚠ Whichever row fixes it owns the e2e; DP-T4 is the natural home if the bulk route grows a cancelled-bag branch anyway.
+- [x] DP-T5  Board shell after `ADist` (admin shadcn skin, no `neo/`): title + totals line, plan cards per target (two-tone progress, click-to-focus), group-by doručenie/stav/priateľ, stage filter tabs, group headers (badge, counts, „Štítky“ → placeholder route constant, „Odovzdať zabalené (n)“ disabled at 0), empty states; `lib/plural.js bagsLabel()` — `16 §UC-DP-010` ⚠ rows inside groups keep the SHIPPED per-friend card body as placeholder so `guest-distribution.spec.js` keeps passing; DP-T6 converts card → row. ⚠ NO „Správa skupine“ button (module 21 adds it); „Štítky“ route = PO supplies later (F7 built elsewhere). Starts `distribution-board.spec.js`.
+- [x] FUP-T24  ⚠ **The kg display rule `Math.round(g/10)/100` has NO one home — FOUR copies now, and CLAUDE.md states it as a rule without naming a home.** Verified: `FriendOrder.vue:458`, `FriendPortalSession.vue:974`, `GuestProductGrid.vue:177`, and `Distribution.vue:452` (DP-T5 added the fourth **deliberately**, with a pointer, rather than refactor three shipped files under a board row — the right call there, the wrong steady state). ⚠ CLAUDE.md §Frontend says "kg display `Math.round(g/10)/100` with trailing zeros stripped" — a RULE with no address, which is exactly the shape this session has been correcting all week (`helpers/payment.js`, `helpers/delivery.js`, `e2e/helpers/copy-sweep.js` all started as two copies of a rule). ⚠ **Not urgent and not a defect:** all four agree today and the two-decimal result is exact for every gram value the app produces. It is a DRIFT SURFACE — four edits, four chances to diverge, and money-adjacent because the same number is what a friend reads as their share. ⚠ Scope: one home in `frontend/src/lib/` (beside `plural.js`), all four call sites converted, CLAUDE.md's bullet given the address, and the trailing-zeros half of the rule verified — **check whether all four actually strip them, since the bullet claims it and `${}` interpolation does it implicitly only for some values.** ⚠ Acceptance: a grep for the expression returns the one home; each converted surface keeps its shipped rendering **byte-identical** (~~pin the existing e2e text assertions first — `portal-fidelity`, `guest-order`, `order-cartbar` all render kg~~ — ⚠ **MY CLAIM, AND IT WAS FALSE. Verified 2026-09-20: NONE of those three asserts a kg label.** `portal-fidelity.spec.js` and `order-cartbar.spec.js` contain no `kg` substring at all; `guest-order.spec.js` has it only in prose and in `variant: '1kg'` / `price_1kg` API payloads. The REAL pins are `order-product-card`, `portal-share-row`, `distribution-board`, `distribution-rows` and — newly added by this row, because that surface was **unpinned** — `guest-order-shell`. Lesson, the second time this session: **a premise written into a backlog row is a CLAIM, and I shipped it without checking it against the specs it names.**), and a mutation in the one home reddens all four surfaces.
+- [x] DP-T6  Board rows: Kto / Doručenie-obsah / Platba / Krok 1 Zabalené / Krok 2 Odovzdané; nested `via_host` guest rows READ-ONLY mirrors (PO: no clickable per-guest Odovzdané); Packeta address + phone; synthetic-host Krok 2 via bulk; click-to-expand row holding the shipped item checklist — EXPANDED while `to_pack`, collapsed after (PO); handed-over disabled states („Najprv zrušte odovzdanie“) + snap-back; print rules for the new DOM (`hidden print:flex`, pickers `print:hidden`, badges `print:inline-flex`) — `16 §UC-DP-011,007(frontend)` · model=heavy ⚠ after a pickup change: patch in place THEN re-fetch (loadSeq) — delivery/plan come from the server, never re-derived client-side. ⚠ `PickupLocationPicker` props `cycleId`+`friendId` (never an order id). ⚠ SANCTIONED: `guest-distribution.spec.js` selector retargets ONLY where the Card-per-friend layout is assumed (cite UC-DP-011); `guest-group-toggle/items/summary-<id>` preserved inside the expanded row. ⚠ Module-20 seam: a `packeta` guest party renders as its OWN row under Packeta („hosť · {host}“) — slot reserved here, filled by GP-T6.
+- [x] DP-T7  Per-group bulk hand-over: „Odovzdať zabalené (n)“ → radix Dialog „Odovzdať zabalené?“ (subtitle + ledger-neutral banner; Zrušiť / Áno, odovzdané) → POST bulk → in-place patch + re-fetch + 3.5 s toast; 409 `not_packed` → Alert + row highlight — `16 §UC-DP-012` ⚠ the WhatsApp sentence in the modal and the „· n správ zaradených“ toast half are module 21's (`queued_notifications` ignored by the UI here).
+- [x] DP-T8  Admin cycle header: non-blocking plan line (locked + completed) + „Označiť ako dokončený“ relabelled **„Ukončiť objednávku“** with UX-ONLY gate (all parties handed over; PO: NO server 409 — pin that the API still completes with un-handed bags) on CycleDetail AND the board header; board header „Vytlačiť štítky“ placeholder + „· uzamknuté / · ukončené“ sub + **module-16 closeout (full suite, learnings, CLAUDE.md one-liners)** — `16 §UC-DP-014,010(header),015` ⚠ nothing here writes `order_cycles.stage` (17's) or `status` except the button; module 17's stage controls will share this header.
+
+- [x] FUP-T26  ⚠ **Three cycle transitions leave `order_cycles.stage` disagreeing with `status`, and ONE of them rewinds the friend-facing timeline.** Measured against a running server in CS-T1 and re-confirmed at the module-17 closeout (`docs/learnings/09-cycle-stages.md` §10): **A** `locked(ready) → planned` leaves `stage='ready'`; **B** `completed(ready) → open` leaves `stage='ready'` (the unlock branch is gated on `cycle.status === 'locked'`, so it never fires from `completed`); **C** `completed(ready) → locked` **RESETS** `stage` to `'ordered'` (the lock branch is `cycle.status !== 'locked'`) — and `completed → locked` is precisely the admin's recovery path for a mis-completed round, so a round whose coffee has already been handed out walks back from step 5 („Zabalené, rozvážame") to step 2. ⚠ **All three are invisible TODAY only because `lib/cycle-stages.js stageIndex()` reads `status` before `stage`** — pinned by one purpose-built test (`cycle-stages.spec.js`, „`status` is consulted BEFORE `stage`"), which is the single thing standing between these rows and a friend's screen. ⚠ §UC-CS-005's own seven-row acceptance table is a FIXED POINT of that inversion (every row pairs an agreeing stage/status), so the obvious test cannot catch it — do not rely on it. ⚠ Nothing pins the transitions SERVER-side; the routes may still write the disagreeing value. CS-T1 offered „(1) fix the transitions, or (2) leave and pin"; CS-T2 took (2) and the module closed without an owner for (1). ⚠⚠ **SHARPENED 2026-09-20 by reading §UC-CS-002's table directly rather than trusting the summary: C is a SPEC DEVIATION, not an unnamed case.** That table's lock rule is scoped in its own parenthetical — „`status: 'locked'` **(transition INTO locked from `open`)** ⇒ `stage = body.stage ?? 'ordered'`" — and its sibling row („`status: 'locked'` when already locked ⇒ no stage change unless `body.stage` is present") covers locked→locked. Neither authorises `completed → locked`. The shipped guard is `status === 'locked' && cycle.status !== 'locked'`, i.e. it fires from ANY non-locked status, which is WIDER than the rule it implements. **A and B, by contrast, are spec-CONFORMANT and should be left alone:** the unlock rule is scoped „`status: 'open'` while the cycle is `locked`", which `completed → open` is not, and `planned` is „unchanged from today (no stage semantics)". So the fix is ONE branch — narrow the lock guard to `cycle.status === 'open'` — and A/B get a recorded note, not a change. ⚠ Verify that reading against the table yourself before acting; it is the whole scope of the row. ⚠ Acceptance: whichever transitions change get a server-side pin that reds on the old behaviour, and §10's table is rewritten in every copy.
+
+- [x] FUP-T27  ⚠ **The e2e admin helper trusts a CACHED token, and the suite has ONE global `admin_token` row — so a slow login anywhere reds files that did nothing wrong.** Mechanism, measured 2026-09-20 during PI-T3: EVERY `POST /api/admin/login` REPLACES the single row, so a login whose response lands **after its test already timed out** still rotates it, and every spec file holding a token minted in its own `beforeAll` then 401s on its next fixture (`POST /api/friends` / `POST /api/cycles` → 401 where 201 is expected). ⚠ The first failure in the cascade is a **10 s timeout on the admin login redirect**, NOT a 401 — the 401s are downstream, which is why this reads as „15 unrelated admin files regressed" and invites blaming whatever diff is in the tree. It is a LOAD-sensitive latent defect, not a regression: the same tree ran 33-failed twice on a loaded box and **0-failed on an idle one**. ⚠ The suite already mitigates it BY CONVENTION, per file („re-log-in before each fixture block", `colleagues-panel.spec.js:43`), and the convention has gaps. ⚠ Scope: give the admin helper ONE re-authentication on a 401 instead of trusting the cached token — `google-auth.spec.js` already does exactly this and is the shape to lift. ⚠ **`api-security.spec.js` tests token staleness ON PURPOSE** (`:376` asserts a stale token is genuinely dead) and MUST be excluded from the retry, or the fix silently deletes that test's meaning. ⚠⚠ **Acceptance is a DETERMINISTIC REPRODUCTION, not „the suite went green once":** rotate the `admin_token` row mid-file and show the helper recovers, and show `api-security`'s staleness test still reds when the retry is wrongly applied to it. A fix validated only by a green full run is unfalsifiable — the exact anti-pattern this module has paid for repeatedly. ⚠ Related but separate, already recorded in CLAUDE.md: a wait-loop polling `pgrep -f "playwright test"` MATCHES ITSELF and spins forever, loading the box; four were found still running hours later and are the measured cause of the flaky runs above.
+
+## 15. Cycle stages (17) — opens_at / closes_at / stage, timeline component
+
+- [x] CS-T1  Schema `opens_at`/`closes_at`/`stage` on `order_cycles` (ALTERs placed AFTER the `_check_test` recreate block, schema.js ~177-201) + `helpers/cycle-stage.js` (`CYCLE_STAGES`, `LOCKED_STAGE_DEFAULT`, **`markCycleReady()` BODY replacing DP-T1's stub** — idempotent, forward-only, never touches `status`) + `POST/PATCH /cycles` contract (ISO dates, 400 `Neplatný dátum`/`dates_order`, stage 409 `not_locked`, lock ⇒ `ordered`, unlock ⇒ NULL) + payload publication on friend/public/guest/admin cycle blocks; `PATCH /api/cycles/1` joins `ADMIN_ENDPOINTS` — `17 §UC-CS-001,002,003,004` · model=heavy ⚠ PO O2: `expected_date` = DELIVERY expectation, `closes_at` = deadline — published side by side, unchanged `expected_date`; the cartbar/status-line switch is PI-T1/T3's. ⚠ DP-T3/T4 already call the stub inside their transactions, so the `cycle-stages.spec.js` seam section (hand-over ⇒ `ready`, idempotent, un-hand-over keeps `ready`, `transactions` unmoved) runs LIVE here — no self-skip needed; verify DP's rows echo `cycle_stage:'ready'`.
+- [x] CS-T2  `lib/cycle-stages.js` (STEPS ×6, `stageIndex`, `fmtDay`, `daysUntil`, `inWeeksText` „o n dní/týždne/týždňov“, `nextOpeningText` three branches, `openUntilText`, `currentCycleFor`) + `lib/plural.js daysLabel/weeksLabel` + `CycleTimeline.vue` ONE component, `vertical` + `compact` variants, scoped styles with token fallbacks, no `.app` dependency — `17 §UC-CS-005,006` ⚠ NO string containing kolo/cyklus anywhere (regex sweep, non-vacuous ≥6 labels); labels are PO staging-review drafts (O1); consumers: PI-T4 (dots + own caption row), PI-T5 (vertical), CS-T4 (guest status), ~~GL-T5 (`nextOpeningText`)~~ ~~**GL-T5 (`fmtDay` + `daysUntil` + its own `weeksAwayLabel` — learnings 11 §GL-T5 §2)**~~ **GP-T7 (`fmtDay` + `inWeeksText` — PO 2026-09-24, one register)**.
+- [x] CS-T3  CycleDetail admin controls: `type=date` fields Otvorenie/Uzávierka objednávok (save/clear, 400 snaps back), forward-only stage buttons „Káva dorazila“ / „Zabalené, rozvážame“ (PO O3), stage badge + read-only compact timeline in the header — `17 §UC-CS-007` ⚠ NO date fields in the dashboard create dialog (PO O5); `expected_date`/`plan_note` fields untouched here; shares the header with DP-T8's plan line.
+- [x] CS-T4  Guest status page mounts the vertical timeline („Kde je vaša káva“ card, all SIX steps — PO O4; hidden in edit mode and on cancelled) + `readOnlyReason` copy retarget (drops „cykle“) + **module-17 closeout (full suite)** — `17 §UC-CS-008,009` ⚠ SANCTIONED: `guest-status-shell.spec.js:356` toHaveText retarget; `nonstring-body-shape.spec.js` gains the three fields; `api-security` += PATCH cycles (from CS-T1). The 3-step LINK-page explainer is GL-T4's.
+
+## 16. Portal information architecture (18) — landing = current offer, menu, explainer, profile
+
+- [x] PI-T1  Portal shell: routes `/moje-objednavky`, `/zostatok`, `/ako-to-funguje` (+ `meta.view`, bodies later) + `lib/portal-state.js` `resolveLanding()` (state/currentCycle/catalogCycle/nextCycle/nextText; two-open `console.warn`) + `lib/dates.js` + `GET /friends/cycles` payload extension (`opens_at/closes_at/stage` from CS-T1, `orderHandedOver` from DP-T1's `handed_over_at`) + `data-testid="portal-landing"` + `e2e/helpers/portal.js` gate retarget across ~27 files — `18 §UC-PI-001,002,019(items 1,2,15)` ⚠ all session state in `FriendPortalSession.vue` (`:key`), never `FriendPortal.vue`/localStorage; `closes_at` date only (PO); subscription filter block stays server-side. ⚠ SANCTIONED: `getByRole('heading',{name:'Objednávkové cykly'})` → `expectLanding(page)` (skip `portal-cycles`/`portal-share-row`, retired in PI-T3); `portal-appbar.spec.js:268`; `self-hosted-fonts` sweep += the three routes.
+- [x] PI-T2  Appbar per state (menu · brand + subtitle · **Pozvať chip stays** · lock chip when not open · three tickers) + `NeoDrawer.vue` via `useModalLayer()` extracted from `NeoModal` (scrim/Esc/focus-trap/scroll-lock ONE home) + A13 `portal2.css` port into `friends-theme.css` + drawer items 1–3/5–7 (item 4 slot left for PI-T3) + ONE session-level balance fetch + badge + logout/profile moved into the drawer + `NeoIcon menu` — `18 §UC-PI-003,004,019(items 4,5,7)` · model=heavy ⚠ drawer = `Teleport` → `.modal-layer` → `aside[role=dialog]`, never a fixed child of `.app` (z-index trap); shipped specs counting dialogs must open it deliberately. ⚠ header = friend `name` only (PO: no uid, no „člen od“). ⚠ SANCTIONED (large): logout control → `logout(page)` in portal-appbar ×6, portal-session-boundary ×3, portal-profile-modal ×2, friends-consolidation:1006, google-auth ×12; `.titles`→profile pins INVERTED; pencil tests → one `profile-pencil` count-0 pin; `portal-appbar` ticker rewrite; balance-card describe PARKED for PI-T7; NEW `portal-menu.spec.js`.
+- [x] PI-T3  Landing OPEN state: `FriendOrder.vue` `mode='landing'` (props `cycleId/friendId/mode`; no `.app`/BrandChrome inside; `.cartbar` stays a theme class) + cycle list, gear and subscription modal RETIRED (column/endpoint kept) + status line („Objednávky do {closes_at} · Káva príde okolo {expected_date} — Ako to funguje?“) + cartbar share icon + drawer item 4 via `defineExpose({openShareDialog})` + „Späť na ponuku“ + DELETE `portal-cycles.spec.js`/`portal-share-row.spec.js` (protected properties move to `portal-landing`/`portal-menu`) — `18 §UC-PI-005,011,016,019(items 3,6,8,12)` · model=heavy ⚠ riskiest row: FriendOrder is the ONE home — extend, never fork; leave guard fires on drawer `router.push`; exactly ONE `GuestShareDialog` instance. ⚠ landing slot 2 left empty for the debt banner (PI-T7); `FriendBalanceCard` stays on the landing until PI-T7. ⚠ SANCTIONED: `guest-link.spec.js` 255 / 291–380 retargets, `portal-subscription-invite` describes → two pins, `catalog-admin:2419`, `order-cartbar` landing variant; ~~`share-dialog.spec.js` unmodified~~ **— WRONG, and unsatisfiable: its entry point B is the cycle CARD (`portalCard()`), so nine call sites were re-pointed at the landing cartbar icon under case (a); `guest-order-recovery.spec.js` carries the same helper and is in no list. The `heading.click()` retarget is TWENTY files, not two (`helpers/portal.js gotoCycle()` is its one home) — see 18 §UC-PI-019 item 3, amended in place.**
+- [x] PI-T4  Landing CLOSED state: parametrised NeoModal „Objednávky sú zatvorené“ once per SESSION (PO: „once, then banner“ = the spec's session rule, no persistence) + `nextText` card + `CycleTimeline variant="compact"` (own caption row) + `.banner.warn.slim` after dismiss + read-only `catalogCycle` grid (`readonly` landing mode: `.p2-ro`, tabs live, no stock bars/cartbar/tabgroup) + empty „Ponuka ešte nie je pripravená.“ — `18 §UC-PI-006` ⚠ modal title/intro/lead are PROPS so PI-T5 only passes strings for the no-order locked variant.
+- [x] PI-T5  Landing LOCKED state: own-order card (`CartLineList`, hoisted `lib/order-lines.js`, pickup row = exactly one of location/note/„Packeta · …“, Zaplatené/Nezaplatené + Zaplatiť → PaymentModal with `paymentTotal` incl. `delivery_fee`, VS from PL-T2) + „Kde je vaša káva“ `CycleTimeline vertical` + next-round banner + read-only `currentCycle` grid WITH tabgroup (Kolegovia hand-over ticks stay) + no-order variant „Objednávky sú uzamknuté“ — `18 §UC-PI-007` · model=heavy ⚠ NO ledger write; `paid` admin-only; shipped locked banner/cartbar stay on `/cycle/:id` (PI-T11 verifies); `order-locked.spec.js` pins unchanged on the deep link.
+- [x] PI-T6  „Moje objednávky“ history view: `hasOrder` rounds newest-first, short badges (Odoslaná / V pražiarni / Balíme / Zabalená / Odovzdaná / Vyzdvihnuté — owned HERE, never shared with 17's long labels), lazy `CartLineList` per round (`rowSeq`, one expanded), empty state, READ-ONLY (PO: no „Otvoriť“ link) — `18 §UC-PI-009` ⚠ NEW `portal-history.spec.js`; `orderHandedOver` from PI-T1 drives „Odovzdaná“.
+- [x] PI-T7  Money surfaces: debt banner + Zaplatiť on the landing in ALL states (`balance < -0.01`; PO: zero/positive NEVER on landing) + „Zostatok a platby“ view (`FriendBalanceCard` re-purposed, PL-T4's `pay-balance` trigger + mount RELOCATED here — never duplicated; keep „po zaplatení sa zostatok vyrovná do 1–2 dní“) + `FriendTransactionList.vue` lifted verbatim from `FriendTransactionsModal.vue` (deleted) + landing balance card REMOVED — `18 §UC-PI-008,010,019(items 7,9)` ⚠ SANCTIONED: RENAME `portal-transactions-modal.spec.js` → `portal-balance.spec.js` (keep every `tx-*` pin, sign/colour, 320 px test, admin invariance describe; drop the unsatisfiable modal-shell pins); parked `portal-appbar` balance describe lands here. ⚠ `BalanceBadge.vue` untouched (admin-shared).
+- [x] PI-T8  „Ako to funguje“ view: six phases (static text, live timeline NOT mounted), three delivery ways from `api.getPickupLocations('coffee')` (Packeta fee badge gated on `parcel_enabled`), „Kto sme a odkiaľ je káva“ + `lib/roasters.js` ONE home (Goriffee / Robo prototype drafts — PO polishes), „Ako platím“ (keep „(PayMe)“ — 15 shipped), personal note „— Karol“ (PO draft), keep WhatsApp mention in phase 2 (PO), `asGate` prop for PI-T9 + product-card roaster badge popover (one `NeoModal`, `role=button` only on a match) + `NeoIcon` I2 set — `18 §UC-PI-012,014` ⚠ seam → GL-T4 imports `lib/roasters.js`; admin never imports it. NEW `portal-explainer.spec.js` (content part).
+- [x] PI-T9  First-login explainer gate: `friends.explainer_seen_at` (try/catch ALTER, **NO back-fill — PO: every existing friend sees it once**) + `POST /friends/:id/explainer-seen` (`requireFriendOwner`, idempotent COALESCE; shared-password `friendId:null` ⇒ 401) + field in all four login payloads (friends.js :173/:230/:358, magic-link.js :406; session restore is NOT a login) + `beginSession({explainerPending})` → `router.replace('/ako-to-funguje')` + pre-ticked „Už mi to neukazovať“ / „Rozumiem“ — `18 §UC-PI-013,019(item 16)` ⚠ `FRIEND_IDENTITY_ENDPOINTS += POST /api/friends/1/explainer-seen` (NEVER `ADMIN_ENDPOINTS`). ⚠ SUITE-WIDE: `e2e/seed.mjs` pre-stamps `explainer_seen_at` for every seeded friend except one dedicated fixture (orchestrator clarification (b)) — otherwise every login-then-land spec hits the explainer. Precedence: forced-password > Google prompt > explainer.
+- [x] PI-T10 Profile modal per roadmap §19: **Login** read-only row (help avoids the adjective — `grep -i prihlasovac` guard stays EMPTY) · **Meno a priezvisko *** · **Mobil *** (NEW required on the self-edit route only: blank ⇒ 400 `{field:'phone'}`) · **E-mail** (help: Packeta + recovery) · Adresa Packeta (server bound 160 + `maxlength`) · password fold + Google untouched · NO uid; auto-open until Mobil filled (PO; after the gates of PI-T9, dismissible per session, re-opens next login) — `18 §UC-PI-015,019(items 10,11)` ⚠ marked SLOT under Mobil for module 21's `whatsapp_opt_in` checkbox (renders nothing here). ⚠ „E-mail required when Packeta chosen“ lives in the delivery-choice modal — module 20 (GP-T3) for guests, friend side stays as today. ⚠ SANCTIONED: `portal-profile-modal.spec.js` label/help-order/maxlength pins; `friends-consolidation.spec.js` 14 help-text pins → §19 E-mail help; FUP-T20 grep test verbatim.
+- [x] PI-T11 Vocabulary rule + deep links: friend-surface copy edits (FriendOrder :1025/:1833, voucher copy-only, GuestShareDialog:182) + friend-facing SERVER 4xx sweep (orders.js / vouchers.js / guest-links.js / products.js — messages only, status codes kept; `cycles.js` admin strings untouched; `guest.js`/`guest-orders.js` strings → GL/GP rows) + ~~Node grep guard~~ **Node source guard over `e2e/helpers/vocabulary.js importClosure()` (the friend routes' import closure, comments stripped — never a typed file list)** + DOM sweep `portal-vocabulary.spec.js` (~~`/cykl|\bkol(o|a|e|u|om|á|ách)\b/i`~~ **`e2e/helpers/vocabulary.js BANNED`** — the spec regex misses „kolá"/„kolám"/„kolami"/„kôl") + `/cycle/:id` `mode='route'` regression net (standalone chrome, back → `/`, „Späť na ponuku“) — `18 §UC-PI-017,018` ⚠ any pinned server string changed is re-pointed in its e2e — grep `e2e/` per message; ~~guard file list widens to guest files when GL lands~~ **the guard WIDENS by adding `views/GuestOrder.vue`/`views/GuestOrderStatus.vue` ~~to `FRIEND_SURFACE_ROOTS`~~ as `GUEST_SURFACE_ROOTS` (unioned into `VOCABULARY_ROOTS`, GL-T7) when GL lands — there is no file list to widen.**
+- [x] PI-T12 Module-18 closeout: `portal-fidelity` landing equivalents (A10 `line-height:normal` pins on `.banner.slim`/`.badge`/~~`own-order-card .display`/`.p2-tl .lbl`~~ **— those two are NOT A10 sites: the canon declares them (`portal2.jsx:350/356` `1`, `portal2.css:31` `1.25`), so PI-T12 pins the canon's values and adds the timeline's real A10 site `.cs-tl .when` (18 §UC-PI-019 item 13, amended)**; 320 px hostile text on all three states) + `portal-session-boundary` drawer surface walk (history, balance, explainer incl. checkbox, profile fold, invite, share) + admin invariance greps (no `pp-*`/`p2-*`/`neo/`/theme class under admin; no admin import of `lib/roasters|dates|portal-state`) + retired-file property audit + edited-e2e-file count in the commit + learnings + **full suite** — `18 §UC-PI-019(items 13,14,18, procedure)`. ⚠ ADDED BY PI-T10's REVIEW ROUND: a SOURCE-PIN over `FriendPortalSession.vue`'s auto-open trigger TERM COUNT. That trigger is now the only place that knows what „a surface that raises itself without the friend asking“ means — six terms (forced-password, credential-setup, Google prompt, explainer, closed modal, locked modal). PI-T10 shipped it four terms wide and stacked two modals on the CLOSED landing, the app's normal state. ⚠ AND THE SEVENTH ALREADY EXISTED: round 2 measured `showVoucherModal` (set from an AWAITED `checkPendingVouchers()` in `onMounted`) sitting UNDER the profile form — `elementFromPoint` over the voucher's own button returned the profile modal's e-mail input, and that voucher carries a ONE-SHOT IRREVERSIBLE decision. Fixed in PI-T10; the pin is what stops the eighth. Pin the COUNT, not the spelling.
+
+## 17. Standing guest link + pre-open page + waitlist (19)
+
+- [x] GL-T1  Standing token: `friends.guest_link_token` + unique index + `helpers/standing-link.js` (`uniqueGuestToken()` across BOTH token spaces — replaces guest-links.js's private `uniqueToken()`; `ensureStandingToken`, `regenerateStandingToken`, `standingUrlPath`, `currentOpenCycle()` ONE query) + host `GET /guest-links/standing` (lazy mint — the one deliberate write-in-GET) / `POST …/standing/regenerate` (`FRIEND_IDENTITY_ENDPOINTS`) + **admin `GET/POST /api/friends/:id/guest-link/standing[/regenerate]` (PO: admin read + regenerate — `ADMIN_ENDPOINTS`)** + `guest_waitlist` CREATE + partial unique index (inert, no writer) so `waiting_count` is real — `19 §UC-GL-001 + PO block` ⚠ `LINK_SELECT` in routes/guest.js must NOT gain the token (same class as `invite_code`); regenerate keeps per-cycle token, sub-orders and `order_token`s byte-identical. Starts `guest-standing-link.spec.js`.
+- [x] GL-T2  Resolver rewrite `resolveEntry(token,{forSubmit})` over both token spaces + get-or-create per-cycle `guest_order_links` row for a standing visitor (all guest machinery keeps working; `instances:1` check-then-write, UNIQUE fallthrough) + pre-open payload (`page:'preopen'`, `next` kinds planned_date/planned_note/unknown/open_elsewhere~~/stale~~ (**GL-T2, orchestrator 2026-09-23: the spec's shape wins — FOUR kinds; „stale" is the non-null `stale_cycle`, 19 §UC-GL-003**), preview ≤12 products no availability, `waitlist.available`, `Cache-Control: no-store`) + MINIMAL `preopen-hero` placeholder in `GuestOrder.vue` — `19 §UC-GL-002,003` · model=heavy ⚠ `opens_at` from CS-T1 is LIVE (17 shipped) — the `planned_date` variant renders from day one. ⚠ legacy per-cycle token on a non-open cycle ⇒ preopen `stale`, never the newer round (D7); the `closed` dead-link variant becomes unreachable. ⚠ SANCTIONED: `guest-order.spec.js:174-185` (410 → 200 preopen + 409-on-submit counter-pin), `guest-invite-dead.spec.js` `closed` variant → preopen-hero; UC-GR-011 „zero async in routes/guest.js“ still holds.
+- [x] GL-T3  Waitlist write path: **`helpers/phone.js toE164(raw,{defaultCountry:'SK'})` (libphonenumber-js, `isValid()` gate, never throws) — SHIPPED HERE, adopted unchanged by WA-T1** + public `POST /api/guest/:token/waitlist` (`guestWrite` bucket, `validateIdentity` bounds name 120 / phone 32, uniform 200 for create AND duplicate, idempotent per (host, e164) via partial unique index with constraint translation, 409 `open`, consent unticked ⇒ stored `0` — PO) + purges (on order across hosts inside the submit tx; after two completions on the admin complete PATCH) + admin `routes/guest-waitlist.js` GET/DELETE (`requireAdmin` mount, `ADMIN_ENDPOINTS`) + `waiting_count` wiring + `api.js` — `19 §UC-GL-004,005,009(routes),010` · model=heavy ⚠ `notified_at` is written by module 21 ONLY (reset to NULL on re-signup here); segment SQL recorded as a code-comment contract, no `segments.js` here. ⚠ NEW `guest-waitlist.spec.js` (refusals read rows back; idempotency `0905 123 456` vs `+421 905 123 456` ⇒ ONE row); `rate-limit-isolation` += the POST. ⚠⚠ **BLOCKING, from the GL-T1 review: the scrub must cover `guest_waitlist` before its public writer reaches production** — `name`/`phone`/`phone_e164` are NON-MEMBER PII (people who never joined; the 2026-08-31 „names are kept" PO rule was made for friends — ask before extending it to strangers). ~~Add the UPDATEs to `e2e/scrub-template.sql` and one check per column to `e2e/verify-scrub.sql` (same pair rule, same caveat: unconditional only once production has the GL-T1 table).~~ **→ MOVED to the GL-T6 row's BLOCKING scrub note (orchestrator, 2026-09-23): the STRICTER default — all three columns scrubbed, the name too, no PO question needed — with the exact UPDATE and the three verify lines written there, to land in ONE change with the `friends.guest_link_token` pair the first time production carries both migrations. Nothing added to either file in GL-T3 (an unconditional line fails every template build from a pre-GL-T1 production).** Learnings 11 §GL-T3 + §Seams.
+- [x] GL-T4  `GuestSteps.vue` (3-step compact/full; `packeta` prop DEFAULT OFF — GP-T3 flips it) + `GuestRoastersLine.vue` (imports `lib/roasters.js` from PI-T8 — never a copy) + `NeoIcon cup/box/hand` + open-hero compact strip, roasters row, „Viac o tom, ako to funguje“ toggle — `19 §UC-GL-007` ⚠ PO: open-state chrome stays as SHIPPED („Bez účtu“ chip, subtitle) — strip goes ABOVE the badge row; `guest-order-shell.spec.js:170-172` unmodified; inline SVG only (CSP).
+- [x] GL-T5  Pre-open page: full `preopen` state transcribed from `GLink2 Zatvorené` (hero variants + `weeksAwayLabel`, „Ako to funguje“ card, „Dajte mi vedieť“ form — name/mobil/consent, success banner ×2, localStorage memory try/catch — faded read-only preview via `GuestProductGrid readonly` prop, EXTEND never fork) + `GuestBrandHeader closed` prop + `GUEST_TICKER_CLOSED` + `document.title` + `self-hosted-fonts.spec.js` row `/g/:token (preopen)` allowlist `[]` — `19 §UC-GL-006,011(UI)` ⚠ replaces GL-T2's placeholder, keeps `preopen-hero`; `maxlength` 120/32 mirrored; 16 px inputs under `pointer: coarse` (A12); no cartbar/checkout/invite CTA in this state; token never composed into the DOM.
+- [x] GL-T6a Admin half of GL-T6 (split per the row's own „split candidate"): CycleDetail „Čakajúci hostia (N)" card + FriendDetail standing-link row + „Vygenerovať nový" + `lib/plural.js waitingLabel` + the BLOCKING scrub (landed here, with the first UI minter) — `19 §UC-GL-009(UI)`. The original GL-T6 row follows for reference; its host-dialog half is GL-T6b.
+- [x] GL-T6b Host share dialog standing section — the §UC-GL-008 half of the row below. ⚠ ORCHESTRATOR SANCTION (2026-09-23): „`share-dialog`/`guest-link`/`guest-order-recovery` specs pass UNMODIFIED" is FALSE — a second `NeoCopyRow` breaks `.copyrow` counts (`share-dialog:271,278,309,313,503,686,708,731`, `guest-order-recovery:316,358`) and strict `Kopírovať` locators (`share-dialog:368,382`, `guest-link:291,342`), and §UC-GL-008 item 3 (native share prefers the standing URL) contradicts `share-dialog:540-548,590-596`; plus `share-dialog:346` pins the error banner as the FIRST `.m-body` child (the standing section goes below it). Option (a): scope per-cycle assertions to a testid wrapper around the per-cycle section and re-point the native-share URL pins at the standing token, citing §UC-GL-008; strike the „UNMODIFIED" claim in every copy.
+- [x] GL-T6c Open `GuestShareDialog` with `cycleId=null` from the closed/locked landing (module 18 menu entry) — needs an entry point, since the only instance is in `FriendOrder`; must keep the ONE-mount source pin (`portal-landing.spec.js`) — `19 §UC-GL-008` acceptance clause 1
+- [-] GL-T6 (SPLIT → GL-T6a + GL-T6b)  Host share dialog standing section (NeoCopyRow, „kto čaká“ count via `lib/plural.js waitingLabel`, „Nový stály odkaz“ confirm → regenerate, native share prefers the standing URL, per-cycle section demoted under „Odkaz len na túto objednávku“; ~~works with `cycleId=null` from PI-T3's drawer item~~ — GL-T6b review: source-pinned only: the drawer share item is `state === 'open'`-only (`FriendPortalSession.vue:1513,1539`), the ONE dialog instance lives in `FriendOrder.vue` bound to `activeCycleId`, and the closed landing has no `landingOrder` ref — so no UI path opens it with `cycleId = null`; the entry point is **GL-T6c**) + admin CycleDetail „Čakajúci hostia (N)“ card (per-row „Odstrániť“, rowSeq, empty „Nikto nečaká.“) + AdminFriends standing-link row + „Vygenerovať nový“ (PO) — `19 §UC-GL-008,009(UI)` ⚠ placement constraints from shipped pins: no new `p.sub`, no new `<b>` in `#subtitle`, confirm box class `standing-confirm` (not `.confirmbox`), button names must not match `/Zdieľať/`; ~~`share-dialog`/`guest-link`/`guest-order-recovery` specs pass UNMODIFIED~~ (FALSE — see the GL-T6b row's sanction); count only — standing payload has no names/phones. Split candidate (dialog / admin) if too large. ⚠⚠ **BLOCKING, from the GL-T1 review: `e2e/scrub-template.sql` + `e2e/verify-scrub.sql` must NULL / check `friends.guest_link_token` BEFORE any production mint** (this row is the first UI minter — the host dialog's GET and AdminFriends' GET both mint). It is a live bearer credential for `/g/:token`, `invite_code`'s class, and neither file covers it today. ⚠ The two lines can go in UNCONDITIONALLY only once PRODUCTION carries the GL-T1 migration: the server-side scrub runs through the `sqlite3` CLI over ssh, SQL cannot branch on a missing column, and a line naming it on a pre-GL-T1 snapshot fails the build (closed, not leaking). Scrub = `UPDATE friends SET guest_link_token = NULL` (NULL is the „not minted" state; the unique index ignores NULLs); verify = one `SELECT 'friends.guest_link_token', COUNT(*) FROM friends WHERE guest_link_token IS NOT NULL` line (the line count is `make-test-db.sh`'s EXPECTED). ⚠⚠ **AND THE `guest_waitlist` LINES LAND IN THE SAME CHANGE (moved here from GL-T3, orchestrator 2026-09-23; GL-T3 shipped the table's public writer).** `name`/`phone`/`phone_e164` are NON-MEMBER PII; the STRICTER default applies — all three scrubbed, the name included (the „names are kept" PO rule was made for friends and is not extended to strangers). Same sequencing: unconditional only once production has the GL-T1 table. Scrub (CONTACT DATA block, verified on a copy — `phone_e164` is re-derived from the SAME expression because an UPDATE's right-hand side reads the OLD `phone`; NULL stays NULL; the partial unique index cannot collide, the value is per-id): `UPDATE guest_waitlist SET name = 'Cakajuci ' || id, phone = '09' || substr('00000000' || ((40000000 + id * 4973) % 100000000), -8), phone_e164 = CASE WHEN phone_e164 IS NULL THEN NULL ELSE '+4219' || substr('00000000' || ((40000000 + id * 4973) % 100000000), -8) END;` Verify — three lines, each beginning `SELECT '` (so EXPECTED rises by 3, plus 1 for the token): `SELECT 'guest_waitlist.name', COUNT(*) FROM guest_waitlist WHERE name IS NULL OR name NOT GLOB 'Cakajuci [0-9]*'` · `SELECT 'guest_waitlist.phone', COUNT(*) FROM guest_waitlist WHERE phone IS NULL OR phone NOT GLOB '09[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'` · `SELECT 'guest_waitlist.phone_e164', COUNT(*) FROM guest_waitlist WHERE phone_e164 IS NOT NULL AND phone_e164 <> '+421' || substr(phone, 2)` (the e164 check ties it to the SCRUBBED phone, so a real number cannot survive in it). Measured with node:sqlite on a copy with a real-shaped row and a non-normalising one: before 2|2|1, after 0|0|0. ⚠ PO/GL-T6 note: the admin GET mints lazily, so rendering the standing row on every AdminFriends detail = a GRADUAL BACK-FILL of every friend the admin opens (behaviour unchanged by GL-T1 — decide it here). Learnings 11 §Seams. ⚠ If split, the BLOCKING scrub note travels with whichever half lands first (both mint through a GET). ⚠ (GL-T3 review) `||` binds tighter than `%` in SQLite, so the padding needs the inner parentheses shown; `e2e/scrub-template.sql:27,37,42` carry the same unparenthesised form (fails closed past id ~12065) — fix them in the same change.
+- [x] GL-T7  Module-19 closeout: 06 §UC-GX-010 `closed` row struck (SUPERSEDED by 19 §UC-GL-002) in every copy (spec, `routes/guest.js` comments, e2e) + CLAUDE.md one-liners (two token spaces; `helpers/standing-link.js` one home; per-cycle token never reaches a standing visitor) + PI-T11's vocabulary guard widened to `GuestOrderStatus.vue`/`GuestOrder.vue`/`GuestProductGrid.vue` (⚠ `GuestProductGrid.vue:88`'s empty-grid „V tomto cykle…" is reachable on TWO surfaces — `GuestOrderStatus.vue` EDIT mode and `GuestOrder.vue`'s LIVE listing ~:832 with an open round of zero products; the pre-open preview filters it out, GL-T5) + guest-route „cykl“ server strings swept — ⚠ **INCLUDING the host-route 409s in `guest-orders.js`** (handed off by PI-T11's review, which deliberately did not re-word them): `routes/guest-orders.js:197` („Cyklus je už uzavretý, objednávku kolegu už nie je možné odstrániť.") and `:238` („Cyklus bol práve uzavretý, …odstrániť.") — the HOST's `DELETE /api/guest-orders/:id` 409s (not-open + the lost-race re-check), which DO reach a friend: `GuestSubOrders.vue removeSubOrder()` → `error.value = e.message` → the `.banner.danger.slim` at `GuestSubOrders.vue:378-380` on the Kolegovia tab of `FriendOrder`; plus `:525`/`:562` („…zrušiť.") on `POST /api/guest-orders/:id/cancel`, which is `requireAdmin` (only `CycleDetail.vue` calls it via `cancelGuestOrderAdmin`) and so may keep „cyklus" by the audience rule — named so the sweep decides both halves on purpose + learnings + **full suite** — `19 §UC-GL-011`.
+
+## 18. Guest Packeta (20)
+
+- [x] GP-T1  Schema `guest_orders.delivery_fee` + `packeta_address` + **`delivery_fee_paid` snapshot (~~orchestrator clarification — written ONLY by the admin paid toggle: paid=1 copies the fee, paid=0 NULLs~~ → SUPERSEDED, orchestrator decision 2026-09-23 (GP-T1 review), PENDING PO confirmation — learnings 12 §6: the fee part of what the guest was asked to pay, frozen at the FIRST of {paid, cancel}; TWO writers — `softCancelGuestOrder` `COALESCE(delivery_fee_paid, delivery_fee)` in the zeroing statement, paid toggle paid=1 `COALESCE(delivery_fee_paid, delivery_fee)`, paid=0 NULL on a live row / KEPT on a cancelled one)** (CREATE+ALTER) + `GUEST_ORDER_FIELDS` / guest.js column lists + `cycle.parcel_enabled/parcel_fee` on `/api/guest/:token` + statusPayload + submit contract (`use_parcel_delivery` strict boolean, point ≤160, Packeta ⇒ e-mail REQUIRED via exported `EMAIL_SHAPE`, fee `roundMoney(cycle.parcel_fee)` re-read inside the tx, 400 matrix, guest strings never say „cyklus“) + **`guestPaymentBlock().amount = total + delivery_fee` (the PL-T1 one-line seam)** + confirmation-mail fee/point rows + `softCancelGuestOrder` zeroes `delivery_fee` (three doors) — `20 §UC-GP-001,002,004(server),006(cancel)` · model=heavy ⚠ `total` stays product-only on every write; `validateIdentity()` UNCHANGED (shared with invite CTA); handler synchronous; NO `transactions` row ever (pin `MAX(transactions.id)`). Starts `guest-packeta.spec.js`.
+- [x] GP-T2  ⚠ (GP-T1) re-point `guest-packeta.spec.js`'s `setLiveFee()` fixture writes at this row's real fee writer (the edit PUT with `use_parcel_delivery: true`) — they stand in for it until it exists (learnings 12 §6). Edit PUT delivery block (both URL forms): absent/null untouched, `false` clears, `true` re-reads `parcel_fee` in tx + `parcel_enabled` 400; **write-once `guest_email`** (`UPDATE … WHERE guest_email IS NULL`, PO D3 confirmed); paid ⇒ method frozen with items (409 `paid`); cancel body ignores delivery keys — `20 §UC-GP-005` · model=heavy ⚠ literal columns inside the existing write tx; identity freeze otherwise intact (second PUT with a different e-mail ⇒ 200, row unchanged).
+- [x] GP-T3  `GuestDeliveryChoice.vue` (ONE home for checkout + edit: radios via_host/packeta, point input `maxlength` 160, renders nothing when parcels off) + `lib/email-shape.js` + checkout modal (choice below Mobil, e-mail label flips to required + help, subtitle amount + „balík vám doručí Packeta“, payload keys only when packeta) + **hero badge „Packeta +{fee}“ (PO yes)** + g-confirm fee line + point + `GuestSteps packeta` prop flipped ON when `parcel_enabled` (GL-T4 seam) + ~~`e2e/qr-helpers.js`~~ → `e2e/helpers/qr-pixels.js` (the existing shared QR home; learnings 12 §19) extraction (`readModules`/`independentQr` shared with `guest-payment-modal.spec.js`, no assertion change) + pixel-QR for total+fee — `20 §UC-GP-003,004(g-confirm)` ⚠ cartbar stays PRODUCT-ONLY (PO); `PaymentModal` untouched — 15's links consume the fee-inclusive `payment.amount` with no fee knowledge; parcel-off cycle ⇒ modal DOM byte-identical.
+- [x] GP-T4  Status page Packeta state (header sub „doručí Packeta“, „Doručí Packeta“ pill replaces the delivered pill, fee line + fee-inclusive total, point card kept on cancelled; edit mode: `GuestDeliveryChoice` card, write-once „E-mail *“ input, parcels-off warn banner sending `false`) + host card `GuestSubOrders.vue` (red Packeta badge OUTSIDE `sub-order-badges`, address, „nemusíte nič odovzdávať“, no `guest-delivered` checkbox on Packeta rows, `pendingDelivery` excludes them, foot total fee-inclusive with breakdown) — `20 §UC-GP-007,008,004(host row)` ⚠ host `totals` `{count,total}` stays product-only (GSO-T5 pin); `PATCH …/delivered` unchanged server-side; `loadSeq`/`[token, orderToken]` watch/`document.title`/`v-show` panels untouched; all shipped fixtures are via_host ⇒ `guest-status`/`guest-host-view`/`colleagues-panel` specs expect NO change.
+- [x] GP-T5 ⚠ (GP-T4 review) a guest status tab opened BEFORE this row's admin delivery correction still holds the old Packeta state; its next save (always sends `use_parcel_delivery`, 20 §UC-GP-007 item 9) quietly re-applies Packeta + fee while parcels are on — last-write-wins like the item cart; record it in learnings 12 and decide whether the PATCH needs a guard. ⚠ (GP-T2) re-point `guest-packeta.spec.js`'s two remaining `setLiveFee()` fixture calls (fee change on a PAID row, each preceded by `paidEditRefused()`) at this row's delivery PATCH (learnings 12 §6/§12).  Admin `PATCH /api/guest-orders/:id/delivery {method:'via_host'}` (per-route `requireAdmin`, exact body, 404/409 cancelled, no cycle/paid gate) via `helpers/pickup.js applyGuestDelivery` (mirror of `applyPickup`) + `/unpaid` rows += `delivery_fee/packeta_address/packeta`, live `amount = total + fee` + **refund `amount = ~~itemsAmount + (delivery_fee_paid || 0)~~ itemsAmount + (paid ? delivery_fee_paid || 0 : 0)` (PO: items + fee; ⚠ GP-T5's refund queue must keep `paid = 1` in the QUERY, not only in the formula — unpaid cancelled rows now carry a snapshot, GP-T1) + `packeta:true` marker** ~~+ paid toggle writes the snapshot~~ (→ SHIPPED by GP-T1 with TWO writers, learnings 12 §6; GP-T5 only READS `delivery_fee_paid`) + CycleDetail nested row badge / 📦 address / breakdown + `GuestDeliverySwitch.vue` (ONE component, inline confirm naming the fee; second consumer GP-T6) + receivables/refund cards + `api.js` + `ADMIN_ENDPOINTS` — `20 §UC-GP-009,004(admin),006(refund)` · model=heavy ⚠ admin cannot SET a Packeta point in v1 (PO); switching a PAID Packeta row to pickup zeroes the fee behind a confirm — with the snapshot a later cancel still refunds what was paid (record in learnings). ⚠ implementer updates the superseded „items-only“ wording in UC-GP-006/D4/e2e item per the clarification line.
+- [x] GP-T6  `/distribution` guest Packeta party: `helpers/delivery.js` (DP-T1, SHIPPED) already classifies a guest with `packeta_address` as `packeta` — this row makes the payload EMIT it as its own `kind:'guest'` party (`party.key` `friend:<id>`/`guest:<id>`, derived `packed` = all items packed, removed from the host's `guest_orders[]`, sorted after hosts; host with only Packeta sub-orders and no own order absent) + `packingItemStats` guest half `+= packeta_address IS NULL` + `guest-order-items` auto-unpack skips Packeta parents + hand-over inheritance predicate confirmed `via_host` only + board row in DP-T6's reserved Packeta slot („Hosť • cez {host}“, red badge, 📦 address, phone, `GuestDeliverySwitch`, print group) + **module-20 closeout (full suite, CLAUDE.md one-liners: cancel statement, `pickup.js` home, „point 160“; learnings GSO-T7 bullet „via_host guests only“)** — `20 §UC-GP-010,011` · model=heavy ⚠ `packed` is the ledger moment for the HOST's own order — the predicate change must not let a host pack early or unpack late; rewards (GSO-T9) untouched: a Packeta guest's kg still credits the host. ⚠ SANCTIONED: `guest-distribution.spec.js` expected NO change (all fixtures via_host).
+
+- [x] GP-T7  PO decisions 2026-09-24 follow-up (before the staging test of modules 18–20): **(1)** Packeta must NOT proceed on a stored guest e-mail that fails `EMAIL_SHAPE` — checkout submit, the edit PUT switch to Packeta (GP-T2) and the status-page edit UI (GP-T4) treat an unshaped stored e-mail as absent: require + store a valid one (supersedes GP-T2's write-once „any non-null counts"; 20 §OPEN item → RESOLVED); **(2)** lock copy „uzamknuté" → „uzavreté" on EVERY friend/guest surface + friend-facing server messages (`FriendOrder`, `FriendPortalSession`, `LandingStateModal`, `PortalExplainer`, `orders.js` 403s; admin action labels „Uzamknúť/Odomknúť/Uzamknutý" unchanged); **(3)** pre-open „Ako to funguje" shows the Packeta clause ~~unless the planned next round explicitly has `parcel_enabled = 0`~~ **ALWAYS for planned_date/planned_note/unknown; a stale `open_elsewhere` link follows the OPEN round's real flag** (PO: Packeta in ~all future rounds; orchestrator 2026-09-25: `parcel_enabled` defaults to 0 and is never set at plan time, so a planned round's 0 is not a real „off" — reading it would hide the clause on almost every planned round) — the pre-open payload publishes `next.parcel_enabled` (additive, `0|1` on `open_elsewhere` only, `null` otherwise); **(4)** next-opening under 7 days uses the friend register „o n dní" on the guest pre-open page too (`weeksAwayLabel` → delegate to `inWeeksText`, one home) — 20 §OPEN, 19 §UC-GL-006, 17 O6 · model=heavy ⚠ re-point every pin of the changed strings (grep `e2e/`); full suite.
+
+## 19. WhatsApp notifications (21) — LAST slice, after the next ordering round
+
+- [ ] WA-T1  Outbox schema completion (`notifications` ALTERs on DP-T1's table: `sent_via`, indexes incl. partial unique `idx_notifications_queued_once WHERE status='queued'`, `recipient_kind 'admin'`) + `friends.whatsapp_opt_in` (DEFAULT 1; approve + onboarding write `0` explicitly; **admin `POST /api/friends` writes `1` — PO**) + `friends.phone_e164` / `guest_orders.phone_e164` (CREATE+ALTER) + JS backfill + **adopt GL-T3's `helpers/phone.js toE164` unchanged** at EVERY phone writer (friends profile PATCH, admin friends, approve — still EXACTLY TWO writes inside its tx, `helpers/friend-create.js` if the INSERT lives there, guest checkout, waitlist) + profile PATCH accepts `whatsapp_opt_in` (400 on non-boolean) + settings seeds `whatsapp_test_phone`/`whatsapp_paused` — `21 §UC-WA-001,002,003` ⚠ normalisation never refuses a write (length-only validation stays); `grep -rn parsePhoneNumber backend/src` hits `helpers/phone.js` only. ⚠ the opt-in CHECKBOX renders in PI-T10's marked slot — wire it here (label + privacy sentence are this module's strings). ⚠ D6 guest-checkout sentence „Na toto číslo vám pošleme správu…“ → add to GP-T3's checkout modal here (one line). ⚠ (GL-T3 review) `helpers/phone.js` uses `libphonenumber-js/min`, whose `isValid()` is LENGTH-only (`0999999999` ⇒ `+421999999999`; `max` rejects it) — „valid" means „possible", so some undeliverable numbers reach the segment.
+- [ ] WA-T2  Templates: `helpers/templates.js` (fail-quiet reader, byte-exact SIX-key seed `pickup|packeta|host|closing|waitlist|custom`, three enabled) + placeholder vocabulary + `renderTemplate()` (unknown-valued placeholders stay LITERAL — D10) + formatters (`31,10 €`, „v piatok 12. 9.“, `{meno}` first token) + **`{suma}` sentence-drop rule (orchestrator clarification: whole sentence removed when nothing is owed)** + `GET/PUT /api/notifications/templates(/:key)` in a NEW wholly-admin `routes/notifications.js` mount (`ADMIN_ENDPOINTS`) — `21 §UC-WA-004` ⚠ `{tracking}` removed from the `packeta` seed; `{kolo}` never appears; „objednávka“ register in every body.
+- [ ] WA-T3  `helpers/segments.js` (6 kinds: `handed_over:<target>` ×3 from `helpers/delivery.js` + `handed_over_at` grouped by Europe/Bratislava date, `host_guests`, `not_ordered` (empty auto-saved order counts as not ordered), `waitlist` (`notified_at IS NULL AND whatsapp_opt_in=1 AND phone_e164 IS NOT NULL`), `all_active`; consent predicate, `excluded_opt_out`, `no_phone` returned; per-recipient `vars` incl. `{suma}` = friend LEDGER balance / guest amount incl. fee, `{datum}` from `closes_at`, `{odkaz}` = `standingUrlPath()`) + `GET /api/notifications/segments?cycle_id=` + `GET /api/notifications?…` (`ADMIN_ENDPOINTS`) — `21 §UC-WA-005,007(segment),008(reads)` · model=heavy ⚠ guest half of `handed_over:packeta` is a SEPARATE query merged in JS; cancelled sub-orders excluded everywhere; read-only module.
+- [ ] WA-T4  `helpers/outbox.js` `enqueueForHandOver` / `cancelForUnHandOver` — **REFACTORS DP-T3's inline enqueue into the helper** (same rows) and ADDS the per-recipient rule order: disabled template ⇒ none; opted-out friend ⇒ `channel='email'` row if e-mail else none (PO D5); phone ⇒ whatsapp `queued`; no phone + e-mail ⇒ email `queued`; neither ⇒ `skipped/no_phone`; partial-index idempotency counted, never thrown out of the tx — `21 §UC-WA-006,003(D5)` · model=heavy ⚠ SYNCHRONOUS, called inside DP-T3/T4's transactions (no `await`); `in_person` still enqueues nothing; `cancelForUnHandOver` deletes `queued` rows only. ⚠ `transactions` count pinned unmoved across hand-over.
+- [ ] WA-T5  Outbox write API: compose (segment → rows via WA-T4's rules), **release** (the ONE `queued → released` transition, all-or-nothing 409 `unresolved_placeholders`, waitlist `notified_at` stamp, post-commit e-mail hand-off point for WA-T6), retry (`failed → released`), rerender, body PATCH (`queued` only), manual-sent (`queued|released → sent/wa_me`; 409 `bot_active` via `helpers/wa-health.js` 2 s-timeout health fetch), DELETE (`queued|skipped`) + **waitlist auto-COMPOSE on the cycle `status → open` PATCH (PO; silent no-op while the `waitlist` template is disabled)** — `21 §UC-WA-008,007(compose/release)` · model=heavy ⚠ every route in `ADMIN_ENDPOINTS`; `segment_key` validated `/^[a-z_]+(:[A-Za-z0-9-]+)*$/` ≤80; unbindable ⇒ 400; refusal tests read rows back; no cycle-status gate on release; no `whatsapp_paused` gate. Starts `whatsapp-outbox.spec.js`. ⚠ **UNOWNED SEAM, recorded by DP-T3 (review finding, 2026-09-20): a sub-order CANCELLED AFTER a hand-over is unreachable in both directions.** The host reversal skips cancelled bags (`COALESCE(status,'submitted') <> 'cancelled'`) and `PATCH /guest-orders/:id/handed-over` refuses them outright (409 `cancelled`, terminal), while the soft cancel (`softCancelGuestOrder`, three doors) clears neither `handed_over_at` nor the `queued` notification. The row is left permanently stamped as handed over, and a „odovzdané priateľovi" message stays queued for a bag nobody will receive. ⚠ Both predicates are literally what §UC-DP-004/005 specify, so this is NOT a DP-T3 defect and was deliberately not patched there. **Cheapest fix identified: the ADMIN cancel (`POST /guest-orders/:id/cancel`) either reverses the hand-over for that bag first, or refuses with 409 when it is already handed over** — ~~one door, not three, because the host's DELETE and the guest's empty cart are both gated to an OPEN cycle and a hand-over cannot have happened yet.~~ ⚠⚠ **THAT PREMISE IS FALSE — corrected by DP-T4, and it was the ORCHESTRATOR's error, propagated to BOTH rows.** `PATCH /guest-orders/:id/handed-over` carries **NO cycle-status gate at all** (verified: zero status references in that handler), so a bag CAN be handed over while the cycle is still `open` — which is exactly when the host's `DELETE` (`guest-orders.js:195`, gated `cycle_status !== 'open'`) and the guest's empty cart ARE allowed. **All three doors are reachable after a hand-over**, so a fix at the admin cancel alone would be the half-way fix that was explicitly ruled out. The complete cheap fixes are `softCancelGuestOrder()` — the one home all three share, though that is module 14 policy — or WA-T5's release-time `skipped` guard. ⚠ The lesson is the session's own: a premise stated in a backlog row is a CLAIM, and this one was never checked against the handler before being written into two rows. ⚠ This row is the OTHER candidate owner: it is the `queued → released` transition, i.e. the last moment before a message about a cancelled bag actually goes out, so a release-time guard (skip/`skipped` a row whose `guest_order_id` is cancelled) is the alternative to fixing it at the cancel. ⚠ ALSO from DP-T3: `segment_key` FREEZES at enqueue time — correcting a party's pickup point after the hand-over leaves the queued row on the old target, and a delivery-TYPE change plus a genuine re-hand-over can leave two rows under different templates. Only GROUPING is affected (bodies render from the live row at release), so this row decides whether to re-resolve the segment at release or leave it. ⚠ **Recorded by FUP-T23 (2026-09-20), for whoever groups by `segment_key`:** that key FREEZES at enqueue (DP-T3's note above) and a `loc<id>` in it can name a `pickup_locations` row that **no longer exists** — re-point the last party off a point and the DELETE then HARD-deletes it, which is correct and is exactly what FUP-T23's guard allows. Inert today (nothing reads the key back), but the moment this row groups by it, a frozen key must be treated like the distribution payload treats a dangling id: **keep the group, lose only the label, never drop the message.**
+- [ ] WA-T6  E-mail fallback `channel='email'`: post-commit fire-and-forget through `sendMail`/`renderEmail` (the ONE place the API sends a notification itself), conditional result write `UPDATE … WHERE status='released'` (`sent/email` | `failed/<code>`; no Mailgun env ⇒ `failed/not_configured`, never silent), subject „Podpultovka · {template name}“ — `21 §UC-WA-010` ⚠ `withMailHarness` describe (self-skipping): exactly one stub request whose text equals the row body; key never in `error`.
+- [ ] WA-T7  WhatsApp settings: `GET /api/admin/whatsapp/health` proxy (+ opt-in count, paused) + `whatsappPaused`/`whatsappTestPhone` settings (`maxlength 32`, 400 `invalid_test_phone`) + `POST /api/admin/whatsapp/test` (ONE `released` row, `template_key='test'`, `recipient_kind='admin'`, 409 `test_pending`) + `AdminWhatsAppSettings.vue` (Stav / Spárovať QR `<img>` data URL — `img-src data:` already allowed, no CSP change / Tempo / Šablóny / runbook fold; health polled 5 s with `loadSeq`) + link from AdminSettings — `21 §UC-WA-012` ⚠ proxy always 200 `{reachable:false}` on failure, never logs the QR; „Odpojiť/Pripojiť“ is Phase 2; the process's `:3010/health` is loopback-only and does NOT join `ADMIN_ENDPOINTS`.
+- [ ] WA-T8  Composer `/admin/whatsapp` (`AdminWhatsApp.vue`): cycle selector, **„Cez bota“ default | „Ručne z môjho čísla (wa.me)“** tabs, Komu / Šablóna (PUT on blur, 400 inline) / Náhľad columns, „Poslať skupine (n)“, retry, rerender, per-row edit/delete, wa.me href composed IN JS AT CLICK TIME (`rel=noopener noreferrer`, no `wa.me` href in the DOM before the click — body may carry a guest `order_token`) then `manual-sent` ⇒ „Otvorené ✓“, offline/pause banner, 409 `unresolved_placeholders` scroll-to-row — `21 §UC-WA-009` ⚠ ADD the deferred module-16 buttons now: board „Správy (n vo fronte)“ header button + per-group „Správa skupine“ deep-linking `?cycle=&segment=`, DP-T7's modal sentence + toast half about messages. NEW `whatsapp-composer.spec.js`.
+- [ ] WA-T9  `wa/` process scaffold (own `package.json`, ESM, plain JS): env/boot (`DB_PATH` REQUIRED — exit 1 otherwise), ONE sender interface + **`WA_SENDER=stub`** implementation, poll loop draining `released` rows with conditional UPDATEs (writes ONLY `status/sent_at/sent_via/error`, one short tx per row, `busy_timeout 5000`), pacing ring 3–10 s + ≤30/hour (env-tunable to 0 for tests), `whatsapp_paused` re-read, loopback `GET /health` (`state, sender, number, qr, queue, hourly_sent, next_send_at, last_error, …`) + `e2e/wa-harness.js` (model: `mailgun-harness.js`, self-skips without `DB_PATH` + `CAN_SPAWN_BACKEND`) + stub describe + `e2e/README.md` recipe (`WA_HEALTH_URL`) — `21 §UC-WA-011(stub+loop+health),014(item 3)` · model=heavy ⚠ FIRST background process and the ONLY second writer to the SQLite file; `grep -rn whatsapp-web backend/` stays EMPTY; the whatsapp-web.js branch is a dynamic `import()` in WA-T10 only, so the stub runs on the 4 GB box with no Chromium.
+- [!] WA-T10 `wa/` REAL sender: whatsapp-web.js `LocalAuth` + headless Chromium (`--no-sandbox --disable-dev-shm-usage`), QR pairing event → health `qr` (refresh ≈20 s), `getNumberId()` null ⇒ `failed/not_on_whatsapp`, reconnect backoff 5·10·20 s … ≤5 min, `auth_failure` stops the sender (health stays up), `[wa]` PII-free logs, re-pair runbook — `21 §UC-WA-011(whatsapp branch),014(item 6)` · model=heavy ⚠ **BLOCKED — the spec's own words: „The real sender is NOT exercised by the suite (no Chromium-in-Chromium, no real number); UC-WA-013's manual staging → production procedure is the acceptance for whatsapp-web.js itself.“ PO tasks still open (PO block 2026-09-19): „buy/activate the bot number before UC-WA-013's production step“ (Q5.a: yes, not yet in hand) and „write the bot's WhatsApp profile text“; plus the operator server resize (WA-T11). Re-open when: the number is confirmed, the LXC is 8 GB / 4 vCPU, and WA-T9's stub is green on staging.**
+- [!] WA-T11 Deploy: `ecosystem.config.cjs` `gorifi-wa` + `gorifi-wa-staging` (`instances: 1`, `max_memory_restart '1200M'`, `--env-file-if-exists`), `deploy.sh … wa` component (rsync `wa/`, `npm ci --omit=dev`, restart FROM THE FILE; session dir + Puppeteer cache OUTSIDE `wa/` so `--delete` cannot touch them), `.env` keys (`DB_PATH` becomes REQUIRED in BOTH `.env`s), `docs/deploy/whatsapp-process.md` + LXC checklist, SEC-D2 backups note (`wa-session/` not backed up) — `21 §UC-WA-013` ⚠ **BLOCKED — the spec's own words: „Acceptance criteria (manual, staging first — the sandbox cannot deploy)“; „Server (LXC) checklist — RAM 8 GB (from 4), 4 vCPU (from 2), +2 GB disk, 1–2 GB swap, /dev/shm ≥ 256 MB … Chromium's Debian runtime libraries … ulimit -n ≥ 4096“ is an OPERATOR prerequisite; production acceptance needs „one scan from the bot phone yields state=connected … and the test message arrives on the admin's phone“ — number not yet in hand. Re-open when: the operator has resized the LXC and confirms; the STAGING half (stub, `:3011`) may be split off as an unblocked sub-row once WA-T9 lands if staging proof is wanted before the number arrives.**
+- [ ] WA-T12 Module-21 closeout: UC-WA-014 sweep (`ADMIN_ENDPOINTS` completeness incl. `/api/notifications/*`, `/api/admin/whatsapp/*`; spec file coverage) + CLAUDE.md „Supersedes / amends“ one-liners (WA process = only second DB writer; `wa/` = only home of whatsapp-web.js; notifications never a financial event; start order backend → wa) + 01-architecture D12 mirror (`notifications.email`, `sent_via`, `recipient_kind 'admin'`, `guest_orders.phone_e164`, partial index) + sibling-seam checks (DP-T3/T4 call `enqueueForHandOver`/`cancelForUnHandOver`; PI-T10 slot renders the checkbox; GL-T3 INSERT uses `toE164` and never writes `notified_at`; GP-T3 carries the D6 sentence; guest `{suma}` includes the fee) + learnings + **full suite** (`WA_HEALTH_URL` → harness or unset ⇒ „proces nebeží“ paths) — `21 §UC-WA-014,D12` ⚠ WA-T10/T11 stay `[!]` and are recorded as open manual acceptance; Phase-2 list recorded (`in_person` template, „Odpojiť“, per-location hours, guest opt-in flag, Cloud API — NOT to be built silently).
+
 
 ## Log
+
+- 2026-09-25 · GP-T7 · (this commit) · no PR (project convention) · **PO decisions 2026-09-24, before the
+  staging test.** (1) an unshaped stored guest e-mail no longer counts for Packeta (`storedEmailUsable()` +
+  compare-and-swap `guest_email IS ?`; a valid one stays write-once); (2) friend/guest lock copy „uzamknuté" →
+  „uzavreté" (+ friend `orders.js` 403 with diacritics; admin labels unchanged, pinned); (3) pre-open „Ako to
+  funguje" shows the Packeta clause for planned/unknown rounds ALWAYS (a planned row's `parcel_enabled` defaults to
+  0 and is not a real „off"), `open_elsewhere` follows the open round's flag; (4) guest next-opening under a week
+  reads „o n dní" — `weeksAwayLabel` deleted, the view calls `inWeeksText` (one home). **FULL SUITE 2597 passed / 0
+  failed / 27 skipped, 95/95** (first-cut rule), targeted 243/0 after the rule change. Review: **approve** + 3
+  comment minors (fixed by the orchestrator). PO sign-off items collected in learnings 12 §52.
+- 2026-09-24 · GP-T6 · (this commit) · no PR (project convention) · **Module-20 closeout — the Packeta guest
+  becomes its own party, and a hand-over that had been stamping Packeta guests all along.** `/distribution` emits a
+  `kind:'guest'` Packeta party (`party.key` `guest:<id>`, literal keys, no `order_token`, `packed`/`stage` from
+  `guestOrderStage()`, removed from the host's `guest_orders[]`, sorted after hosts, a Packeta-only host absent);
+  `packingItemStats` guest half `packeta_address IS NULL`; Packeta item toggles ignore the host order (no auto-unpack,
+  no host-handed lock — pending PO); board row in DP-T6's Packeta slot with `GuestDeliverySwitch`, per-guest Krok 2,
+  group batch `guest_order_ids`, print group. ⚠ **BUG FIXED:** `inheritingGuests()` never SELECTed `packeta_address`,
+  so a host hand-over stamped Packeta guests and queued „odovzdané" for them since GP-T1 (never deployed — no data to
+  clean). ⚠ **Review round (orchestrator decision, pending PO):** switching a Packeta guest back to via_host is
+  REFUSED (409 `host_handed_over` / `host_packed` with unticked items) instead of landing an unpacked bag inside a
+  packed/handed-over host; synthetic hosts ungated. Specs 05/06/14/16/20 amended with pointers; all pending-PO items
+  collected in 20 §OPEN. **FULL SUITE 2594 passed / 5 skipped / 1 failed** (`google-auth:1803`, untouched by the
+  diff, 2/2 green alone; 14.8 min — loaded-box tell). Review: **revise → applied** (1 major + 3 doc minors). Targeted
+  358/0 after the fix; E2E **444 passed / 1 skipped / 0 failed across 12 files** (+1 board keyboard test).
+- 2026-09-23 · GP-T5 · (this commit) · no PR (project convention) · **Admin delivery correction, receivables and
+  refunds — and a confirm that would have paid one fee out twice.** `PATCH /api/guest-orders/:id/delivery
+  {method:'via_host'}` (per-route `requireAdmin`, `ADMIN_ENDPOINTS`, exact body, 404/409 cancelled re-checked in tx,
+  no cycle/paid gate) via `helpers/pickup.js applyGuestDelivery` (writes address NULL + fee 0 only — never
+  `delivery_fee_paid`). `/unpaid`: live amount = total + fee, `packeta` marker, `refund_fee`; refund = items +
+  `refund_fee` where ⚠ **ORCHESTRATOR DECISION (pending PO): a paid switch SETTLES the fee** — the snapshot counts only
+  while `packeta_address IS NOT NULL` (the confirm tells the admin to return it at the switch; round-1 review found
+  pay → switch → cancel refunded it again). `paid = 1` kept in the query; raw snapshot never published.
+  `GuestDeliverySwitch.vue` (one component, GP-T6 reuses it) + CycleDetail nested row badge/📦/breakdown + receivables
+  and refund cards. Stale-tab re-apply = accepted risk (pinned). `setLiveFee()` fixture fully replaced by the PATCH.
+  Review: **revise ×2 → approve** (1 major double refund; minors: refund note, stale comment copies). Gate 1014/0
+  across 19 files; E2E **455 passed / 1 skipped (admin desktop-only) / 0 failed across 6 files** (+3).
+- 2026-09-23 · GP-T4 · (this commit) · no PR (project convention) · **Status page + host card for a Packeta
+  guest.** `GuestOrderStatus.vue`: header „· doručí Packeta", „Doručí Packeta" pill replaces delivered, fee line via
+  `deliveryExtras` + fee-inclusive total (`payment.amount`), point card kept on cancelled; edit mode reuses
+  `GuestDeliveryChoice`, write-once „E-mail *" input (no stored e-mail only), parcels-gone warn banner, and the save
+  ALWAYS sends `use_parcel_delivery` (20 §UC-GP-007 item 9). `GuestSubOrders.vue`: red Packeta badge outside
+  `sub-order-badges`, point, „nemusíte nič odovzdávať", no tick (v-if + JS guard), `pendingDelivery` excludes
+  Packeta, fee-inclusive foot total with breakdown; `totals` product-only. No shipped pin changed. Review:
+  **approve, no findings** (stale-tab re-apply recorded on GP-T5). Gate 761/0 across 23 files; E2E +2 (edit-mode
+  keyboard, host-card copy sweep); orchestrator's own confirmatory run **392 passed / 0 failed across 12 files**.
+- 2026-09-23 · GP-T3 · (this commit) · no PR (project convention) · **Guest checkout delivery choice — one fee,
+  one format.** `GuestDeliveryChoice.vue` (ONE home for checkout + edit; renders nothing when parcels off; caller
+  guards the payload), `lib/email-shape.js` (pinned equal to the mailer's `EMAIL_SHAPE`), checkout modal (choice
+  below Mobil, e-mail flips to required + help, subtitle fee + „balík vám doručí Packeta", delivery keys only for
+  Packeta, reset on open), hero badge „Packeta +{fee} EUR" (the documented exception to the GL-T4 hero `.badge`
+  rule — shipped count pins hold on parcel-off rounds), g-confirm fee line via `deliveryExtras` + point line,
+  `GuestSteps :packeta` on all three mounts (pre-open stays off: no cycle in that payload → 20 §OPEN). Cartbar
+  product-only; `PaymentModal` untouched; pixel QR = total + fee. Deviations: reused `e2e/helpers/qr-pixels.js`
+  (+`independentQr`) instead of a new `qr-helpers.js`; radio fee „(+3.50 EUR)" (orchestrator: spec formula +
+  FriendOrder + hero badge). Review: **revise → docs applied**. Gate 600/0 across 17 files; E2E **506 passed / 0
+  failed across 13 files** (+3: keyboard radios, coarse-pointer 16px, rendered-copy sweep).
+- 2026-09-23 · GP-T2 · (this commit) · no PR (project convention) · **Edit PUT delivery block — write-once
+  e-mail, and a source pin narrowed one comma too far.** `handleStatusEdit` (both URL forms): cancel ignores delivery
+  keys; paid + non-empty items ⇒ 409 `paid` before delivery; absent/null untouched; `false` clears; `true` re-reads
+  `parcel_fee` in the tx (parcels off ⇒ 400); literal-column UPDATE; e-mail read ONLY when switching to Packeta on a
+  row with `guest_email IS NULL` (handler check + SQL predicate), otherwise ignored with 200 (spec wording). No
+  `delivery_fee_paid` write; no ledger row. `setLiveFee()` re-pointed where reachable; two paid-row calls handed to
+  GP-T5. Review: **approve** + 1 minor (fold pin regex restored to catch `ROUND(?, 2) + delivery_fee`). Gate 876/0
+  across 13 files, re-gate 41/0; 11 mutations red. API-only. ⚠ PO question (20 §OPEN): a via_host row's unshaped
+  optional e-mail counts as „has e-mail" on a later Packeta switch and can never be corrected.
+- 2026-09-23 · GP-T1 · (this commit) · no PR (project convention) · **Guest Packeta, server half — and a
+  snapshot the orchestrator's own clarification could not fill.** `guest_orders.delivery_fee`/`packeta_address`/
+  `delivery_fee_paid` (CREATE+ALTER), `GUEST_ORDER_FIELDS` + guest.js column lists, `publishedParcelFlags()` on the
+  listing and `statusPayload`, submit contract (`validateDeliveryChoice()`: strict boolean, point ≤160, Packeta ⇒
+  `EMAIL_SHAPE` e-mail, fee `roundMoney(current.parcel_fee)` from the in-tx re-read — source-pinned through the
+  `.run` binding), `guestPaymentBlock().amount = total + delivery_fee`, mail fee/point rows, `softCancelGuestOrder`
+  zeroes the fee. `total` product-only; NO `transactions` row (watermark pinned). ⚠ **ORCHESTRATOR DECISION
+  (review round 1, PENDING PO):** `delivery_fee_paid` = the fee part of what the guest was asked to pay, frozen at
+  the first of {paid, cancel} — TWO writers (soft-cancel `COALESCE`, paid toggle `COALESCE` / cancelled-keeps on
+  unpay); refund = items + (paid ? snapshot : 0) and GP-T5's queue must keep `paid = 1` in the query. Review:
+  **revise → approve** (round 1: 1 major — cancel-before-paid lost the fee; round 2: 3 minors). Gate 938/0 across
+  19 files, re-gates 244/0 and 30/0; 15 mutations red. API-only — no e2e-tester.
+- 2026-09-23 · GL-T7 · (this commit) · no PR (project convention) · **Module-19 closeout — the guest surface
+  joins the vocabulary guard, and four strings the row did not list.** `GUEST_SURFACE_ROOTS` (router-equal to the
+  three `/g/` routes) + `VOCABULARY_ROOTS` swept by the ONE `BANNED`; `importClosure()` keeps its friend default.
+  Server-source sweep over `routes/guest.js` + the HOST blocks of `guest-orders.js` (block count pinned to raw
+  registrations; every message literal must survive comment stripping). Seven guest-facing „cyklus" strings
+  re-worded (row's three + `guest.js:1138/1227/1372` found by grep), status/`reason` byte-identical — all PO DRAFTS;
+  admin cancel 409s keep „Cyklus" (audience rule, pinned). 06 §UC-GX-010 `closed` copies struck; CLAUDE.md's
+  surviving-strings paragraph resolved. **FULL SUITE 2486 passed / 0 failed / 4 skipped, 94/94 files, 14.0 min,
+  load 1.2–1.7.** Review: **approve** + 3 minors applied. No separate e2e-tester — the row's deliverable is the
+  guard + the full suite; the rendered sweeps cover the one UI string.
+- 2026-09-23 · GL-T6c · (this commit) · no PR (project convention) · **The standing link from a round that is
+  not open — one instance, three hosts.** The drawer's „Zdieľať s kolegami" row now shows on LOCKED and on
+  CLOSED-with-catalogue landings and opens the ONE `GuestShareDialog` (still mounted only in `FriendOrder.vue`) via
+  `shareHost = landingOrder || lockedOrder || closedOrder` (mutually exclusive branches; new `ref="closedOrder"`).
+  `shareCycleId = isReadonly || isLocked ? null : activeCycleId` ⇒ standing-only, no round name — a locked round
+  offers no per-cycle link (05 §UC-KG-002). A request from another view dismisses the state modal so it cannot
+  stack. Recorded gap: CLOSED with NO catalogue mounts no `FriendOrder` ⇒ no row (unreachable once any round has
+  locked). 5 pins retargeted with SANCTIONED comments (intent kept, reviewer-verified); profile census unchanged
+  (10/8). Review: **revise → prose-only fixes applied** (1 major: 18 §UC-PI-011 acceptance clause unstruck).
+  Gate 505/0 across 15 files; E2E **389 passed / 0 failed across 13 files** (+2: locked-with-order, keyboard).
+- 2026-09-23 · GL-T6b · (this commit) · no PR (project convention) · **Host share dialog standing section —
+  and an entry point the spec assumed existed.** `GuestShareDialog.vue`: standing NeoCopyRow first, „kto čaká"
+  badge via `waitingLabel` (only when > 0), „Nový stály odkaz" `div.standing-confirm` (mutually exclusive with the
+  per-cycle `.confirmbox`, JS-guarded), native share = the standing URL (per-cycle fallback only after a FAILED
+  standing read), per-cycle body demoted under „Odkaz len na túto objednávku" inside a `per-cycle-link` wrapper,
+  own `standingSeq`. 16 sanctioned retargets (option (a)) across `share-dialog`/`guest-link`/`guest-order-recovery`,
+  each commented; the „UNMODIFIED" claim struck in every copy. ⚠ `cycleId=null` is source-pinned only — no UI reaches
+  it (drawer share item is open-only; the one instance lives in `FriendOrder`) → new row **GL-T6c**. Review:
+  **revise → applied** (1 major: the false premise unrecorded; 2 minors: a vacuous retarget, one unstruck copy).
+  Gate 392/0 across 11 files; E2E **375 passed / 0 failed across 10 files** (+2: Kolegovia deep-link entry,
+  keyboard order + Esc — the dialog is closable, so NO focus trap by design, RD-FL-2).
+- 2026-09-23 · GL-T6a · (this commit) · no PR (project convention) · **GL-T6 split — the admin half and the
+  scrub, and a „pass UNMODIFIED" claim that could not hold for the dialog.** CycleDetail „Čakajúci hostia (N)" card
+  (grouped by host, per-row confirm + rowSeq, „Nikto nečaká.", failed-load ≠ empty), FriendDetail „Stály odkaz pre
+  hostí" (token never in DOM — composed at click time; mint-on-open back-fill kept per PO and pinned; inactive
+  friend: no mint; separate regenerate-failure message), `lib/plural.js waitingLabel`. **Scrub landed**:
+  `guest_link_token` (own UPDATE) + `guest_waitlist` name/phone/e164 + verify 22→26, and the padding precedence
+  fixed on all four phone expressions (HEAD's form leaked on planted ids ≥12066). ⚠ `make-test-db.sh` now FAILS
+  CLOSED until production carries the GL-T1/GL-T3 migrations (README). The host dialog half is GL-T6b (option (a)
+  retargets sanctioned — 12 shipped pins contradict §UC-GL-008). Review: **revise → fixes applied** (1 major:
+  CLAUDE.md waitlist-scrub claim unstruck; 4 minors). Gate 978/0 across 22 files; E2E **440 passed / 0 failed
+  across 8 files**.
+- 2026-09-23 · GL-T5 · (this commit) · no PR (project convention) · **The pre-open page — and a signup memory
+  that had to know which round it belonged to.** Full `preopen` state from `GLink2 Zatvorené` (hero + `weeksAwayLabel`
+  parenthesis, „Ako to funguje" card with full `GuestSteps`, „Dajte mi vedieť" form → two success banners, faded
+  read-only preview via the new `GuestProductGrid readonly` prop — extended, not forked), `GuestBrandHeader closed`
+  (lock chip + `GUEST_TICKER_CLOSED`), `document.title`, `self-hosted-fonts` row `/g/:token (preopen)` allowlist `[]`.
+  `data-user-copy` on person-typed product fields on both guest screens. Deviation: signup memory stored as
+  `{at, whatsapp_opt_in, cycle_id}` per token (no PII) instead of a bare ISO string — spec line struck. 409 `open`
+  on submit reloads into the live page. Review: **approve** + 2 doc minors applied (+ `plan_note` `pre-line`).
+  Gate 318/0 across 14 files; E2E **322 passed / 0 failed across 14 files** (+4 tests). ⚠ PO: under-a-week wording
+  — 19 `weeksAwayLabel` „už tento týždeň" vs 17 O6 `inWeeksText` „o n dní" (one register or two? 5–6 days out is
+  often next calendar week) **→ RESOLVED PO 2026-09-24 (GP-T7): one register, `inWeeksText`; `weeksAwayLabel` deleted**; stale sentence nominative „Požiadajte {host}"; all new copy is draft.
+- 2026-09-23 · GL-T4 · (this commit) · no PR (project convention) · **`GuestSteps` + `GuestRoastersLine` on the
+  open hero — and two canon classes the shipped pins would not tolerate.** `GuestSteps.vue` (compact/full, `packeta`
+  default OFF), `GuestRoastersLine.vue` (static sentence, reads the new `short` field of `lib/roasters.js`; §7
+  importer set += 1), compact strip after the deadline row / above the badge row, „Viac o tom, ako to funguje" fold
+  (`v-if`, closed, not persisted). `NeoIcon` needed nothing (PI-T8 icons). ⚠ Canon deviation: the prototype's
+  `.mono` dot and `.badge` roaster chips are `.gs-n`/`.gr-badge` scoped copies, because `guest-order-shell:202/207`
+  and `guest-invite-dead:450` are strict pins that must pass unmodified; drift pinned by computed-style comparison
+  against real theme elements (tightened in review). Review: **approve** + 2 minors applied. Gate 256/0 across 13
+  files; E2E **230 passed / 0 failed across 11 files** (+2 tests: keyboard toggle, 320 px closed-fold overflow).
+- 2026-09-23 · GL-T3 · (this commit) · no PR (project convention) · **Waitlist write path — one writer home,
+  and a scrub expression that was never padded.** `helpers/phone.js toE164()` (`libphonenumber-js/min`, never
+  throws), `helpers/guest-waitlist.js` = the ONLY `guest_waitlist` writer (join / two purges / delete / list;
+  segment SQL as a header comment contract; `notified_at` only ever reset to NULL). Public `POST
+  /api/guest/:token/waitlist` (`guestWrite`, rule order state→body, 409 `open`, identical 200 for create and
+  duplicate, (host, e164) idempotency with exact-message constraint translation, FK rethrown, consent absent ⇒ 0);
+  purges on order (cross-host, inside the submit tx) and on the admin complete PATCH transition (same tx); admin
+  `routes/guest-waitlist.js` GET/DELETE (`requireAdmin` mount, `ADMIN_ENDPOINTS`). `libphonenumber-js ^1.13.13`
+  added (pre-approved). Scrub lines for the three PII columns (orchestrator: scrub all, stricter than the friends
+  rule) written into GL-T6's BLOCKING note, not the SQL files (same sequencing as GL-T1). Gate 805 passed / 13
+  documented skips across 14 files, re-runs green; 12 mutations red. Review: **approve** + 1 minor (the padding
+  expression's precedence — fixed in the GL-T6 note; the three existing scrub lines flagged). No UI — e2e skipped.
+- 2026-09-23 · GL-T2 · (this commit) · no PR (project convention) · **Resolver over both token spaces + the
+  pre-open payload — and two „pass UNMODIFIED" files that could not.** `routes/guest.js resolveEntry(token,
+  {forSubmit})`: uniform 404 across both spaces; per-cycle token on a non-open cycle ⇒ 200 `page:'preopen'` with
+  `stale_cycle`, never the newer round (D7), submit 409 `closed`; standing token ⇒ inactive host 410 BEFORE any
+  write, no open round ⇒ preopen, deactivated per-cycle row ⇒ 410 (D4), else get-or-create the host's per-cycle row
+  for the newest open round (SELECT → INSERT via `uniqueGuestToken()` → UNIQUE fallthrough re-SELECT; zero async
+  kept). Preopen: four `next` kinds + non-null `stale_cycle` (spec shape; the row's „stale" kind struck), ≤12
+  preview products, no availability, no `stock_limit_g`, `waitlist.available`, `Cache-Control: no-store` on every
+  answer. Minimal `preopen-hero` in `GuestOrder.vue`; the `closed` dead card removed. Sanctioned e2e edits:
+  `guest-order`, `guest-invite-dead` (row) + `guest-status:~598`, `guest-order-recovery:~1296` (orchestrator —
+  the spec's „pass UNMODIFIED" struck). Review: **approve** + 3 minors applied (stale 410 claims struck in 11
+  places, submit-409 read-backs, preview strips `stock_limit_g`). Gate 832/835 → 213/213 after fixes; E2E
+  **345 passed / 0 failed across 13 files** (+1 test: 320 px overflow). ⚠ For PO at staging: the stale sentence
+  „Požiadajte {host}" puts the name in the nominative (spec's own draft copy).
+- 2026-09-23 · GL-T1 · (this commit) · no PR (project convention) · **Standing token — schema, one helper,
+  four routes, and a credential the scrub did not know about.** `friends.guest_link_token` (ALTER only — the
+  `friends` CREATE is the original shape) + `idx_friends_guest_link_token` in its OWN try/catch; `guest_waitlist`
+  CREATE + partial unique index (inert). `helpers/standing-link.js` = ONE home (`uniqueGuestToken()` across both
+  token spaces — `guest-links.js`'s private `uniqueToken()` deleted; `ensureStandingToken`/`regenerateStandingToken`/
+  `standingUrlPath`/`currentOpenCycle()` one query/`waitingCount()`/`mayMint()`). Host `GET /guest-links/standing`
+  (lazy mint) + `POST …/regenerate` (`FRIEND_IDENTITY_ENDPOINTS`), admin `GET/POST /friends/:id/guest-link/standing[
+  /regenerate]` (`ADMIN_ENDPOINTS`). `sanitizeFriend` strips the token (deviation: spec said „no change", but the
+  profile GET is `SELECT *`). No modern-mode guard (not a login credential). Review: **revise → approve** (round 1:
+  1 major — token absent from `scrub-template.sql`/`verify-scrub.sql`; can't be conditional in sqlite3-CLI SQL, so
+  recorded BLOCKING on GL-T6 + GL-T3 waitlist PII; minors: four publishing routes named, inactive friend never
+  MINTED (409 `reason:'inactive_host'`, rotate still allowed), `waiting_count` = `notified_at IS NULL` per three
+  spec passages, `uniqueToken` strike in 14). Gate: 514/0 across 17 files, re-gate 223/0 across 5; migration
+  proved on an existing DB; 24 mutations red. No UI — e2e-tester skipped. FUP-T4 gains „rotate standing tokens
+  at the modern flip".
+- 2026-09-23 · PI-T12 · (this commit) · no PR (project convention) · **Module-18 closeout — and five
+  layout defects the new pins found.** Full suite **2322 passed / 0 failed / 4 skipped, 92/92 files, 13.2 min,
+  box idle** (the documented four skips); post-review re-gate 107/0/0 on the four edited files. **4 e2e files
+  edited** (portal-fidelity 9→19, portal-shell 29→32, portal-profile-modal 51→53, portal-session-boundary 3→3
+  rewritten); suite 2312 → 2327. App fixes: own-order `.display` `.9`→1 (canon), history total's stray `.9`
+  removed, `CycleTimeline .when` `normal` (vertical only), `LandingStateModal` footer wraps below ~370 px
+  (one row at the canon's 378), `NeoDrawer` text columns `overflow-wrap:anywhere`. ⚠ Deviation: two of the
+  row's four A10 sites are canon-DECLARED (1 / 1.25) and are pinned at the canon, not `normal` — spec + row
+  amended. The auto-open trigger pin (PI-T10's ⚠) is now a census with EXACT counts (10 mounts, 8 terms,
+  `showBalancePayment` click-only), gate tokens between every mount, quote-aware attribute scan; the admin
+  surface is DERIVED (router `/admin` routes reconciled exactly → import closure) with theme-class and
+  `.app`/`.modal-layer`-scope pins. Review: **approve** + 5 minors, all applied (each blind spot mutation-shown:
+  per-friend balance stub, arrow-in-attribute mount, `meta`-first / static admin routes, unquoted `:class`).
+  E2E: no separate e2e-tester — the row's deliverable IS the e2e specs + full suite.
+- 2026-09-23 · PI-T11 · (this commit) · no PR (project convention) · **The vocabulary rule + deep links —
+  resumed from an interrupted run, and a ban that missed four inflections.** Friend-facing copy and server
+  4xx swept to „objednávka"/„ponuka" (orders.js 404 + Packeta 400 = module 20's wording, guest-links.js 404s,
+  voucher ledger note; status codes kept; admin-guarded „Cyklus" strings kept by the audience rule; `cycles.js`
+  untouched — its friend-shaped `/:id/public`+`/:id/auth` have no frontend caller). ONE ban
+  `e2e/helpers/vocabulary.js BANNED` (all ten „kolo" forms incl. „kolám/kolami/kôl", Slovak-letter
+  boundaries; `cycle-stages.spec.js` imports it), the source guard = the friend routes' `importClosure()`
+  (65 files) instead of the spec's typed list (supersession recorded in 18 §UC-PI-017), and
+  `portal-vocabulary.spec.js` (26) sweeping every friend surface through `copy-sweep.js`, with a poisoned
+  fixture + `expectExcluded()` per marked render. Person-typed text split out of composed strings
+  (`historySub`/`orderPickupText` → `{text,data}`, NeoDrawer `subData`, `nextTextIsNote()`, PortalExplainer
+  `pickupParts`). Review: **revise ×2** (round 1: 2 major — superseded regex copies unstruck; guest-orders.js
+  host 409s unowned → named in GL-T7 + 18's hand-off, NOT reworded per the row; round 2: 5 minors, applied).
+  E2E: **463 passed / 0 failed across 16 files ×2** (asked 16, ran 16); e2e-tester added the share-sheet
+  blank-name fallback test and the `/zostatok` half of the voucher-note test. ⚠ Orchestrator killed a
+  leftover `until grep -q "^EXIT:"` watcher on a log that never received the line — the CLAUDE.md
+  watcher rule, a third shape.
+- 2026-09-21 · PI-T10 · (this commit) · no PR (project convention) · **The §19 profile modal — and a
+  precedence list that was narrower than the sentence above it, three times running.** Field set reordered
+  to §UC-PI-015 (Login / Meno / Mobil* / module-21 slot / E-mail / Adresa Packeta), `Mobil` now REQUIRED
+  (400 `{error:'Zadajte mobilné číslo', field:'phone'}` on the FRIEND route only — the admin PATCH still
+  clears a phone, both halves pinned), PO's 160 bound on `packeta_address`, and the auto-open for a
+  phone-less friend. **1001 passed / 0 failed / 13 skipped across 25 files** (asked 25, ran 25, diff empty),
+  server log clean apart from the two deliberately provoked errors.
+  ⚠ **THE TRIGGER IS A LOGIN, NOT A SESSION MOUNT, AND THE ORCHESTRATOR'S BRIEF SAID OTHERWISE.** The brief
+  reasoned from `closedModalDismissed`'s per-session precedent; clarification (c)'s own words are „re-opens
+  on the next LOGIN", and §UC-PI-013 had already codified that a restore is not a login. Implemented as
+  `beginSession({freshLogin:true})` from the three login paths, mirroring `explainerPending`. Measured blast
+  radius of the wrong reading: 53 spec files vs 16.
+  ⚠⚠ **THE DEFECT OF THIS ROW, AND IT RECURRED UNDER ITS OWN FIX.** The auto-open must queue behind every
+  surface that raises itself without the friend asking. Round 1 shipped FOUR terms and stacked two modals on
+  the CLOSED landing — the app's normal state most of the month — proven by a probe spec
+  (`dialogs=2, titles=["Objednávky sú zatvorené","Upraviť profil"]`). The fix added two terms AND a comment
+  stating the rule as a CLASS („every surface that raises itself"), then listed six — and that six-item list
+  was copied into CLAUDE.md and the spec. Round 2 measured a SEVENTH: `showVoucherModal`, set from an
+  AWAITED `checkPendingVouchers()` in `onMounted`; `elementFromPoint` over the voucher's own button returned
+  the profile modal's e-mail input, and that voucher carries a ONE-SHOT IRREVERSIBLE decision the friend
+  cannot dismiss. An eighth (`showProfileModal`) let a late hydrate wipe text the friend was typing.
+  **A class rule with a complete-looking list under it is worse than no list**, and enumerating by SOURCE
+  („the gates clarification (c) names") when the predicate is a CLASS is what produced all three rounds.
+  ⚠ **SO THE LIST IS NO LONGER MAINTAINED BY HAND.** `portal-profile-modal.spec.js` walks every
+  `NeoModal`/`LandingStateModal`/`NeoDrawer`/teleported-`fixed inset-0` mount in the component; each must be
+  a trigger term or sit in `NOT_SELF_RAISING` **with a reason**. Verified by the orchestrator, not relayed:
+  injecting a brand-new unguarded `<NeoModal v-if="showFakeNewSurface">` reds the pin with
+  `overlay mount(s) that are neither an auto-open trigger term nor a documented non-term:
+  ["showFakeNewSurface"]` and tells the author what to do; reverted byte-identical, 51 passed.
+  ⚠ Free riders caught twice by the implementer on itself: M16 removes both state-modal terms at once and
+  cannot tell them apart, so a second `locked` fixture + M18/M19 prove each independently (round 2 re-ran
+  both); and M21 (`!pendingVouchers.length`) was **discarded as non-discriminating** rather than swapped in
+  quietly. Two fixture traps recorded: a thin stub makes the voucher overlay's own render throw, which looks
+  exactly like „the fix works"; and assertion ORDER matters — the dialog counts red first under M20 and
+  would have carried the z-order claim without ever measuring it.
+  ⚠ Documentation: §UC-FL-009 in `03-friend-login-portal.md` vouched „re-verified … and is accurate" for a
+  table this row falsified — FOUR claims struck, not three, because the fourth lived in PROSE below the table
+  and the first sweep walked the TABLE. The spec's own figures were wrong again: `:424`→518, `:494`→596,
+  and „14 `Bez e-mailu` pins" was really 1 friend help + 1 different ADMIN string + 12 admin badge pins
+  (rewriting all 14 as instructed would have destroyed an admin surface's pins; the count is now 15 anyway).
+  Line numbers replaced with TEST NAMES — after the row re-introduced three raw ones three lines below its
+  own lesson, two already stale. **A lesson written down is not a lesson applied.**
+  ⚠ Recorded, NOT fixed: `orders.packeta_address` stays unbounded while the profile default is capped at 160
+  (PI-T11 / guest-delivery decision); a magic-link or onboarding friend arrives by RESTORE and so structurally
+  never meets the auto-open; `seed.mjs`'s own two friends are phone-less while all 76 template rows carry a
+  phone (latent, not red). PI-T12 gains the term-count pin's rationale.
+
+- 2026-09-21 · PI-T9 · (this commit) · no PR (project convention) · **The first-login explainer
+  gate — and a suite-wide exposure that was real, but four times smaller than the number I
+  reported.** `friends.explainer_seen_at` (CREATE + try/catch ALTER, no back-fill),
+  `POST /friends/:id/explainer-seen` (`requireFriendOwner`, idempotent `COALESCE`, joins
+  `FRIEND_IDENTITY_ENDPOINTS`), the field on all four login payloads, `beginSession({
+  explainerPending })` → `router.replace('/ako-to-funguje')` with the pre-ticked „Už mi to
+  neukazovať" checkbox, and `seed.mjs` step 7 pre-stamping every seeded friend except one
+  named fixture. **621 passed / 0 failed / 2 skipped across 16 files** (asked 16, ran 16),
+  server log clean apart from the one CORS refusal `api-security.spec.js` provokes on purpose.
+  ⚠⚠ **MY OWN „71 SPEC FILES ARE EXPOSED" FIGURE WAS ACCURATE AND MISLEADING**, which is the
+  worse failure of the two. It counted every file that logs a friend in — but an API-context
+  login has no browser and cannot open a gate, and a localStorage restore is excluded by the
+  spec. Only a CARD login can fire it: **16 failures in 6 files**, and the thing that broke was
+  the DRAWER (the appbar swaps the hamburger for a back chevron on the explainer), not the
+  landing I had predicted. A count is not an exposure until each member is checked.
+  ⚠⚠ **THE ROW CREATED A BUG AND THEN CAUGHT IT:** `seed.mjs` became a DB writer, and
+  `mailgun-harness.js` spawns it with only `BASE_URL` overridden — so every throwaway backend
+  pre-stamped the SHARED gate database, including the one row that must stay NULL. Fixed at both
+  ends (the harness passes its own `DB_PATH`; the seed correlates the gate fixture's id and
+  refuses a stranger's database). ⚠ Its FIRST proof was worthless — two identically-seeded
+  copies are indistinguishable — and the shipped proof uses a raw template copy.
+  ⚠ Review: **approve, six minors, all applied**. Five were the same failure in different
+  clothes — a sentence true when written and not re-checked after the thing it describes moved:
+  PI-T8's seam comment predicted `:as-gate="explainerPending"` (shipped binds `explainerGate`,
+  and the difference is behavioural — the prop would re-arm the gate on every menu visit); the
+  `router.replace` rationale was wrong in the spec AND wrong again in my correction of it (the
+  checkable reason is that `push` leaves a **one-tap bypass**: back → `/` → the exit watch lowers
+  a gate that only ever raises at setup); a refusal test titled „… is 404" asserts **403**
+  (ownership is checked before the row exists, so §UC-PI-013's 404 bullet was unreachable as
+  written); `seed.mjs`'s pairing check said it fails „LOUDLY" via `console.log` while its one
+  caller spawns it with `stdio: 'ignore'` (**„loud" is a property of the listener** — now
+  `process.exitCode = 1`, proved in both directions); and `e2e/README.md` said 76 where the run
+  prints 77. The sixth found a **FIFTH session-minting site**, `routes/onboarding.js` — invisible
+  to the prescribed `grep -n "friend: {"` precisely because it has no `friend: {`, so a
+  registering friend meets the explainer at their NEXT login, not the visit they registered in.
+  Documented rather than „fixed", because adding the field there would re-open the gate on
+  every reload. **A grep-shaped guard only enumerates the sites that share the grep's shape.**
+
+- 2026-09-20 · PI-T8 · (this commit) · no PR (project convention) · **„Ako to funguje" — and the
+  boundary guard that named the rule was weaker than the rule.** New `lib/roasters.js` (one home,
+  one NAMED non-consumer: no admin file, ever), `PortalExplainer.vue` (six phases as STATIC text,
+  three delivery ways, the origin section, „Ako platím", the „— Karol" note, an `asGate` prop for
+  PI-T9), the roaster badge popover on product cards, the six remaining `I2` glyphs, and
+  `portal-explainer.spec.js` (24 tests).
+  ⚠⚠ **THE SWEEP THAT „MEASURED" THE BOUNDARY MISSED THIS REPO'S OWN HOUSE STYLE.** It matched
+  only `from '…/lib/roasters'` — not `from '@/lib/roasters.js'` and not `await import(…)`. And
+  `views/CycleDetail.vue:25`, an ADMIN view, already imports `'../lib/cycle-stages.js'` WITH the
+  extension, so an admin import written the way this codebase actually writes them would have
+  walked past the guard; the mutation that „proved" it only reddened because it happened to be
+  typed without one. Widened, and **re-proved with an extension-style admin import**. ⚠ The
+  boundary half was also a DENY-list (`views/Admin*`, `components/(ui|analytics)/`) that misses
+  `CycleDetail` and `Distribution` — named by §UC-PI-019 item 18 — so it is now an ALLOW-list that
+  fails closed.
+  ⚠ **§UC-PI-012's acceptance criterion could never pass**, and the row measured it: the heading is
+  `Káva pod<br /><span class="p2-hl">pultom</span>, spolu.`, `.p2-hl` is `display:inline-block`, and
+  a non-`inline` display makes the accname computation pad EVERY boundary — so the real name has a
+  space BEFORE the comma. Orchestrator amended the spec; review then found the FALSIFIED claim
+  still standing in the component's own template comment, whose likely „repair" is the forbidden
+  one (rewrite the markup to suit the regex). Struck there too, with the mechanism and a „do not
+  change the markup" line beside it.
+  ⚠ Timeline deliberately NOT mounted (pinned absent in source AND DOM, both variants, with a
+  non-vacuity step). PO copy verbatim, „(PayMe)" and the WhatsApp sentence kept. The gate's LIVE
+  behaviour is deliberately untested — nothing mounts it yet — and „the session passes no gate flag
+  today" is ASSERTED rather than assumed, which is what makes the menu-mode claim a property of the
+  app and not of a default.
+  ⚠ Also fixed from review: two self-references named the wrong spec section (a pointer to a
+  section that does not hold the guard is how a reader concludes there is none), and `04-friend-
+  order.md` still carried the superseded unconditional badge class in two places.
+  Gate: **168 passed / 0 failed** over seven files, asked-vs-ran reconciled with a pre-flight
+  existence check, server log clean. Review: **revise → addressed**, two majors + four minors.
+- 2026-09-20 · PI-T7 · (this commit) · no PR (project convention) · **The money surfaces — and a
+  „one home" claim that was false in four documents at once.** New `DebtBanner.vue` +
+  `FriendTransactionList.vue`; `FriendTransactionsModal.vue` DELETED (222 lines);
+  `portal-transactions-modal.spec.js` → `portal-balance.spec.js`; the landing balance card
+  removed; `FriendBalanceCard` re-purposed and props-fed. No backend change, no ledger write.
+  ⚠ **„Relocate into the balance view" would have produced TWO mounts** — the debt has surfaces on
+  two views and a mount inside the card cannot be opened from a banner elsewhere. The mount went to
+  a THIRD file (the session). Exactly one `pay-balance`, one `debt-banner-pay`, one balance
+  `PaymentModal`. A second mount in the card reds ONLY the source pin — every DOM test stays green,
+  because a duplicate is invisible until the two disagree. That is the argument for source pins,
+  demonstrated rather than asserted.
+  ⚠⚠ **THE THRESHOLD CLAIM WAS THE RECURRING DEFECT, AGAIN.** The row declared „`balance < -0.01`
+  lives here, ONCE" in the component, CLAUDE.md, the spec amendment and the learnings — while the
+  comparison was live in THREE files (banner gate, card state, drawer badge tone). Not three
+  questions sharing a constant: all three ask „is this friend in debt?" and only the rendering
+  differs, and §UC-PI-008 had already pointed the banner's gate AT the card. ⚠ **It was also
+  untestable:** only the banner's copy had a boundary fixture (−0.004 / −0.02); the card's stubs
+  were 0 / 12.5 / −5 / −30 / −74.24, so a banner-vs-card disagreement anywhere between −0.01 and
+  −1.00 rendered a debt banner above a card that did not call it debt, invisibly. ⚠⚠ And a TEST
+  entrenched it, blessing the session's copy as „the drawer badge's tone, not a restatement".
+  Fixed: `lib/money.js` now owns `DEBT_EPSILON` / `isInDebt()` / `balanceState()`; all three import
+  it; `BalanceBadge.vue` keeps its own copy ON PURPOSE (admin-shared) and that exception is named.
+  The pin is now a sweep — no friend-surface file may restate the literal — mutation-proved.
+  ⚠ **The exact count I left for this row did its job:** `toBe(2)` reddened on the first run and was
+  rewritten AND SPLIT (landing reads once; entering the view makes it two, owned by the other spec).
+  ⚠ Review then caught that the split's own label was wrong — the helper does a `page.goto`, so the
+  second read is a new document's mount, not the in-session watch. Re-worded; the watch is pinned
+  where it is actually measured.
+  ⚠ Three more stale claims fixed: the watch fires from ANY view (docs said „shop → balance"), a
+  comment cited a watch this row had just deleted, and the migration summary double-counted one test
+  while omitting another — the table was right, the prose was not.
+  Migration: 18 tests in → 23 out (11 kept, 5 retargeted, 2 dropped unsatisfiable, 7 new); total
+  145 → 156.
+  Gate: **244 passed / 0 failed** over nine files, asked-vs-ran reconciled with a pre-flight
+  existence check, server log clean. Review: **revise → addressed**, one major + four minors.
+- 2026-09-20 · PI-T6 · (this commit) · no PR (project convention) · **„Moje objednávky" — and a
+  harness rule that had been cited all week turned out to be necessary but NOT sufficient.**
+  New `lib/history-badges.js`, the history view (rounds with `hasOrder`, newest first; lazy
+  `CartLineList` per round with per-row pending/error/`rowSeq`; one expanded; empty state;
+  read-only), and `portal-history.spec.js` (15 tests).
+  ⚠ **A SECOND vocabulary, justified rather than merged.** 17's `STEPS` are sentences for a
+  timeline (19–47 chars, 3 commas); these are badges in a scanned list (6–11 chars, none).
+  Importing `STEPS` puts a subordinate clause in every badge at 320 px; shortening `STEPS` kills the
+  timeline. The DATA and 17's status-before-stage order stay shared — only the register differs.
+  Pinned: no short form equals any of 17's six, both harvests non-vacuous, and the file's EXECUTED
+  code never mentions `cycle-stages`.
+  ⚠⚠ **A „one shared pending flag" mutation passed 15/15.** `expect` RETRIES for `expect.timeout`
+  (**10 s**), so an assertion made during a 5 s `page.route` hold just waits for the held response,
+  watches the defect repair itself and goes green. CLAUDE.md's „hold ≥4 s" came from DP-T7's
+  measurement of a ~300 ms slack and was generalised past it. **The hold must OUTLAST the assertion
+  window, or the discriminating assertions carry an explicit shorter `{ timeout }`.**
+  ⚠ **Review found the second exposure I asked it to look for:** `guest-distribution.spec.js:659`
+  held a route for **300 ms** — 13× under the old floor — while testing „the in-flight guard is PER
+  ITEM, not one shared lock", which needs BOTH clicks inside the window. Raised to 5 s. It also
+  found that the rule's ORIGINAL home (`08-distribution-pipeline.md` §1) still carried only the
+  generous-hold half although four other copies had the amendment — the „every copy" rule, again.
+  ⚠ **A user-visible inconsistency, found in review and fixed:** the row header's total came from
+  `cycles`, seeded at the handshake and **never reloaded in-session** (`loadCycles()` was deleted
+  with the gear and `FriendOrder` emits nothing), while the expanded lines are fetched live. For the
+  CURRENT OPEN round a friend could re-submit on „/", open the history, expand, and read a stale
+  total above lines that sum to something else. The loader now re-quotes the total from its own
+  fetch; the header prefers it once expanded.
+  ⚠ `roundSeq` reds nothing today (keyed cache + no-second-fetch-while-pending make a stale write
+  unreachable) and the code SAYS so, with the measurement — the PI-T5 precedent, not a claimed pin.
+  Gate: **170 passed / 0 failed** over nine files, asked-vs-ran reconciled, server log clean.
+  Review: **approve**, three minors, all acted on.
+- 2026-09-20 · PI-T6 · (this commit) · no PR (project convention) · **„Moje objednávky" — and a
+  SECOND status vocabulary, on purpose.** New `lib/history-badges.js` (Odoslaná · V pražiarni · Balíme ·
+  Zabalená · Odovzdaná · Vyzdvihnuté, `status` before `stage` like 17), the `view === 'history'` block in
+  `FriendPortalSession.vue` (rounds with `hasOrder`, newest first, `.hl` on the current one, lazy
+  `CartLineList` per round through PI-T5's `lib/order-lines.js`, empty state, READ-ONLY — no „Otvoriť"),
+  new `portal-history.spec.js` (15 tests).
+  ⚠ **The duplication is the point and is argued at the definition:** 17's `STEPS` are long sentences for
+  a timeline read one step at a time; these are badges in a scanned list. §1 of the spec imports BOTH libs
+  with plain `node` and pins that no short form is one of 17's six (non-vacuity on both harvests), so a
+  future „fix" that merges them reds 4 rather than shipping a badge with a subordinate clause in it.
+  ⚠ **Guards, measured both ways:** per-row pending reds 1 when shared (M4), the keyed cache reds 3 when
+  collapsed to one pair (M5′), the `hasOrder` filter reds 3 (M2), the cache reds 1 (M3) — and the per-row
+  `rowSeq` reds **0** (M5), which the source and the spec both SAY rather than implying a test that does
+  not exist (the PI-T5 §9 precedent).
+  ⚠⚠ **CLAUDE.md's „hold the call ≥4 s" rule is necessary and NOT sufficient, measured here:** `expect`
+  retries for `expect.timeout` (10 s), so the first version of the guard test watched the held response
+  land, saw the defect repair itself and passed the shared-pending mutation 15/15. Fixed with an 8 s hold
+  plus impatient `{ timeout: 3_000 }` assertions; CLAUDE.md amended in place.
+  ⚠ **One sanctioned retarget** (case (a)): `portal-landing.spec.js`'s „no `getOrderByFriend` in the
+  session" became unsatisfiable — §UC-PI-009 names that endpoint as the history loader — so the pin now
+  counts it at exactly 1 and requires it to sit inside `loadRoundLines`. **M8** (a second loader) still reds
+  it, so the property is re-pointed, not weakened.
+  Gate: **170 passed / 0 failed** over nine files (asked-vs-ran reconciled: 9 asked, 9 ran), server log
+  clean. `portal-history` alone: 15/15.
+- 2026-09-20 · PI-T5 · (this commit) · no PR (project convention) · **The LOCKED landing — own-order
+  card, the first VERTICAL timeline on the portal, and the `readonly` flag finally split in two.**
+  New `lib/order-lines.js` (the hoisted `CartLineList` mapping, dependency-free; PI-T6 is its second
+  consumer), the own-order card with pickup row and `Zaplatiť` → `PaymentModal`, „Kde je vaša káva",
+  the next-round banner, a read-only `currentCycle` grid that KEEPS its tabgroup, and the no-order
+  variant reusing PI-T4's `LandingStateModal`.
+  ⚠ **The split:** `isReadonly` now asks ONLY „may a quantity change?"; a new `colleaguesTab` prop
+  feeds `hasTabs` = „may this friend reach the Kolegovia panel?". It HAD to be a prop — both landings
+  hand the component a `locked`/`completed` round with `readonly`, so nothing inside can tell them
+  apart. It only ever ORs, so no value can remove tabs from the deep link or the open landing, and
+  the closed landing is byte-unchanged.
+  ⚠ Money held: `paymentTotal` is the ONE composition (fee is DISPLAY-only), **no `transactions`
+  write anywhere in the diff**, `paid` read-only, VS from the server's block. Backend change is
+  additive and routes the pickup through `helpers/pickup.js` — no second store rule, no `await`.
+  ⚠ **§UC-PI-007 named a prop the shared timeline does not accept** (17 §UC-CS-006: „No other
+  props"); Vue would have rendered it as a stray attribute. Not passed; struck in place.
+  ⚠⚠ **PI-T5 FALSIFIED A RULE I WROTE THREE ROWS AGO, and the correction was itself half-done.**
+  I had recorded that a filter matching nothing is LOUD. True only when EVERY entry misses: in a list
+  where ONE misses and others match, Playwright drops it **silently** and exits 0 — the ordinary
+  shape of a targeted gate. PI-T5 passed `tests/order-flow.spec.js`, which does not exist, and the
+  run said nothing. I fixed CLAUDE.md and **left the falsified sentence standing in
+  `docs/learnings/05-e2e-harness.md`** — the file the checklist tells the next agent to read first.
+  Review caught it. **A correction written to fix an over-broad claim was itself stated more broadly
+  than measured, in the file whose job is to stop that.** Both copies now match the measurement, and
+  the defence is to RECONCILE the files that ran against the files you asked for.
+  ⚠ Also fixed from review: the `readonly` prop doc still listed „no tabgroup" (this row's headline
+  change), a test comment was contradicted by its own commit 100 lines above, and `ownOrder` — handed
+  on as a „published seam" — was coherent only on read-only mounts, so it now returns `null`
+  elsewhere rather than letting PI-T6/T7 inherit a projection whose lines and total describe
+  different carts.
+  Gate: **388 passed / 0 failed** over twelve files (asked-vs-ran reconciled), server log clean.
+  Review: **revise → addressed**, one major + three minors, all documentation.
+- 2026-09-20 · PI-T5 · (this commit) · no PR (project convention) · **The LOCKED landing — the
+  own-order card, the first vertical timeline, and the one term PI-T4 left split in two.** New
+  `lib/order-lines.js` (the `CartLineList` mapping hoisted out of `FriendOrder`; PI-T6's history is its
+  second consumer), `FriendOrder` keeps the server's `items` and exposes an `ownOrder` projection plus
+  `openPaymentModal`, the friend order GET publishes `p.purpose` and a top-level `pickup` block from
+  `helpers/pickup.js pickupOf()`, `NeoIcon pin`, and the whole locked branch in the session (card,
+  „Kde je vaša káva", next-round banner, the no-order `LandingStateModal` variant, the shared caption +
+  read-only grid WITH the tabgroup).
+  ⚠ **The tabgroup term is split by QUESTION, not by taste:** `isReadonly` = „may a quantity change",
+  `hasTabs` (prop `colleaguesTab`) = „may this friend reach Kolegovia". It had to be a PROP — both
+  landings hand the component a `locked`/`completed` round with `readonly`, so only the CALLER can tell
+  them apart. Pinned in both directions on one page object (lock, assert tabs; complete the SAME cycle,
+  assert none), and a collapse either way reds one half.
+  ⚠ **PI-T4's read-only cart fix made the money wrong until it was branched.** `readonly` clears the cart
+  by design, and every figure on the screen derived from it — so the card and the QR would have billed
+  the Packeta fee alone. `paymentTotal` now picks its item source (`isReadonly ? submitted : cart`) and
+  stays ONE computed. ⚠ **No ledger row of any kind**, asserted rather than commented: the friend's own
+  `/transactions/friend/:id` is read before and after the payment modal. `paid` is admin-only and renders
+  read-only; the VS is the server's.
+  ⚠ **The obvious timeline assertion would have measured nothing** (module 17's finding: the portal
+  supplies `--nb-ink` byte-identical to the component's own fallback), so the pins are the step counts and
+  the current label — and the admin then ADVANCES the stage so the „now" step must MOVE. A frozen-cycle
+  mutation passes every count and reds only on the move.
+  ⚠ **One term reds nothing and stays** (`showLockedModal`'s `hasOrder`): the template branch enforces it
+  today, but hoisting the mount — the realistic defect — reds 3. Same shape as PI-T4's M10/M10′.
+  ⚠ **Sanctioned e2e edits, 3 lines in 2 files:** a locked landing with no own order now opens a dialog by
+  itself, so `portal-landing:526` (its `if (state === 'closed')` condition DELETED, not inverted — PI-T4's
+  „no modal until PI-T5" note expired) and `portal-menu` ×2 take `dismissLandingState`. The sweep was
+  `grep -ln friends/cycles` + reading every fixture's `status:`; `portal-menu`'s third locked fixture needed
+  nothing because it lands on a non-`shop` view.
+  ⚠ **Spec conflict resolved in 17's favour and amended in place:** §UC-PI-007 names an `order` prop on
+  `CycleTimeline`; 17 §UC-CS-006 says „No other props" and CS-T2 shipped it that way, so passing one would
+  land as a fallthrough ATTRIBUTE (`order="[object Object]"`). If the last steps should react to
+  `handed_over_at`, that is a change to 17's `timelineSteps()`.
+  Gate: 15 mutations (2 of them the „reds nothing" kind, both recorded), `portal-landing` 37/37 and 574
+  passing across 24 targeted spec files; 0 failed.
+
+- 2026-09-20 · PI-T4 · (this commit) · no PR (project convention) · **The CLOSED landing — and the
+  unresolved date decision is now HELD AS A PINNED FACT instead of a loose end.** New
+  `LandingStateModal.vue` (`title`/`intro`/`lead` are props so PI-T5 passes strings), a modal shown once
+  per SESSION (a `ref` in the session, keyed on the handshake, no persistence), the next-round card, the
+  compact timeline with a consumer-owned caption row, the warn banner after dismissal, a `readonly`
+  catalogue grid on `FriendOrder`, and the empty state.
+  ⚠ **The date collision SHIPS, deliberately.** Two modules specify different renderings of one sentence;
+  the modal card prints the short form and the banner that replaces it prints module 17's long one. Each
+  half is pinned WITH the absence of the other, over expectations re-derived independently (reading the
+  app's own formatter would have been a tautology) and a non-vacuity line asserting the two forms differ.
+  **When the PO rules, exactly one expectation is the edit.**
+  ⚠ **Two assertions that could not fail, found by the IMPLEMENTER's own mutations.** The sharper:
+  `signIn()` seeds through `addInitScript(localStorage.clear())`, and **an init script runs on EVERY
+  navigation including a reload** — so the reload wiped the flag the mutation had written and „nothing is
+  persisted" passed for the wrong reason. Review generalised it correctly: **the hazard is a NAVIGATION
+  between the write and the read, not the reload**; 21 specs use the idiom, only 2 reload, and both fail
+  loudly rather than falsely.
+  ⚠ **A comment promised an assertion the test never made** (review): the read-only claim rested on
+  markup — a class, a computed style, `toBeDisabled()` — while CLAUDE.md states outright that a `disabled`
+  attribute does NOT stop a dispatched click. Both JS guards had NO pin; delete them and everything still
+  passed. Now pinned by behaviour: dispatch a click, read the quantity back. ⚠ **My first mutation of it
+  proved nothing** — `false && a || b` reduces to `b`, which was true on that path, so the guard never
+  turned off. A mutation that does not mutate is not evidence.
+  ⚠ **A real spec-vs-code divergence, invisible to every fixture** (review): `loadOrderData()` populated
+  the cart in `readonly` too, although §UC-PI-006 says the order is IGNORED there — so a friend who ordered
+  in the catalogue round saw their old quantities in faded, disabled steppers with no cartbar. No test
+  could catch it: every closed-landing fixture used a FRESH friend, so the cart was empty by accident.
+  Fixed, and pinned with the missing fixture (a friend who really ordered). It would have bitten PI-T5
+  harder, where the friend almost always HAS an order.
+  ⚠ Two mutations reddened nothing and the code was KEPT with the reason in source — review agreed both
+  are defence-in-depth, not dead code. ⚠ §UC-PI-017's grep guard was missing THREE files
+  (`LandingStateModal.vue`, plus module 17's `CycleTimeline.vue` and `lib/cycle-stages.js`); all clean
+  today, so a guard gap rather than a violation. ⚠ CLAUDE.md's „no tabgroup" now says it is this row's
+  state, not a property of `readonly` — §UC-PI-007 KEEPS it, so PI-T5 splits that term.
+  Gate: **267 passed / 0 failed** over nine files, server log clean. Review: **approve**, four minors, all
+  acted on.
+- 2026-09-20 · FUP-T27 · (this commit) · no PR (project convention) · **The e2e admin path gets ONE home
+  and ONE re-authentication — and the acceptance bar was a DETERMINISTIC REPRODUCTION, not a green suite.**
+  `e2e/helpers/admin.js` (`makeAdmin`/`loginAdmin`) retries exactly once on a 401 and publishes the fresh
+  token back into the caller's own variable; **42 spec files adopted it**; `admin-token-retry.spec.js` (8
+  tests) is the reproduction. No application code changed.
+  ⚠ **Why the bar mattered:** PI-T3's implementer REFUSED to write this fix blind, because it could not
+  reproduce the failure and so could not prove a fix worked. That judgement was better than mine. The
+  decisive mutation is the exclusion: routing `api-security.spec.js`'s staleness test through the helper
+  reds it with **Expected 401 / Received 200** *and* trips the sweep, in one run — reproduced independently
+  by review.
+  ⚠ **The guard claimed more than it checked, and review measured it.** The sweep asserted „no spec keeps a
+  private admin() helper any more" while matching ONE spelling; **eight live private request helpers** in two
+  other shapes were invisible (`async function adminReq(path…` ×3, the arrow `const admin = (p, o) => ctx[…]`
+  ×5). Widened to all three shapes, each mutation-proved; the eight are an explicit ALLOWLIST so they stay
+  visible and a NEW copy still reds. A header FACTORY (`const admin = () => ({headers})`) is deliberately not
+  swept — different thing.
+  ⚠⚠ **The self-match was MISATTRIBUTED, and the correction is the useful part.** The comment credited the
+  bracket class. Measured both ways: with a plain `admin` the regex does NOT match its own source line (the
+  source has a BACKSLASH where the pattern wants whitespace-then-paren) and does NOT match the title — what
+  reddens it is the non-vacuity fixture written as ONE literal. **The split literal is the control; the
+  bracket class is decorative.** A comment that credits the wrong mechanism sends the next editor at the
+  wrong knob.
+  ⚠ **„Adopted" does not mean „protected":** FIVE files both adopt and still inline the header, and
+  `cycle-stages`/`distribution-handover`'s PATCH matrices get no retry. The gap is now stated with ONE
+  definition and measured numbers (41 mention / 34 unadopted / 23 exact-shape-unadopted) instead of the
+  wrong „31". Adoption is not a drop-in where a file rotates the admin password mid-test — it needs the
+  `password` option or the retry throws.
+  ⚠ Orchestrator also corrected a STALE HARDWARE claim in CLAUDE.md: this is an **8-core / 12 GB** box, not
+  the „4 GB/2-core" the crash guidance rested on; and recorded the measured full-run timings (≈12 min idle,
+  ≈14 min = loaded, ≈17 min = corrupt DB).
+  Gate: **FULL SUITE, orchestrator's own run — 2175 passed / 0 failed / 4 skipped**, 89/89 files, 11.9 min,
+  zero corruption. Review: **revise → addressed**, one major + four minors.
+- 2026-09-20 · PI-T3 · (this commit) · no PR (project convention) · **The landing replaces the cycle
+  cards, and 32 tests are DELETED — the migration, not the feature, was the row.** `FriendOrder.vue`
+  gains `mode='landing'` (extended, never forked — no new `.vue` exists in the diff), the cards/gear/
+  subscription modal retire (column + endpoint kept), status line, cartbar share icon, drawer item 4
+  via `defineExpose`, `portal-cycles.spec.js` + `portal-share-row.spec.js` DELETED.
+  ⚠ **Migration, audited from the DELETED FILES not the report:** 18 retire with the cards, **10 of
+  14 survive** with named homes, each verified by breaking the behaviour and watching the NEW test
+  red. **ONE property has no home and was reported, not deleted quietly** — „deferred past a SECOND
+  `loadCycles`", whose only trigger retired with the gear; guard + counter KEPT with a comment.
+  Delta 2186 → 2171, accounted per file; no file silently lost a test.
+  ⚠ **A REAL user-facing defect, found in review:** `handleSuccessModalClose` / `confirmCancelOrder`
+  armed the leave-guard bypass then pushed to `/`. On a deep link that is a route leave and the guard
+  consumes the flag; **on the landing the push is a no-op, so the flag stayed ARMED for the NEXT
+  navigation** — submit, edit, open the drawer, and an unsaved cart vanished with no prompt. One home
+  now (`leaveToOffer()`), which arms only when it is actually going somewhere. The row's own new pin
+  passed throughout because it exercised the never-submitted path.
+  ⚠⚠ **A found bug is worth nothing until it is carried everywhere, and this row proved it twice.**
+  It DISCOVERED that a line comment containing `/*` opens a fake block comment swallowing 16 709
+  chars, fixed it in its own file, wrote the CLAUDE.md rule — and left the known-broken copy standing
+  in `portal-shell.spec.js`, where a `localStorage` line at :200 was invisible. ⚠ **And fixing the
+  stripper was STILL not enough:** the same pin did `split('resolveLanding')[0]`, and the first
+  occurrence is the IMPORT on line 70, so it searched 70 lines of a 2 600-line file. Both closed;
+  one home in `e2e/helpers/source-pins.js`, whose `assertReadable` **refuses a caller that passes no
+  tokens** and treats the length ratio as a 0.05 catastrophe backstop only — measured, because
+  surviving fractions vary fourfold (0.166 … 0.562) and no ratio is both safe and discriminating.
+  ⚠ **Three spec claims were wrong and are struck in every copy:** „`share-dialog.spec.js` passes
+  unmodified" (its entry point IS the card; 9 sites re-pointed), an enumeration of 2 files that
+  measured **20**, and a `page.goto('/cycle/:id')` prescription that cannot work (in-memory token).
+  ⚠ Fixing the orphan em dash exposed Vue **condensing the whitespace** after a `v-if` template
+  („otvorené.Ako to funguje?"); both branches are now whole-string pinned.
+  ⚠ **Orchestrator called a false blocker** on two red full runs, then measured them: one was a
+  CORRUPT DB (65 `disk image is malformed`, unread in the server log), the other a box loaded by four
+  self-matching `pgrep -f "playwright test"` watchers spinning since earlier rounds. Clean box: green.
+  `FUP-T27` filed for the real latent defect (one global `admin_token`, rotated by a late login).
+  Gate: **FULL SUITE, orchestrator's own run — 2167 passed / 0 failed / 4 skipped**, 88/88 files,
+  11.9 min. Review: **revise → addressed**, three majors + three minors.
+- 2026-09-20 · PI-T2 · (this commit) · no PR (project convention) · **The appbar, the drawer, and a
+  shared-behaviour extraction whose real finding was that FOUR of the behaviours it moved had no
+  test watching them.** `use-modal-layer.js` extracted from `NeoModal.vue` (ELEVEN consumers),
+  `NeoDrawer.vue` on the modal layer, A13 canon port, drawer items 1–3/5–7, one session-level
+  balance fetch, logout/profile into the drawer.
+  ⚠⚠ **The extraction is correct BY CONSTRUCTION and was almost entirely UNWATCHED.** Proven by
+  statement diff (106 in / 107 out; review redid it as an ORDERED diff, which a multiset cannot
+  catch reordering with). But the per-behaviour mutation map showed **M2 Esc-honours-`closable`,
+  M5 restore-saved-overflow, M6 focus-on-mount and M7 focus-restore each reddened NOTHING** — four
+  behaviours, 68 tests across 4 files, all blind. Had the move broken them, the suite stays green.
+  The implementer went looking for this and disclosed it rather than reporting „extraction complete,
+  all tests pass", which would have been literally true.
+  ⚠ **Orchestrator PINNED three of the four** (review costed them at ~3 lines each): M5 needed a
+  non-empty seeded `overflow`, because `''` makes „restore the saved value" and „hardcode `''`"
+  indistinguishable. ⚠ My first attempt seeded it with `addInitScript`, which runs before
+  `document.body` exists, so it no-opped — **my own non-vacuity line caught it**. All three
+  mutation-proved; M6's first mutation hit the wrong line and proved nothing either way, which is
+  not the same as proving absence. M2 stays unpinned and named: the forced-change modal is
+  `:closable="false"` and binds NO `@close`, so the guard emits into nothing and the parent's `v-if`
+  is what actually holds the modal open.
+  ⚠ **A money assertion was loosened and is now EXACT.** `payment-links` pinned `balanceReads === 1`;
+  the session adds a second reader, so it became `<= 2` — which also passes at 1, so PI-T7's collapse
+  would have left the file green and its „exactly two readers" comment false. Now `toBe(2)`.
+  ⚠ **Another two-shape enumeration:** the appbar subtitle was the friend's NAME in **14** places in
+  two shapes — `.titles .s` toHaveText (6) and `toContainText` on the whole appbar (8) — and a grep
+  for the first cannot see the second. 13 retargeted through one helper, the 14th inverted.
+  ⚠ Deliberate, documented: TWO balance requests per session load until PI-T7 collapses them.
+  Gate: **FULL SUITE, orchestrator's own run — 2182 passed / 0 failed / 4 skipped**, 89/89 files,
+  14.3 min, skips exactly the documented four. Review: **approve**, five minors, all acted on.
+- 2026-09-20 · PI-T1 · (this commit) · no PR (project convention) · **Module 18 opens: the portal
+  shell, the landing resolver, and a gate retarget across 28 spec files.** Three routes with
+  `meta.view`, `lib/portal-state.js resolveLanding()`, `lib/dates.js`, an additive
+  `GET /friends/cycles` extension (module 17's three columns + `parcel_*`, plus `orderPaid` /
+  `orderHandedOver` from module 16), `data-testid="portal-landing"` and the new
+  `e2e/helpers/portal.js`.
+  ⚠ **The spec asked for things module 17 shipped the day before, and they were NOT duplicated.**
+  `nextText` delegates to `nextOpeningText()`; precedence and the two-open warning come from
+  `currentCycleFor()`; „newest" became a new export on module 17's OWN file (`newestCycleWith`)
+  rather than a fork. Review fuzzed the rewritten `currentCycleFor` against its HEAD version over
+  **20 000 randomised arrays — zero differences**.
+  ⚠ **The date format is a PO QUESTION, deliberately unresolved.** 17 renders „približne
+  3. októbra"; §UC-PI-002 specifies „3. 10." for the SAME sentence. 17's form was kept (the
+  alternative is a second home for one sentence) and `lib/dates.js` built as specified for the other
+  surfaces; nothing in `frontend/src` imports it yet, so no code picks a winner. ⚠ The consequence
+  was recorded WRONG first („both forms in one modal") and corrected in review: the same CLOSED
+  landing prints the SHORT form in the modal card and the LONG form in the banner that REPLACES the
+  modal after dismissal. PI-T4 must not resolve it at a call site.
+  ⚠ **Three enumerations were stale, all measured:** the spec said 29 files, the row said ~27 — it is
+  **30 files / 72 occurrences** (28 / 60 retargeted; `portal-cycles` and `portal-share-row` are
+  PI-T3's deletions). `payment-links.spec.js` is in the real set and in NEITHER list. And
+  `google-auth.spec.js` showed **1** grep hit but had **19** call sites behind a `PORTAL_HEADING`
+  constant — a grep for an assertion SHAPE cannot see a constant.
+  ⚠ **Orchestrator found a gate GAP:** the row edited module 17's shipped `lib/cycle-stages.js` but
+  did not run `cycle-stages.spec.js`, the 124-test file that pins it. Added: green.
+  ⚠ **The implementer caught a can't-fail assertion of its OWN before shipping it** — a DST test that
+  named a timezone (CS-T2's rule) was still a fixed point; it needs clocks moving FORWARD *and* a day
+  count straddling the week rounding. **Naming a timezone is necessary, not sufficient.**
+  ⚠ **Orchestrator fixed a robustness bug review found:** `weeksUntil(iso, null)` returned **2961**,
+  because `new Date(null)` is a VALID Date at the epoch, not Invalid — a default-parameter guard does
+  not catch it. `undefined` must still mean „now". Pinned in both directions; no caller existed yet,
+  and a not-yet-loaded clock is exactly what arrives as `null`.
+  Gate: **966 passed / 0 failed / 1 skipped** over 31 files. Review: **approve**, five minors, all
+  acted on.
+- 2026-09-20 · FUP-T26 · (this commit) · no PR (project convention) · **One branch: the lock default
+  now fires from `open` ONLY, and a handed-out round stops rewinding.** `completed(ready) → locked`
+  — the admin's recovery path for a mis-completed round — reset `stage` from `ready` to `ordered`,
+  walking the friend-facing timeline BACKWARDS from step 5 to step 2. The guard was
+  `cycle.status !== 'locked'`; §UC-CS-002's table scopes the rule in its own parenthetical to
+  „transition INTO locked **from `open`**", so the code fired from two statuses the table never
+  authorises. Now `cycle.status === 'open'`.
+  ⚠ **A and B are spec-CONFORMANT and were LEFT ALONE, pinned as deliberate** — the unlock rule is
+  scoped „while the cycle is `locked`" and `planned` is „unchanged from today". Mutation-proved
+  breakable: widening the unlock branch (CS-T1's rejected option) reds 7 of 8, including the A and B
+  pins, so they are falsifiable rather than decorative.
+  ⚠ **A consequence the row did not name up front:** narrowing also stops `planned → locked` writing
+  a stage, leaving NULL. Verified reader by reader — `stageIndex`, both admin stage buttons and
+  `markCycleReady()`'s predicate treat NULL and `'ordered'` identically — and it removes a SECOND
+  rewind (`locked(ready) → planned → locked` used to land on `ordered` exactly like C). It falsifies
+  „a locked cycle with `stage IS NULL` is unreachable through the API", struck in all THREE copies.
+  ⚠ **Row D, found in review:** `locked(ready) → planned → open` composes out of A for free and
+  strands `ready` on an OPEN cycle. Recorded in §10 — while A stays unfixed, „two stale transitions"
+  is really „two, plus anything they compose into".
+  ⚠ **A flake introduced by CS-T3 was fixed here rather than banked.** The date test polls the API
+  directly, so it goes green while the page's own `loadAll()` is still in flight; when that refetch
+  lands after the sibling `fill()` it resets the field and the next save legitimately stores NULL.
+  Measured 2 failures in 6 runs on a loaded box. The test now waits for the save button to return to
+  ENABLED — the app's own „refetch landed" edge, since the pending flag clears only after
+  `await loadAll()`. One-sided on purpose: a disabled-then-enabled pair would itself flake on a fast
+  box.
+  ⚠ **The review caught an enumeration that was wrong about its own file:** the write-up said the
+  falsified claim „had two copies" while a third sat unstruck in that same document. An enumeration
+  of copies is itself a claim, and it is the one most likely to be made from memory.
+  Gate: **596 passed / 0 failed / 0 skipped** over seven files; restoring the old guard reds exactly
+  four tests and leaves the other four green. Review: **revise → addressed**, three majors + one minor.
+- 2026-09-20 · CS-T4 · (this commit) · no PR (project convention) · **Module 17 closed — and the
+  closeout earned its keep by catching what four green rows had not.** The guest status page mounts
+  the vertical timeline („Kde je vaša káva", hidden on cancelled and in edit mode), the read-only
+  sentence drops „cykle", and `opens_at`/`closes_at`/`stage` join the malformed-body sweep.
+  ⚠ **The obvious assertion was NOT written, on purpose.** §UC-CS-009 asks for the `.mk` border
+  computed on this page; `GuestOrderStatus.vue`'s root is `.app`, which supplies `--nb-ink` with a
+  value byte-identical to the component's fallback, so that read passes with every fallback deleted.
+  CS-T3's `.d` measurement on the admin page is module 17's ONLY runtime proof of the mechanism.
+  Pinned instead: the state vector on three loads at three different indices, so no constant works.
+  ⚠ **§UC-CS-006's „exactly 6 `.d` and 5 `.ln`" was closing UNPINNED.** `grep '.ln'` returned
+  nothing; dropping the connector's `v-if` rendered six connectors with the whole suite green.
+  Now asserted, and mutation-proven both ways. **Generalised lesson: a criterion of the form
+  „N of X and M of Y" gets pinned on X and silently dropped on Y — grep the criterion, not the
+  feature.**
+  ⚠ **`FUP-T26` filed.** CS-T1's three measured stale-/reset-stage transitions were closing unfixed
+  AND unowned: CS-T1 offered „fix or pin", CS-T2 pinned, nobody filed the fix. The sharp one resets a
+  completed round back to `ordered`, rewinding a handed-out timeline from step 5 to step 2 on the
+  admin's own recovery path.
+  ⚠ **The vocabulary ban ships with THREE known guest-facing exceptions**, not the one I recorded:
+  `routes/guest.js:216` (served on a 409 that DOES render, not only a refused PUT as I wrote),
+  `GuestOrder.vue:170` and `GuestProductGrid.vue:76` — the last inside this page's own EDIT mode, so
+  §UC-CS-008's „no „kolo"/„cyklus" on the page" is true of the READ view only. All three left
+  standing on purpose; PO decision pending on the real inventory. **→ RESOLVED by GL-T7 (learnings 11 §GL-T7).**
+  Gate: **FULL SUITE, orchestrator's own run — 2124 passed / 0 failed / 4 skipped**, 87/87 spec
+  files, 13.3 min, skips exactly the four documented ones. (The implementer's run had two
+  `catalog-admin` timeouts; both PASSED in mine — independent confirmation of the documented box
+  flakiness, not a self-confirmed flake.) Review: **revise → addressed**, one major + four minors.
+- 2026-09-20 · CS-T3 · (this commit) · no PR (project convention) · **The admin controls — and the
+  spec contradicted itself TWICE, both caught and both struck.** Two `type="date"` fields on the
+  cycle settings card, the two forward-only stage buttons plus a stage badge, and the first real
+  MOUNT of `CycleTimeline` (compact, in the header beside DP-T8's plan line).
+  ⚠ **Contradiction 1 — snap-back.** §UC-CS-007 said „follow `saveExpectedDate`" AND „the control
+  snaps back on the `loadAll()` refetch". That function keeps `loadAll()` inside the `try`, so a
+  refused save never refetches and the rejected value STAYS IN THE INPUT. CLAUDE.md is the
+  tiebreaker; the two new savers refetch in `finally`. Unobservable for `expected_date`/`plan_note`
+  — the route validates neither column, so neither has a 400 path at all.
+  ⚠ **Contradiction 2 — `.mk` in the admin page.** §UC-CS-009 asked for the `.mk` border computed
+  on the admin page, but §UC-CS-007 mounts `variant="compact"`, whose marker is `.d`. Delivered on
+  `.d` (byte-identical declaration) and struck in the spec.
+  ⚠⚠ **A FIFTH can't-fail assertion, caught BEFORE it was written.** The `.mk` claim cannot simply
+  move to CS-T4: `GuestOrderStatus.vue`'s root is `.app`, which DEFINES `--nb-ink:#0a0a0a` — byte
+  identical to the component's fallback — so a computed-style read there passes whether the
+  fallback exists or not. **CS-T3's `.d` measurement is module 17's only runtime proof of the
+  fallback mechanism**, because the admin page is the one place the component renders with the
+  portal tokens genuinely absent. Recorded so CS-T4 pins counts, not fallbacks.
+  ⚠ The stage-index table repeats the module's pattern: inverting `stageIndex()` reds only ONE of
+  six rows — the `completed` fixture built lock→`ready`→complete, the only one carrying a stale
+  stage. The other five pair agreeing values and are fixed points.
+  Admin-skin invariance held: zero `neo/`, zero `friends-theme`/`.app` tokens, no admin CSS,
+  `AdminDashboard.vue` untouched, the file's separate kg badge untouched. Passes `:cycle`, never
+  `:steps`.
+  Gate: **378 passed / 0 failed / 0 skipped** over six files. Review: **approve**, four minors, all
+  acted on.
+- 2026-09-20 · CS-T2 · (this commit) · no PR (project convention) · **The step model, the copy and the
+  timeline component — and THREE assertions that could not fail for the reason they claimed.**
+  `lib/cycle-stages.js` (STEPS ×6, `stageIndex`, `timelineSteps`, `fmtDay`, `daysUntil`,
+  `inWeeksText`, `nextOpeningText`, `openUntilText`, `currentCycleFor`; imports only `./plural.js`,
+  so a Playwright worker imports it directly — this project's substitute for a unit runner),
+  `lib/plural.js` += `daysLabel`/`weeksLabel`, and `CycleTimeline.vue` as ONE component with
+  `vertical` + `compact` variants, scoped styles, every token behind a fallback, no `.app` ancestor.
+  ⚠⚠ **§UC-CS-005's own seven-row acceptance table is a FIXED POINT of the mutation it exists to
+  catch.** Every row pairs a `stage` that agrees with its `status`, so reading `stage` first leaves
+  all seven GREEN. Orchestrator reproduced it: the inversion reds exactly ONE test, the purpose-built
+  „`status` is consulted BEFORE `stage`" pin — which is the only thing keeping CS-T1 §10's three
+  measured transitions off the friend's screen, one of which rewinds the timeline from step 5 to 2.
+  ⚠ **The DST pin was vacuous on this box** — it runs UTC, so a naive local-time `daysUntil` passed
+  unchanged. Fixed with an explicit `Europe/Bratislava`; the same mutation then reds.
+  ⚠ **The non-vacuity gate was itself vacuous** (found in review): it asserted the harvest held ≥30
+  strings while the LABELS ALONE contribute 54, so every builder could have returned `''` and the
+  gate would still have claimed it „saw the built sentences". Builders are now required BY IDENTITY.
+  Proven both ways: emptying `openUntilText` now reds the sweep, and did not before.
+  ⚠ **The spec's OWN sweep regex is broken in both directions** — `/kol[oáa]\b|cykl/i` misses „kolá"
+  (a trailing `\b` after `á` never fires: `á` is outside ASCII `\w`) and false-positives „okolo",
+  module 18's PO-approved copy. Measured and struck in the spec; the LEADING `\b` is the fix.
+  (~~the leading-`\b` regex is current~~ — superseded by PI-T11's `e2e/helpers/vocabulary.js BANNED`.)
+  ⚠ `new Date('2026-02-31T00:00:00')` is **3 March** in V8, so shape-only validation would have
+  printed a date nobody chose; both date functions do a re-serialise-and-compare round trip.
+  Gate: **166 passed / 0 failed / 0 skipped**. Review: **approve**, six minors, all acted on.
+- 2026-09-20 · CS-T1 · (this commit) · no PR (project convention) · **The cycle stage model ships, and
+  the stub it replaces had recorded the WRONG contract.** `opens_at`/`closes_at`/`stage` on
+  `order_cycles` (CREATE + ALTER, the ALTERs placed AFTER the `_check_test` recreate block, which
+  rebuilds from a hard-coded column list and silently drops anything added before it);
+  `helpers/cycle-stage.js` gains `CYCLE_STAGES`, `LOCKED_STAGE_DEFAULT` and the real
+  `markCycleReady()`; the `POST`/`PATCH /cycles` contract; publication on four cycle payloads;
+  `PATCH /api/cycles/1` joins `ADMIN_ENDPOINTS`.
+  ⚠ **The DP-T1 stub's own header said „set ready only when `stage IN ('ordered','arrived')" — and
+  that was wrong.** `stage IS NULL` is in neither value, and §UC-CS-001 forbids a backfill, so the
+  predicate would have left every locked cycle in production stuck at NULL forever. §UC-CS-003's
+  `(stage IS NULL OR stage <> 'ready')` is what shipped. Struck in all its homes, including
+  `16-distribution-pipeline.md` §UC-DP-009 — the canonical supersession map, which review caught
+  still stating it in the present tense.
+  ⚠ **The helper's return and the published field are DIFFERENT SHAPES.** §UC-CS-003 gives
+  `{ changed: boolean }`; module 16 publishes `cycle_stage: <string|null>`. Shipped as
+  `{ changed, stage }` (additive, the „payloads GROW, never move" posture) with all three hand-over
+  routes reading `.stage`. Handing the object to `res.json` reds two files.
+  ⚠ **Re-locking a COMPLETED cycle walks the friend-facing timeline BACKWARDS** from step 5 to step
+  2, and unlocking one leaves a stale stage. Both measured, neither pinned, both invisible today
+  only because §UC-CS-005 consults `status` before `stage`. Recorded in `09-cycle-stages.md` §10 so
+  CS-T2 inherits the constraint; transition behaviour deliberately unchanged in this row.
+  ⚠ **Recorded, not fixed (pre-existing):** the `_check_test` block's `INSERT ... SELECT` names
+  `type` at schema.js:200 while `ADD COLUMN type` is at :628, inside a `catch` with no inner `try` —
+  a database old enough to fire that block kills the backend at boot. §UC-CS-001 fences it off.
+  ⚠ **An orchestrator premise was false again:** I briefed that three shipped `distribution-handover`
+  assertions pinned the stub and needed real values. They did not — every cycle in that file is
+  OPEN, where the helper is a no-op by design. Only their comments changed.
+  Gate: **736 passed / 0 failed / 0 skipped** over sixteen files (per-file counts read off the log).
+  Review: **revise → addressed**, two majors (both superseded claims left standing, one of them in
+  the edited file's own header) + two minors.
+- 2026-09-20 · FUP-T24 · (this commit) · no PR (project convention) · **The kg display rule gets one
+  home — and "trailing zeros stripped" turns out to be nobody's code.** `Math.round(g/10)/100` had
+  FOUR hand-written copies and no address; it now lives in `frontend/src/lib/kg.js kgLabel(grams)`,
+  which `FriendOrder`, `GuestProductGrid`, `FriendPortalSession` and `Distribution` all import. A
+  fifth restatement sat in a `routes/cycles.js` comment and now points at the home instead.
+  **Returns the whole „X kg" string, unit included**, because the no-trailing-zeros property is not
+  a strip at all — it is `Number#toString` emitting the shortest round-tripping repr, and it holds
+  only while the number goes straight into a template literal. One `toFixed(2)` at a call site would
+  print „1.00 kg" on that screen alone, so the invariant is enforced by the signature rather than by
+  four authors remembering it. Verified exhaustively over 0–200000 g.
+  ⚠ **The guest grid was UNPINNED** — three of four surfaces asserted the rendered string; the
+  public page, the one surface with no account behind it, asserted only the sold-out branch that
+  never calls the formatter. A test was added there.
+  ⚠ **A kg pin written only on a round kilo is half a pin.** Under `/10)/100` → `/100)/10`,
+  `distribution-rows` stayed GREEN because 1000 g is a fixed point of that mutation. Its fixture is
+  now fractional (guest B orders 3×250 g ⇒ „3 pol. · 1.25 kg") and the same mutation now reds it.
+  ⚠ **A spec line was about to order copy #5 at 1000× the wrong scale.** An expression-grep misses
+  specs that state the rule in WORDS; three did, and `13-coffee-passport.md`'s `total_kg` is in
+  KILOGRAMS while `kgLabel` takes GRAMS. All three now carry the address and the unit warning.
+  ⚠ **My own acceptance criteria were false** — the three specs I named as kg renderers assert no kg
+  label at all; struck in the row. Second unchecked premise I have written into a backlog row this
+  session. `CycleDetail`'s „max {limit}" badge is a DIFFERENT rule (unit switch at 1000 g, no
+  rounding) and was deliberately left alone; it has its own pin in `catalog-admin.spec.js`.
+  Gate: **155 passed / 0 failed / 0 skipped** across nine specs; mutation in the one home reddens all
+  four surfaces (12 failures, 5 files). Review: **approve**, four minors, all acted on.
+- 2026-09-20 · FUP-T25 · (this commit) · no PR (project convention) · **The second pickup rule gets one
+  home — three lines of production code, and the mutation proof is the whole row.**
+  `POST /orders/…/submit` inlined a **byte copy** of `helpers/pickup.js`'s `activeLocation()` while the
+  sibling `PATCH …/pickup` already called the helper for the same gate. Now it calls the helper; the grep
+  for that statement returns **exactly one hit**, in the helper, and `helpers/pickup.js` is byte-untouched.
+  ⚠ **The two pickup questions stayed SEPARATE, deliberately:** „is it CHOOSABLE?" (`active = 1`,
+  `activeLocation`) is not „is it REFERENCED?" (`pickupLocationInUse`, FUP-T23) — merging them was
+  forbidden and both comments now say why in both directions. ⚠⚠ **WHY A 3-LINE REFACTOR EARNED A ROW:
+  these two routes are the ONLY writers of `pickup_location_id`, and FUP-T23's "no API path can dangle a
+  location" claim rests on BOTH refusing an inactive point.** With two copies, a mutation in the helper
+  reddened only one. **Measured, not argued — and reproduced INDEPENDENTLY by review** (an isolated copy of
+  `backend/src` on its own port, repo never edited): on the pre-refactor tree with the helper loosened,
+  **every failure was on the PATCH side and the submit stayed GREEN off its own copy.** After the change
+  the same loosening reds BOTH writers' refusal tests, and a helper that refuses everything reds BOTH
+  writers' non-vacuity tests — two-sided, and the describe titles name which writer broke. ⚠ **A real
+  behavioural difference, surfaced rather than smoothed:** the sibling writes `location.id` (the row's
+  integer) while the submit writes the **bound request value**, so a numeric string is stored as text and
+  converted by column affinity. Left alone as provably inert — review probed it adversarially with forms
+  the implementer had not tried (`'35.0'`, `' 35 '`, `'35e0'`, `'0x23'`, `'35abc'`) and every form that
+  clears the gate stores the unquoted integer, **structurally**: `WHERE id = ?` applies numeric affinity,
+  so anything matching a row is numerically an id, and anything that is not cannot match. The residual is
+  recorded correctly: it stops being free if that column ever loses INTEGER affinity. ⚠ The two routes'
+  refusal ENVELOPES differ (one carries `field`, the other does not) — both key sets are now pinned with
+  exact `Object.keys`, so a shared gate cannot silently align them, and review confirmed those pins are
+  exercised against real refusals rather than passing vacuously. ⚠⚠ **TWO PROCESS LESSONS, both found by
+  the implementer on itself:** (1) its first comment QUOTED the old SQL to explain it — and the one-home
+  grep went back to **two hits, one of them prose**. *Any rule stated as a grep has that trap; describe the
+  statement, never restate it.* (2) its first fixture built the retired point **through the writer under
+  test**, so under the null mutation the `beforeAll` died and **16 tests did not run** — every interesting
+  failure collapsed into the same uninformative one. Rewritten to retire through the plain admin PATCH,
+  i.e. neither writer. *A fixture must not depend on the gate under test, or it destroys the proof it
+  exists to support.* Review verified the rewrite by confirming the null mutation now yields clean named
+  failures with **zero "did not run"**. ⚠ **And the row committed the FUP-T23 lesson AGAIN, two paragraphs
+  below where that lesson is written:** the learnings cited "3 failed / 14 passed", which **sums to 17 when
+  the file has 18** — a count carried over from an earlier draft. Review re-ran it rather than reading it:
+  **3 failed / 15 passed**, and **4 failed / 14 passed** against a genuine pre-refactor tree (the grep test
+  reds too). Corrected with the measured numbers. *A cited count is a measurement, and must come from the
+  run the write-up describes.* Review: 1 round → **approve** (0 blocker, 0 major, 1 minor — the stale
+  count, fixed). Gate: `node --check` clean; orchestrator's own **474 passed / 0 failed / 0 SKIPPED**;
+  `order-pickup-edit.spec.js` and both body-shape specs ran **unmodified**.
+
+- 2026-09-20 · FUP-T23 · (this commit) · no PR (project convention) · **A pickup point still in use could
+  be HARD-DELETED — data loss, reachable through the public API** (DP-T2 got there by accident while
+  building a fixture). `DELETE /api/pickup-locations/:id` counted `orders` ALONE, while CLAUDE.md makes
+  `helpers/pickup.js` the one home for *which row stores a party's pickup* — "the `orders` row if one
+  exists (any status), else `guest_order_links`". A host with **no own order** keeps theirs on the link
+  table, so the reference was invisible and the row really went. ⚠ **Fixed by ASKING the helper, not by
+  adding a second COUNT** — a hand-written existence check here would have been a THIRD statement of the
+  rule and would drift when module 20 adds guest Packeta. New `pickupLocationInUse(rawId)`: one statement
+  over both stores, **deliberately BROADER** than `pickupTargetFor()` (it counts a reference in EITHER
+  table, because a stale link value becomes effective the moment the `orders` row goes — review confirmed
+  that state is genuinely reachable), and **fails closed** on an unbindable id. The route now states the
+  rule **zero times** (its only two matches are comments recording the old behaviour) and behaviour was
+  MATCHED not invented: still a soft delete on a reference, still 204. ⚠ **Mutation-proved with a matched
+  pair** — same party, same assertions, one variable: reverting to the `orders`-only count reds exactly the
+  two link-stored cases while the submitted-order, draft-order and unreferenced baselines stay green, and
+  review verified the passing half passes for the RIGHT reason. ⚠⚠ **THE FIXTURE THAT EXPLOITED THE BUG,
+  and the argument its re-arming produced.** `distribution-handover.spec.js` built its dangling-location
+  case by deleting a still-referenced point **through the public API**. After the fix that soft-deletes, so
+  it split: an ungated half asserting a RETIRED point still names its group (itself a regression guard for
+  this fix), and a `DB_PATH`-gated half that destroys the row directly. **The need for that gate IS the
+  proof the fix is complete:** both writers of `pickup_location_id` already refuse a non-active point, so
+  after the guard fix **no sequence of API calls can dangle a location**. Review verified it independently
+  (full sweep for writers; synchronous handlers, so `instances: 1` closes the check-then-write window) and
+  went further — probing empirically that a describe-level skip does NOT run its `beforeAll`, which was the
+  one way the new gate could have been wrong. The tolerance is still pinned, because pre-fix production
+  databases carry dangling ids. ⚠⚠ **REVIEW FOUND A FALSE COVERAGE CLAIM — an assertion SKIPPED on the
+  strength of a guard that does not exist.** The new spec said there was deliberately no 401 test "because
+  the route is already in `ADMIN_ENDPOINTS`". It was not: the only entry for that path is the **PUBLIC**
+  GET, the router is mounted **bare** (`index.js:77`, the MIXED-mount class), and **none** of its four admin
+  routes was swept. No live exposure (every handler carries `requireAdmin`), but a future edit dropping the
+  middleware would have shipped green. All four joined the sweep (`GET /all`, `POST`, `PATCH`, `DELETE`),
+  and the addition is **non-vacuity-proved**: dropping `requireAdmin` from two routes reds exactly those
+  two while the public GET stays 200. **Rule recorded: a comment claiming coverage elsewhere is an
+  assertion and must be verified like one — grepping a path in `api-security.spec.js` does not tell you
+  which LIST it landed in.** ⚠ A machine guard now reads the route's own source and asserts no inline count,
+  so the call site cannot re-grow one. ⚠ The superseded rule was rewritten in every copy including the two
+  the first sweep missed (`docs/learnings/01-early-features.md:86` matched neither search phrase).
+  ⚠⚠ **A COUNT DISPUTE, resolved the right way and worth keeping as a habit:** the implementer's run said
+  239, the orchestrator's said 246, and **it refused to adopt a number it could not reproduce** rather than
+  reconciling on paper. Both were right for different file lists — 246 was an EIGHTH file measured BEFORE
+  this row's sweep additions; re-measured on the final tree, 7 files = **239**, the same 8 = **250**.
+  *A count cited as evidence is a measurement: compare the file list, then re-run — never average or adopt.*
+  ⚠ **Filed: FUP-T25** — `routes/orders.js` submit inlines a byte copy of `activeLocation()`, a DIFFERENT
+  pickup question ("is it choosable?") that must not be merged into `pickupLocationInUse()`, and which is
+  **load-bearing for this row's claim**: "no API path can dangle a location" rests on BOTH writers refusing
+  an inactive point. Review: 1 round → **revise → approve** (1 major + 3 minor, all fixed). Gate:
+  `node --check` clean; orchestrator's own **239** (7 files) and **250** (8 files), 0 failed, 0 SKIPPED.
+
+- 2026-09-20 · DP-T8 · (this commit) · no PR (project convention) · **MODULE 16 IS COMPLETE.** Cycle header:
+  a non-blocking `cycle-plan-line` on `CycleDetail` AND the board (locked + completed only, zero-count
+  targets omitted, own seq guard, a failed fetch shows NO line and never touches `error`); „Označiť ako
+  dokončený" → **„Ukončiť objednávku"** on both headers with a **UI-ONLY** gate; board sub „· uzamknuté /
+  · ukončené" and a disabled „Vytlačiť štítky" carrying `data-labels-route` (DP-T5's no-catch-all reasoning).
+  New `lib/distribution-plan.js` is the one home for the sentence and the gate (two consumers now, module
+  17's stage controls join this header). ⚠ **The PO decision is the whole point of the row, so the suite
+  proves the OPPOSITE of what the screen implies:** „the API still completes a cycle with un-handed bags"
+  asserts `count: 1, handed_count: 0` first, then reads back through two separate GETs that `status` is
+  `completed` while `handed_over_at` is still NULL. It reds the moment anyone adds a 409. **A UX gate that
+  nothing pins is indistinguishable from a rule.** ⚠⚠ **FULL SUITE (module-16 milestone): 1971 passed /
+  0 failed / 4 skipped, 12.6 min — orchestrator ran it independently and got the same numbers.** The 4 are
+  the documented ones (3 limiter specs self-skipping BECAUSE the budgets are raised + 1 `test.fixme`).
+  ⚠⚠ **A NINE-MINUTE FALSE RED, and the cause is this session's recurring shape:** the first full run gave
+  **30 failed / 631 did not run**, every failure a 429 on an `admin login` inside a `beforeAll` — reading
+  exactly like a mass regression in the diff under test. `e2e/README.md`'s **runnable step 4** carried
+  `RATE_LIMIT_AUTH_MAX=1000` while its own later prose says in bold that 1000 is measurably too small,
+  **measured and written down by PL-T4 — into the prose only.** The block people PASTE was never updated.
+  Fixed in the runnable block, struck with a pointer in the prose, and the value named in CLAUDE.md's gate
+  bullet; review swept and confirmed step 4 is the only runnable server block in the file. ⚠⚠ **AND THEN
+  THE ROW DID IT AGAIN, which is why it is recorded rather than quietly fixed:** DP-T7 had left a comment
+  saying the shared `DialogContent.vue` overlay has no print rule, *"recorded for the module closeout"* —
+  **this row IS that closeout and patched exactly that**, then left the comment standing, in the file module
+  17 opens first. Review caught it. **General rule now in the learnings: a rule moved into a shared home
+  must be DELETED FROM THE CALL SITE in the same commit, or the call site becomes the thing that hides its
+  removal.** ⚠ That deletion also repaired the test: the print assertion's box half passed even with the
+  token removed from the primitive, because the one dialog it opened carried its own copy — the implementer
+  then **verified the repair by mutation** (primitive's box token removed ⇒ the test now fails, where before
+  it passed). ⚠ **An over-broad rule, narrowed:** CLAUDE.md claimed the button is the only writer of
+  `order_cycles.status`; lock, unlock and publish write it too. Now stated as the only way a cycle becomes
+  **`completed`** — corrected in all FOUR copies, not just the flagged one. ⚠ The superseded button label
+  survived in module **17**'s spec ×2 (the copy most likely to be implemented from, since 17 shares this
+  header) **and ×2 more in module 16's own file**, plus two dead line citations — all struck, and the
+  citations replaced with "search the symbol, not the line". 17 also gained the seam it needed: **add the
+  stage badge beside `cycle-plan-line`, do not replace it and do not re-derive its numbers.**
+  ⚠ **Two fixes beyond the brief:** `onPickupUpdated()` in `CycleDetail.vue` patched the row with **no
+  re-fetch**, so the new plan line kept naming a target the party had just left — DP-T6's rule met a
+  consumer that POSTDATES it (mutation-proven); and `markCompleted()` had **no error handling**, so a failed
+  PATCH was an unhandled rejection with nothing on screen. Neither completion handler cleared the page
+  banner either, so a failed completion followed by a successful one left a red Alert over a completed
+  cycle — fixed in both, pinned with a forged 500 + retry, mutation-proven. ⚠ **The six collected items,
+  each decided:** the shared-overlay print rule and the negative-width clamp **FIXED** (the clamp pinned
+  with a `page.route`-forged payload, since the invariant break is unreachable through the API — which is
+  the point of a clamp); the grammar deviation **already fixed by DP-T7**, struck in the spec so nobody
+  "fixes" the code back to the ungrammatical sentence; **three routed to the PO** (a packed row printing no
+  item list, the counter's location, and „Osobne" vs „Osobné odovzdanie") because making the spec true would
+  move markup `item-packed.spec.js` and `guest-distribution.spec.js` locate parties by — the exact thing
+  DP-T6 refused to disturb, and the in-person label is a backend constant published in the payload; the two
+  `h1`s **recorded, not fixed** (no locator ambiguous; demoting a shipped appbar title is not a closeout's
+  business). ⚠ Review verified the shared change is admin-only, print-media only, and that the box's
+  override path is real while the overlay's is not (it is not `cn()`-merged) — harmless, but the comment's
+  claim is true of the box only. Review: 1 round → **revise → approve** (1 major + 5 minor, all fixed).
+  Gate: `vite build` clean, admin invariance zero tokens, four shipped specs byte-untouched; orchestrator's
+  own **full suite 1971/0/4** plus **283 passed / 0 failed / 0 SKIPPED** after the fixes.
+  ⚠ **MODULE 16 CLOSED. Open for the PO:** the three spec-vs-behaviour questions above, recorded in
+  `16-distribution-pipeline.md`'s new PO section. **Still unowned:** the guest-cancelled-after-hand-over
+  seam (FUP-T23 / WA-T5 carry it, with the three complete fixes named).
+
+- 2026-09-20 · DP-T8 · (this commit) · no PR (project convention) · **The cycle header, and the module-16
+  closeout.** A non-blocking plan line („{label} {n} · … — {handed}/{total} odovzdaných", `cycle-plan-line`)
+  on a `locked` OR `completed` cycle, on `CycleDetail.vue` AND the board; „Označiť ako dokončený" relabelled
+  **„Ukončiť objednávku"**, gated `totals.count > 0 && handed_count === count` with
+  `title="Až keď je všetko odovzdané"`; board appbar sub „· uzamknuté" / „· ukončené" and the
+  „Vytlačiť štítky" placeholder (DISABLED, `data-labels-route` — DP-T5's decision, `router.js` has no
+  catch-all). ⚠ **BOTH RULES HAVE ONE HOME**, `frontend/src/lib/distribution-plan.js` — two views render the
+  same header and module 17's stage controls join it next; this is the FUP-T24 shape corrected before it
+  became a second copy. The fetch follows `loadGuestUnpaid()`'s contract exactly (own seq guard, failure
+  swallowed into „no line", never into `error`, never blocking the tab) and no-ops while the cycle is open.
+  ⚠⚠ **THE PO'S DECISION IS THE ONLY THING DISTINGUISHING A UX GATE FROM A RULE, so it is an ASSERTION, not
+  a comment:** `PATCH /cycles/:id { status: 'completed' }` still completes a cycle with un-handed bags (read
+  back, with `handed_over_at` still NULL) — nothing server-side changed, and the button stays the only way a cycle
+  becomes **`completed`** (stated as the VALUE — lock / unlock / open-for-ordering write the column too). Ledger pinned unmoved across the click (`/friends/:id/detail`, per friend).
+  ⚠ **FOUND, NOT LISTED: `onPickupUpdated()` patched the row in place with no re-fetch**, so moving a party
+  between targets left the new header naming the target they had just left — DP-T6's rule, a consumer it
+  predates. Fixed and **mutation-proven** (delete the call ⇒ the line keeps the old grouping). `markCompleted()`
+  also had no error handling at all: a failed PATCH was an unhandled rejection with nothing on screen.
+  ⚠ **The six collected items, each decided:** (1) the shared `DialogContent.vue` had NO print rule — fixed,
+  `print:hidden` on the overlay AND the box (a dialog is chrome; a sheet printed with any modal open came out
+  dimmed with the box on page one), pinned screen-visible → print-hidden; (2) `packedShare()` could emit a
+  negative width — clamped, pinned with a `page.route`-FORGED payload, since the state is unreachable through
+  the API; (3+4) the two spec-vs-code mismatches (a packed friend row prints no item list; the packing
+  counter's place) and (5) „Osobne" vs „Osobné odovzdanie" are **PO questions, not code changes** — all three
+  are recorded in a new „Open items raised at the module-16 closeout" section of the spec, because fixing any
+  of them moves markup two byte-untouched shipped specs locate parties by; (6) the two top-level `h1`s on the
+  board are **recorded and not fixed** — no locator is ambiguous (every heading assertion matches by name) and
+  demoting a shipped appbar title no use case mentions is not a closeout's business. DP-T7's grammar
+  deviation (`bagsMoveVerb()`) is struck in the same section: the code agrees, the spec sentence does not.
+  ⚠⚠ **A HARNESS DEFECT THAT COST A 9-MINUTE FALSE RED, and it was the documentation discipline rule again:**
+  `e2e/README.md`'s RUNNABLE step 4 carried `RATE_LIMIT_AUTH_MAX=1000` while a later section of the SAME file
+  says in bold that 1000 is measurably too small for one full run. Following the runnable block gave **30
+  failed / 631 did not run**, every failure a `429` on an `admin login` in a `beforeAll` — indistinguishable
+  from a mass regression in the diff under test. Step 4 now carries `100000` for all five, the superseded
+  sentence is struck, and CLAUDE.md's gate bullet names the value. **A runnable block that contradicts its own
+  warning is the worst copy of a rule, because it is the one a reader executes.** ⚠ Learnings:
+  `docs/learnings/08-distribution-pipeline.md` (organised by LESSON, not by row — the six deferred write-ups);
+  CLAUDE.md gained the index row and five one-liners (hand-over is ledger-neutral + the sole `status` writer;
+  module 16's homes; the dialog print rule; `disabled` is not a guard + refusal scope; hold the second call to
+  prove a patch-then-re-fetch). Gate: `vite build` + `node --check` clean, admin-skin sweep NONE
+  (`pp-*`/`neo/`/`friends-theme`/`.app`); `guest-distribution.spec.js`, `item-packed.spec.js`,
+  `order-pickup-edit.spec.js` still byte-untouched and green. Targeted 98 passed / 0 skipped; three new
+  invariants mutation-proven in both directions. **FULL SUITE (the module milestone): 1971 passed / 0 failed /
+  4 SKIPPED in 12.6 min, EXIT 0** — the four are exactly the documented ones (`forced-change-ui` `test.fixme`
+  + `rate-limit`, `rate-limit-isolation`, `magic-link-rate-limit`, which self-skip with the budgets raised).
+
+- 2026-09-20 · DP-T7 · (this commit) · no PR (project convention) · **The group hand-over is wired** —
+  DP-T5's button gets its handler, behind a radix confirm („Odovzdať zabalené?", subtitle, ledger-neutral
+  banner, Zrušiť / Áno) → bulk POST → **patch in place, re-fetch under `loadSeq`, 3.5 s toast**; a refusal
+  raises a per-GROUP Alert and highlights exactly the rows the server named. No WhatsApp sentence and
+  `queued_notifications` **read and dropped** (module 21's half) — asserted absent. ⚠ **It sends PARTY ids**:
+  every packed party's `order_id`, else a packed synthetic host's live sub-order ids; a friend's nested guest
+  is **never listed** because it inherits inside the route's own transaction — DP-T4's asymmetry (an
+  explicitly listed guest with one unchecked item aborts a batch the same bag sails through when inherited).
+  Asserted on the wire **including the negative**, mutation-proven. Review added two supports: the payload's
+  guest list is already the LIVE set so a cancelled id can never be sent, and a party with only cancelled
+  bags is not emitted at all, so the fallback branch cannot produce an empty batch while the count is > 0.
+  ⚠⚠ **THE FOURTH VACUOUS-ASSERTION CLASS THIS SESSION, and the subtlest: the in-place patch was
+  UNPROVABLE.** Deleting `patchHandedOver` left the file GREEN, because the immediate re-fetch produced the
+  same result a moment later. Fixed by **holding the GET** so the row must read `handed` while `plan[]` still
+  shows the old numbers. **General rule, worth carrying:** *any* "patch then immediately re-fetch" pair is
+  untestable unless the test holds the second call. ⚠ Review then found the fix rested on ~300–500 ms of
+  slack — enough that a slow round on this 2-core box could let the mutant read green **again**, quietly
+  undoing the thing it had just found. Hold raised 2.5 s → **4.5 s**, and the toast-lifetime measurement
+  moved INSIDE the held window so it measures the timer rather than "some time before the re-fetch landed".
+  ⚠ **A disabled attribute does NOT stop a dispatched click reaching the handler** — the review verified this
+  empirically in a throwaway browser (a real `click()` fires nothing; `dispatchEvent` fires twice), so the JS
+  in-flight guard is load-bearing, not decorative. ⚠ **REVIEW FOUND A REFUSAL THAT COULD BECOME
+  UNCLEARABLE** — the same stale-advice failure DP-T6 fixed, one scope up: opening any group's dialog wiped
+  the highlight map GLOBALLY but cleared only that group's message, so another group's Alert stayed with
+  nothing highlighted, and the clearing path then early-returned. With that group's ready count at 0 (exactly
+  the case where the offender was its last packed bag) there was **no path short of a reload**. Fixed by
+  keying the refusal map **per group**, so a message and its highlights share a scope. ⚠ **The implementer
+  closed the other end too, which the keying alone did not:** a refusal naming nothing this board can resolve
+  now goes to the PAGE banner, which every row action already clears — stated as an invariant: **a group
+  Alert always has at least one highlighted row, because those rows are what clear it.** It also flagged that
+  the orchestrator's sketched test assertion paired with the *other* fix option and adapted it rather than
+  silently following it. ⚠ **Recorded, not fixed:** the radix **overlay** lives in the shared
+  `DialogContent.vue` and carries no print rule, so a sheet printed with ANY admin modal open still gets the
+  dim layer — one token in a shipped primitive every admin view consumes, left for DP-T8 rather than changing
+  a shared component under a board row (no spec asserts those class strings). ⚠ **Two paired invariants
+  written down:** the toast counts the SNAPSHOT, not what the server stamped, so a bag handed over elsewhere
+  between open and confirm keeps the sentence true but not wholly this click's; and **the single dialog ref
+  is safe ONLY because the modal is undismissable while its batch is in flight** — `closeHandoverDialog()`
+  refuses while pending and `confirmHandover()` nulls the ref, so a second group's dialog can never be open
+  when the first completes. Relaxing the dismissal rule must key the dialog per group first. ⚠ Deviation,
+  declared, needs a PO line at DP-T8: §UC-DP-012's subtitle pairs a plural noun with a singular verb —
+  „2 balíčky prejde" is ungrammatical. `bagsMoveVerb()` added to `lib/plural.js` (the declared one home for
+  count-agreeing forms, same bare-form shape as `handedAdjective`); review confirmed it agrees with the noun
+  for every n including 0, 22 and the 5+ genitive. **The spec text is what disagrees, not the code.**
+  Review: 1 round → **approve** (0 blocker, 0 major, 2 minor + 1 margin, all addressed). Gate: `vite build`
+  + `node --check` clean; forbidden-token sweep NONE; two shipped specs byte-untouched; orchestrator's own
+  **206 then 224 passed / 0 failed / 0 SKIPPED**.
+
+- 2026-09-20 · DP-T6 · (this commit) · no PR (project convention) · **Board rows — the board becomes the
+  admin's working surface.** Five columns per party (`bag-row-<id>`, `data-stage`, dimmed once done); nested
+  guest rows as **read-only mirrors** (PO: no clickable per-guest Odovzdané); Packeta address + phone; the
+  synthetic host's Krok 2 through DP-T4's **bulk** route (guest ids only, asserted on the wire) with a
+  per-guest reversal since no bulk reversal exists; click-to-expand holding the shipped checklist; disabled
+  states with snap-back; print rules. `plural.js` gained `guestsLabel` (**extended, not forked**).
+  ⚠⚠ **THE IMPLEMENTER DECLINED PERMISSION IT HAD BEEN GIVEN, and was right.** This row sanctioned
+  retargeting `guest-distribution.spec.js` where it assumes the card layout — but `item-packed.spec.js` uses
+  **the same two locator idioms** (`div.p-4` with the heading; `div.cursor-pointer` as the item rows) and is
+  pinned by DP-T4's row as passing **unmodified**, so consuming the sanction would have bought NOTHING: the
+  invariant still had to hold for the un-sanctioned file. It preserved the markup instead — one padded
+  wrapper per party, and the expand affordance a `<button>` + a scoped `.row-expand` class rather than a
+  third `div.cursor-pointer`. **Both specs are byte-untouched** (verified), both genuinely use the idioms
+  (verified), and review confirmed no other element inside a party can match either — the picker's
+  `cursor-pointer` sits on a `<select>`, not a div. **A sanction is permission, not an obligation.**
+  ⚠ Read-only guest rows proven STRUCTURALLY, not just by test: exactly two checkboxes, both with a
+  **literal** `disabled` attribute (not a binding), no `<button>`, no `@click`, no `v-model` anywhere in the
+  row — plus a positive mirror (a host hand-over flips both guest boxes with no reload, from the route's own
+  response). ⚠ **DP-T5's deferred item discharged in the shape the backlog specified:** after a pickup change,
+  patch in place THEN re-fetch under `loadSeq`; delivery/plan never re-derived client-side. **The open guest
+  fold genuinely survives** — the fold state is keyed by stable ids and `loadData()` never raises `loading`,
+  so nothing unmounts; the test folds a guest CLOSED first, because the open default would make the assertion
+  vacuous. ⚠ **Snap-back is hand-written for a real reason:** Vue skips patching a `:checked` binding whose
+  value did not change, so the user's gesture would stand; the property is set directly, read BEFORE the
+  re-fetch replaces the party objects, and the inline message is the **server's** sentence verbatim, not an
+  invented one. Per-id pending + per-id error maps, never a global flag. ⚠ **REVIEW FOUND A STALE REFUSAL ON
+  A MONEY SCREEN:** the per-row error was only cleared by another attempt at the SAME step, so „Najprv
+  označte balíček ako zabalený" survived the admin doing exactly that — the row then read `packed` with
+  Krok 2 enabled **and the red refusal still under it**. Cleared now in **both doors that act on the advice**
+  (`togglePacked`, `toggleItem`), and deliberately **NOT** in the loader's success path, because `loadData()`
+  also runs on the FAILURE path after a snap-back and would wipe the sentence in the tick it was written.
+  Mutation-proven. ⚠ **Side lesson kept:** `-g` against a serial describe is meaningless here — only the
+  fixture `beforeAll` runs, so the earlier tests' state is absent and the NON-VACUITY assertion fails first;
+  mutation checks on that file must run the whole file. ⚠ **Found for DP-T7:** `PATCH /orders/:id/packed` is a
+  **TOGGLE**, so a fixture helper that "packs" twice silently UN-packs and posts a ledger reversal — read the
+  state first. ⚠⚠ **RECORDED, NOT FIXED — the SPEC TEXT is what disagrees, not the code.** A packed FRIEND row
+  has no body at all (the shipped `v-if="!friend.packed"`, pinned by `item-packed.spec.js`), so it **prints no
+  item list**, while §UC-DP-011's print paragraph says every row prints expanded. Consequence: "collapsed
+  after packed, click to expand" is a real fold only for **synthetic hosts**; a friend row simply becomes one
+  line with no expand control. The „{checked}/{total} ✓" counter staying on the summary line has the same
+  shape of mismatch. **Both need one PO line at the DP-T8 closeout, not a code change.** ⚠ The previous row's
+  spec pin was **retargeted and strictly STRENGTHENED** — all four original assertions kept verbatim, six
+  added — and two superseded claims struck with pointers in both their copies. Review: 1 round → **approve**
+  (0 blocker, 0 major, 2 minor — 1 fixed, 1 recorded). Gate: `vite build` + `node --check` clean; admin
+  invariance verified beyond theme tokens (no raw colours, no console, shadcn primitives only); orchestrator's
+  own **247 then 265 passed / 0 failed / 0 SKIPPED**.
+
+- 2026-09-20 · DP-T5 · (this commit) · no PR (project convention) · **The distribution board shell — module
+  16's first frontend row.** Title + totals, a plan card per `plan[]` entry **including zero-count active
+  points** (two-tone bar publishing `data-share`, click-to-focus that releases on a second click),
+  group-by delivery/stage/friend, stage filter tabs, group headers (badge, counts, „Štítky", „Odovzdať
+  zabalené (n)" **disabled at 0**), empty states; `lib/plural.js` gained `bagsLabel`/`packedAdjective`/
+  `handedAdjective` (**extended, not forked** — the participles are bare adjectives because DP-T7 composes
+  them with a count). ⚠ **ADMIN INVARIANCE HELD** — zero `pp-*`/`neo/`/`friends-theme`/`.app` tokens in the
+  added lines, verified. ⚠ **The shipped card body is BYTE-IDENTICAL** and the view removes exactly **4**
+  lines total (the import, a `loading` clear, a wrapper div, and `v-for="friend in distribution"` →
+  `group.parties`), so `guest-distribution.spec.js` passes **unmodified**. DP-T6 converts card → row.
+  ⚠ **The `div.p-4` strict-mode trap is now PINNED:** that shipped spec locates a party card by that utility
+  class, so any new wrapper carrying it would make the locator ambiguous and red a shipped file — the new
+  spec asserts `toHaveCount(1)` on exactly that locator, and the added padding is `p-3`/`print:p-4`, distinct
+  tokens. ⚠ **Nothing is re-derived client-side:** `plan`/`totals`/`locations` come straight off DP-T2's
+  payload and `party.stage` is the server's; only the per-group counts (which the server does not answer per
+  group-mode × filter) are computed. The two-tone arithmetic is `handed/count` + `(packed−handed)/count` —
+  which works **only because DP-T2 made `packed_count` a SUPERSET of `handed_count`** — and the assertions
+  test the **proportions**, so an implementation drawing the second segment from `packed/count` fails.
+  ⚠ **Deliberately deferred, and verified deferred:** the bulk-hand-over CALL is DP-T7's — the button renders,
+  counts `stage === 'packed'` only, is disabled at 0, and carries **no `@click`** (checked). No „Správa
+  skupine" (module 21). ⚠ **„Štítky" ships DISABLED rather than navigating** — `router.js` has no catch-all,
+  so pushing an unsupplied placeholder route renders a BLANK SPA, which is worse than a button that says not
+  yet; the constant travels on the DOM as `data-labels-route`, one line plus a handler from being wired.
+  ⚠⚠ **TWO REVIEW FINDINGS OF THE "correct today, broken by the NEXT row" CLASS — fixed here rather than
+  handed over**, the third time this session that shape has appeared: (1) a focused target SURVIVED a reload
+  after its key left `plan[]`, leaving a toolbar over nothing with no message and no card left to click for
+  the release — unreachable in DP-T5, reachable the moment DP-T6 adds the pickup-change re-fetch. Guarded in
+  `loadData` inside the `loadSeq`-checked write block, **mutation-proven** (guard removed ⇒ the new test
+  fails on zero groups). (2) focus + a non-`all` filter reaches the same groupless screen; rather than decide
+  focus-vs-filter semantics the use case does not settle, the board now SAYS so (`board-no-match`, a
+  `v-else-if` so exactly one of three branches renders, and the empty-cycle test asserts the two states are
+  never conflated). ⚠ The new fixture test **adopts the BROWSER's admin token** rather than minting one — a
+  fresh login would invalidate the page's token and the re-fetch click would 401; the one-admin-token trap,
+  and any later UI+API test in this module needs the same. Review: 1 round → **approve** (0 blocker, 0 major,
+  3 minor — 2 fixed, 1 correctly left to DP-T6, whose row already specifies the shape: patch in place THEN
+  re-fetch, because a full reload re-collapses the guest folds). Gate: `vite build` + `node --check` clean;
+  orchestrator's own **235 then 234 passed / 0 failed / 0 SKIPPED**. ⚠ **Filed from this row: FUP-T24** — the
+  kg rule `Math.round(g/10)/100` has **no one home** and now has FOUR copies; DP-T5 added the fourth
+  deliberately, with a pointer, rather than refactor three shipped files under a board row (right call here,
+  wrong steady state). CLAUDE.md states that rule **without an address**, the same shape corrected three
+  times this week. ⚠ **For the module closeout (DP-T8):** the in-person target reads „Osobne" on its plan
+  card and „Osobné odovzdanie" on its group header — both literally §UC-DP-010, so a PO line rather than a
+  code change; two top-level `h1`s on the page (no locator made ambiguous); and `packedShare()` would emit a
+  negative width if the server's superset invariant ever broke — CSS drops it silently, both sides assert
+  the invariant, but a clamp would match this project's fail-closed posture.
+
+- 2026-09-20 · DP-T4 · (this commit) · no PR (project convention) · **Bulk hand-over, all-or-nothing, plus
+  the three stage-order gates.** `POST /api/cycles/:id/distribution/hand-over` (`requireAdmin`, joins
+  `ADMIN_ENDPOINTS`): ONE synchronous transaction, **zero `await`**, 400 `invalid_ids`, 404 unknown cycle,
+  400 `foreign_id` (other cycle AND nonexistent answer the same — no oracle), 409 naming **every** offender
+  class (`not_packed` / `cancelled`), 200 otherwise with one shared `CURRENT_TIMESTAMP` read ONCE and bound
+  to every UPDATE. Un-pack / item-uncheck / guest-item-uncheck on a handed bag each 409 `handed_over`,
+  **two-layer** (read+409 before the tx AND a predicate inside it) on all three; `helpers/packing.js` and
+  `item-packed.spec.js` are **byte-untouched**. Bulk reversal is Phase 2 and deliberately not built.
+  ⚠ **All-or-nothing verified STRUCTURALLY, not read:** review confirmed against the installed driver that a
+  `throw` rolls back while a `return` commits, so statement order cannot defeat it — and the implementer
+  mutation-proved it by converting an in-loop refusal to a committing return and watching a host get stamped.
+  ⚠ **The skip path mints nothing**, and the pin is the strong form: flip every queued row to `sent` (removing
+  the dedupe that would hide an over-eager enqueue), re-send the same batch, expect 0 — the exact shape that
+  bites once module 21 sends. DP-T3's lesson applied without being re-learned. ⚠ **The binder's trap MOVED
+  INSIDE the array:** for this shape a one-element array is VALID, so elements are type-checked —
+  `'7'` would have compared correctly through SQLite affinity and stamped a real bag. Review probed the one
+  shape the type check admits (an integer beyond the safe range) against the driver directly: it binds,
+  matches nothing, degrades to `foreign_id`, never a 500. ⚠⚠ **REVIEW CAUGHT TWO WRITERS OF THE SAME COLUMN
+  DISAGREEING.** Skipping an already-handed host order skipped its **inheritance** too, so a guest bag
+  arriving after the host's went out was never stamped by a bulk re-run — while the per-bag route
+  deliberately does the opposite and names that case in its own comment. Worse than the inconsistency: the
+  board's group button is the unit of work, so the bag it left behind was invisible from it. Fixed to match —
+  the skip now skips the ORDER, never its bag (§UC-DP-006 says each handed order applies the FULL UC-DP-004
+  write and only calls the *id* skipped, so this is what the use case asks for). ⚠ The late colleague takes
+  **the bag's** stamp (`row.handed_over_at || stamp`), not the batch's, so a host and their colleagues carry
+  one string; `handed_over_at` in the response reports the batch stamp only when something actually took it,
+  else null — otherwise it would name a string no row carries. **Bonus: that new test is the ONE non-flaky
+  proof the stamp is BOUND rather than re-evaluated** — an inline `CURRENT_TIMESTAMP` would give the late bag
+  the current second; the "one timestamp across the batch" assertion cannot tell, since same-batch writes land
+  in the same second anyway. ⚠ **A test that passed for the wrong reason, found and swept:** the ≤500 cap
+  assertion used ids not in the cycle, so with the cap DELETED the route would still refuse `foreign_id` and
+  the test stayed green — it proved nothing about the cap. Now one real id repeated 501 times, asserting
+  `reason: 'invalid_ids'`; mutation-proven. The implementer then swept the rest of its new assertions for the
+  same class and strengthened the shape sweep. Third instance this session of an assertion that could not fail
+  for the reason it claimed. ⚠⚠ **AN ORCHESTRATOR ERROR, corrected by the implementer and independently
+  verified by review:** the seam note I wrote on DP-T4 and WA-T5 claimed "one door, not three" because the
+  other cancel paths are gated to an OPEN cycle where no hand-over could have happened. **False.** No
+  hand-over route carries any cycle-status gate, so a bag CAN be handed over while the cycle is open — exactly
+  when the host's DELETE and the guest's empty cart are allowed. All three doors are reachable; a fix at the
+  admin cancel alone would have been the half-way fix I had explicitly ruled out. Struck with a pointer in
+  BOTH rows and mirrored in code; the complete fixes are `softCancelGuestOrder()` (module 14 policy) or
+  WA-T5's release-time guard. **A premise written into a backlog row is a CLAIM, and I never checked it
+  against the handler.** ⚠ Seam declined here with reasons (the route grows no cancel path — a cancelled bag
+  is only ever a refusal or a skip, never a write), review concurred. ⚠ Recorded for DP-T5/T6/T7: an unchecked
+  item on an EXPLICITLY listed guest aborts a batch that would have succeeded had the same guest only been
+  inherited (§UC-DP-006 mandates it) — so the group button should send party ids, not every nested guest row
+  it renders; and per-id work is linear and synchronous, bounded only by the cap. Review: 1 round →
+  **approve** (0 blocker, 0 major, 2 minor, both fixed, both mutation-proven). Gate: `node --check` over
+  `backend/src` + `vite build` clean; orchestrator's own **232 then 233 passed / 0 failed / 0 SKIPPED**, no
+  500s from the new routes.
+
+- 2026-09-20 · DP-T3 · (this commit) · no PR (project convention) · **The hand-over routes, and the first
+  writer of `notifications`.** `PATCH /api/orders/:id/handed-over` and `PATCH /api/guest-orders/:id/handed-over`,
+  both admin, explicit boolean only: 400 on any non-boolean or unbindable shape, 404 unknown, 409
+  `not_packed`, 409 `cancelled` (guest), idempotent 200 otherwise. Guests classified `via_host` inherit in
+  both directions; cancelled bags skipped. New `helpers/outbox.js` (enqueue/cancel, ONE function so WA-T4's
+  swap is a body replacement) and `helpers/handover.js` (the stage vocabulary moved out of `cycles.js` + the
+  body binder + the `pickupTargetFor → deliveryOf` composition — it restates neither rule, and `delivery.js`
+  could not host it because a shipped spec pins that file's source). ⚠ **Structural, and no test can hold
+  them — orchestrator verified each directly:** ONE synchronous `db.transaction` per route, **zero `async`
+  and zero `await` in either handler**, literal columns, no body ever spread into an UPDATE, and the packed
+  re-check is the UPDATE's OWN predicate (`changes === 0` ⇒ 409, nothing written before the return).
+  `routes/guest-orders.js` is a MIXED mount: `requireAdmin` sits **per route**; `PATCH …/delivered` is
+  **byte-untouched** and still resolves host ownership inside its handler. ⚠ **NO ledger row, ever** — two
+  independent ungated assertions (`/friends/:id/detail` rows + balance) plus a `MAX(id)` watermark filtered
+  to the friend, mutation-proven to catch even a row credited to the WRONG friend. ⚠ Outbox rows are
+  `queued` only, `body`/`phone_e164`/`released_at`/`sent_at`/`error` NULL, template keys
+  `pickup|packeta|host`, segment keys `loc<id>|packeta|host:<id>`, and **NOTHING is minted for `in_person`**
+  in either direction. Enqueue and dequeue both inside the transaction; the dequeue deletes `queued` only —
+  a pre-existing `sent` row survives, pinned. ⚠⚠ **REVIEW CAUGHT A LATENT DEFECT THAT WOULD HAVE REACHED
+  REAL PEOPLE:** the enqueue fired on every `true`, including a call that changed nothing. Harmless today
+  because the rows are still `queued` and the idempotency key dedupes them — but the moment module 21 moves
+  a row to `released`/`sent`, a second `handed_over: true` on an already-handed bag inserts a FRESH FULL SET
+  ⇒ **duplicate WhatsApp messages, with no state change to justify them.** Both routes now key the enqueue
+  on the UPDATE's own `changes`, so a no-op mints nothing while the case that matters — a guest arriving
+  AFTER the host was handed over — still enqueues, by construction. **Pinned by a test that flips this
+  cycle's rows to `sent` and repeats** (0 queued, no duplicate), then proves a genuine re-hand-over after a
+  real reversal still mints 3. Mutation-proven. Same shape as DP-T2's flake: correct today, wrong the moment
+  something downstream changes, invisible until it reaches a person. ⚠ **Second fix: a reversal of nothing
+  now reverses nothing.** A `handed_over: false` on an order never handed over used to clear every live
+  guest's stamp and delete their queued rows — so a guest-level hand-over could be silently undone by a
+  no-op on the host. Spec-conformant (the use case's reversal SQL is unconditional) but destructive;
+  guarded on the order's own prior stamp, with a test that hands a guest over on its own and proves a no-op
+  host reversal leaves it alone. Mutation-proven. ⚠ **BOTH SEAMS DISCHARGED — and verified, not claimed.**
+  `distribution-handover.spec.js`'s two tests stamped the column DIRECTLY behind a `DB_PATH` gate purely
+  because no writer existed; they now drive the routes and **the gate is gone** — orchestrator ran the file
+  WITHOUT `DB_PATH`: **0 skipped** (was 2). The stamping helper is retired; its three remaining mentions are
+  comments recording that. `distribution-foundation.spec.js`'s "nothing writes" became "only the hand-over
+  routes write — and these are the rows", CYCLE-SCOPED (a global count was a value claim over other files'
+  rows the moment a writer existed). ⚠ **Recorded, NOT fixed — an unowned seam, on both rows that could own
+  it (DP-T4, WA-T5) and at the 409 site:** a sub-order cancelled AFTER a hand-over is unreachable in both
+  directions (the host reversal skips cancelled bags, the per-bag route refuses them) while `softCancelGuestOrder`
+  clears neither the stamp nor the queued row — a permanently stamped bag plus a queued „odovzdané" message
+  for something nobody will receive. Both predicates are literally §UC-DP-004/005, hence a seam and not a
+  DP-T3 defect. The host DELETE and the guest empty-cart need nothing: both are gated to an OPEN cycle, so
+  no hand-over can have happened. ⚠ Recorded: `segment_key` FREEZES at enqueue time, so a pickup correction
+  after hand-over leaves the queued row on the old target — only module 21's grouping is affected, since it
+  renders bodies from live rows. Also: `partyDelivery()` re-resolves through the single home **by
+  requirement**, because a guest row carries no pickup and a host with no own order keeps theirs on the
+  link. ⚠ One-home refactor: `guestStage`/`partyStage`'s friend branch moved into `handover.js`, byte-identical,
+  so a row the board patches in place cannot disagree with one a reload fetches; the two frozen specs pass
+  unmodified. Review: 1 round → **approve** (0 blocker, 0 major, 3 minor — 2 fixed, 1 recorded). Gate:
+  `node --check` + `vite build` clean; orchestrator's own **234 then 235 passed / 0 failed / 0 SKIPPED**,
+  zero 500s and zero stacks from the new routes.
+
+- 2026-09-20 · DP-T2 · (this commit) · no PR (project convention) · **The distribution payload carries
+  delivery, stage, weight and the plan.** Per party: `phone`, `handed_over_at`, `stage`
+  (`to_pack|packed|handed`), `delivery` from DP-T1's helper, `kg`; per guest the same four, classified with
+  `{ host: party.delivery }` as DP-T1's hand-off requires. Top level: `plan[]` (zero-count ACTIVE locations
+  included, scoped by cycle type), `totals`, `locations[]`. **Additive** — the 17 shipped party keys and 12
+  guest keys are pinned BY NAME against §UC-DP-003's own enumeration; `guest-distribution.spec.js` and
+  `order-pickup-edit.spec.js` are **byte-untouched**. ⚠ `kg` carries GRAMS (§UC-DP-003's wording; the client
+  rounds), rounded per LINE through `variantToKg()` — the one authority — so dust never ships; unknown and
+  prototype-key variants score 0 (fail-closed). `packed_count` is a SUPERSET of `handed_count`, structurally,
+  which is what §UC-DP-010's two-tone bar needs. ⚠ **Guest kg merged in JS, never a second `LEFT JOIN`** —
+  pinned by a fixture (own order + 2 live sub-orders + 1 cancelled) asserting the four numbers a join would
+  move, with `host.kg` pinned EXACTLY (1750) rather than bounded, so any per-sub-order multiplication is
+  caught. ⚠ **The shipped GET joined `ADMIN_ENDPOINTS`.** Both halves verified by the orchestrator: the route
+  IS guarded (`requireAdmin`, `routes/cycles.js`) and `distribution` appeared ZERO times in the sweep. **A
+  missing regression net, not a live hole** — recorded that way at both sites. ⚠⚠ **THE REAL FIND: a 1-IN-10
+  LATENT FLAKE THAT HAS BEEN IN THE SHIPPED SUITE SINCE PL-T2.** The orchestrator's gate reddened
+  `guest-admin-view.spec.js:1171` in the reproduction order; the file passes ALONE. Diagnosis (implementer,
+  isolated cleanly): `not.toContainText('30.00 EUR')` was ROW-scoped, and PL-T2 put a **bare `orders.id`** VS
+  on that row immediately before the balance cell — so order **243** beside `0.00 EUR` reads as the forbidden
+  string, straddling the two. Proven by changing ONLY `sqlite_sequence` (no row added, no money touched) and
+  reproducing solo; two fixtures in that file differing only in last digit behave differently. **It reds
+  whenever `orders.id % 10 === 3` — the orchestrator's own green 1865-test full suite earlier that night
+  passed BY LUCK.** ⚠ **Sanctioned case (a) fix, ONE hunk, two assertions row→CELL** using the file's own
+  idiom, **mutation-proved in BOTH directions and both lines independently** (the defect renders INSIDE the
+  cell, so both still redden; the false positive lived strictly across the cell boundary). Orchestrator
+  re-verified at the trigger value: sequence forced so the fixture's order landed on **243**, file green.
+  ⚠⚠ **AND THE DIAGNOSIS'S MECHANISM WAS WRONG, caught in review — right fix, wrong reason, and the wrong
+  reason is what gets written down.** It is NOT `innerText`: Playwright resolves from **`textContent`**
+  (`useInnerText` is the opt-out) and Vue condenses the whitespace node between `</td><td>`. Chromium's real
+  `innerText` inserts a **TAB** there and does NOT reproduce it — so a reader checking the claim in devtools
+  would have concluded the rule was bogus and undone a correct fix. Corrected in both copies, each now
+  warning the reader off that check; the CLAUDE.md bullet opens `⚠ NOT the innerText rule above` because the
+  two resolution paths sat two lines apart under one word. ⚠ **A non-vacuity gate was itself vacuous:** the
+  new spec's "other active points are listed" leaned on the template happening to carry six — the README
+  sanctions running WITHOUT the template and `seed.mjs` creates none. Replaced with a witness location the
+  spec creates and retires; **proved by restoring the old gate on a from-scratch DB (`pickup_locations` = 0)
+  and watching it fail `Received: 0`.** Orchestrator re-ran that file alone on an empty DB: **11 passed, 0
+  skipped.** ⚠ **A near-miss worth the rule it produced:** `RUN_DB=$(mktemp) && … &` backgrounds the WHOLE
+  `&&` list, so the variable never exists in the foreground shell, `DB_PATH` reaches Playwright empty, and
+  two `DB_PATH`-gated tests **self-skip silently** — a green false clean. Caught only because the total moved
+  by two. `e2e/README.md` step 6 rewritten: `DB_PATH` is no longer "optional", both consumers are enumerated,
+  and **the tell is the SKIP count, not the failure count.** Every run below states skips explicitly.
+  ⚠ Filed from this row: **FUP-T23** (`DELETE /api/pickup-locations/:id` hard-deletes a point still
+  referenced from `guest_order_links` — `routes/pickup-locations.js` re-inlined a NARROWER copy of the
+  two-store rule `helpers/pickup.js` owns), with the seam that this spec's dangling-location fixture leans on
+  that bug. DP-T3's row gained the matching seam: two `DB_PATH`-gated tests stamp `handed_over_at` directly
+  and must become route-driven, and DP-T3 is the first `notifications` writer so that "nothing writes"
+  assertion needs rewriting too. Review: 1 round → **approve** (0 blocker, 0 major, 3 minor, all fixed).
+  Gate: `node --check` clean; orchestrator's own **201 passed / 0 failed / 0 SKIPPED** in the reproduction
+  order, **30 passed** at the forced trigger value, and **11 passed / 0 skipped** from scratch with no
+  template.
+
+- 2026-09-20 · DP-T1 · (this commit) · no PR (project convention) · **Module 16 opens: schema + read-only
+  helpers + one deliberate stub.** `handed_over_at` on `orders` AND `guest_orders` (CREATE **and** try/catch
+  ALTER each — both tables are in prod); the `notifications` CREATE copied **character-identical** from
+  `01-architecture.md` (16 columns, 3 CHECK lists, **no index, NO WRITER** — review grepped `backend/src`
+  and `frontend/src` and found zero references outside `schema.js`); new `helpers/delivery.js`
+  (`deliveryOf`/`deliveryGroupOrder`/`TARGET_LABELS`, read-only); new `helpers/cycle-stage.js` with
+  `markCycleReady()` a no-op stub naming CS-T1 as its successor; `GUEST_ORDER_FIELDS += handed_over_at`.
+  ⚠ **MIGRATION PROVED ON A PRE-EXISTING DB, not just a fresh CREATE** — the orchestrator confirmed the
+  shipped `prod-template.sqlite` lacks both columns and the table, booted the server against a copy, and
+  watched all three appear with the new table empty. A schema change that only works on a fresh DB is the
+  classic way a migration ships broken. Also pinned in-spec by a strip-and-reboot case that asserts the
+  stripped state FIRST, so it cannot go vacuous when the template is next rebuilt. ⚠ **ONE-HOME BOUNDARY
+  HELD AND VERIFIED:** `delivery.js` contains exactly ONE statement — a read — never calls
+  `pickupTargetFor`/`applyPickup`/`readPickup` and does not import `helpers/pickup.js` at all, so it cannot
+  become a second decider of where a party collects; `pickup.js` stays the sole WRITER and is
+  **comment-only** in this diff. ⚠ **Hostile input fails closed everywhere** (`variantGrams()` discipline):
+  own-property + `typeof`-guarded reads, so a non-string, `''`, `'   '`, an array, a number, a boolean and a
+  PROTOTYPE-only `packeta_address` all classify "no Packeta"; the location id additionally demands
+  `Number.isInteger && > 0`, so `'3'`, `2.5`, `NaN`, `0`, `-3` fail closed; `deliveryOf(null)` returns the
+  in_person shape rather than throwing. ⚠ **REVIEW FOUND A SILENT PERMISSIVE FAILURE, now closed:** the
+  helper cannot tell a guest row from a friend row, so a guest whose host delivery was missing or unusable
+  fell through to its own (non-existent) columns and classified STANDALONE — it would have rendered as its
+  own bag and become independently hand-over-able, which §UC-DP-005 allows only for a module-20 Packeta
+  guest. New `isGuestRow()` reads the own-property `link_id` (in `GUEST_ORDER_FIELDS`, so every guest row
+  carries it; a friend party never does) and parks such a row on `via_host` instead. The module-20 case is
+  still matched first. Spec-sanctioned before, but silent and permissive — and this codebase fails closed
+  everywhere else. ⚠ **Fourth instance in two days of a rule stated narrower than what it protects, and the
+  worst possible place for it:** the forward-blocker comment — whose ONLY job is to warn a later row —
+  named ONE of three things SQLite cannot do by plain ALTER. It now enumerates all three: the `recipient_kind`
+  CHECK widening for `'admin'`; the two columns module 21 declares NOT NULL that this CREATE ships nullable
+  (**`segment_key`, `body`** — deliberately, because module 16 enqueues rows with `body IS NULL` from DP-T3
+  on, so 21 yields or backfills); and the three FKs 21 declares and this omits (an FK also decides CASCADE
+  of outbox history, which is 21's call). `recipient_id` is separated out as the one that stays FK-free
+  permanently — polymorphic across friend/guest/waitlist, NULL for `'admin'`. ⚠ The "look the pickup
+  location up WITHOUT `active = 1`" rule now lives in two read sites (`locationRow()` and `pickupOf()`);
+  reuse was not clean (different shapes), so each now CROSS-REFERENCES the other and names the failure — the
+  board's group title desynchronising from the orders tab's badge for the same party. ⚠ Recorded: the
+  "nothing writes a notifications row" test holds only while no writer exists; DP-T3 must rewrite it as
+  "only those routes write" or it degrades into a tautology. Review: 1 round → **approve** (0 blocker,
+  0 major, 2 minor + 1 note, all fixed). Gate: `node --check` clean; orchestrator's own runs **206 passed /
+  0 failed**, then **203 / 0** after the fixes, with the notifications table still empty after a full
+  traffic burst. Learnings + CLAUDE.md one-liners are deliberately DP-T8's (module-16 closeout), per the row.
+
+- 2026-09-20 · FUP-T22 · (this commit) · no PR (project convention) · **The full suite is GREEN again —
+  1865 passed / 0 failed / 4 skipped**, from PL-T4's 1841/1/26. The blocker was DATA: GR-T9's
+  production-shaped template carries an **active friend `id 72` named `Prihlasovacie.meno`**, and
+  `admin-friends-labels.spec.js:119` sweeps the rendered admin page asserting no copy matches
+  `/prihlasovac/i` — the machine-checked half of FUP-T20/T21's rule. A person's NAME tripped a guard about
+  the APP'S OWN COPY. ⚠ **Mechanism: exclude person-supplied data by DOM SUBTREE; the template is
+  UNTOUCHED.** New `e2e/helpers/copy-sweep.js` is the one home for the collector (hides `[data-user-copy]`
+  with an inline style for the read, restores in a `finally`, preserving exact `innerText` semantics — a
+  `textContent` walk would have started sweeping hidden markup and silently changed a second spec's
+  meaning). `AdminFriends.vue` marks 15 interpolated values; every static label, status badge and their
+  `title`/`placeholder` attributes stay swept. ⚠ **Both alternatives were weighed and REJECTED with reasons,
+  both recorded:** string-subtraction masks a genuine defect the moment a person is named exactly like a
+  real mislabel; renaming the row in `scrub-template.sql` would make the SCRUB encode this guard's own
+  regex — the narrow-restatement anti-pattern this row exists to correct. ⚠ **MUTATION-PROVED IN BOTH
+  DIRECTIONS BY THE ORCHESTRATOR, TWICE — once on the first marker shape and again after review moved the
+  markers**, because a marker moved from a cell to a span changes exactly what is excluded, which IS the
+  thing under test. A mislabel injected into static TEXT reds; one injected into a `title` ATTRIBUTE reds
+  (the half `innerText` cannot see); reverted and rebuilt, green. A guard only ever seen passing is not
+  evidence. ⚠ **A SECOND BYTE COPY of the collector already existed** in `portal-profile-modal.spec.js` —
+  the duplication this repo keeps paying for. One home now; that surface's behaviour is byte-identical
+  because nothing on it is marked. ⚠ **Review found the row contradicting its own rule in miniature:** three
+  markers sat on the `<TableCell>` container while the helper's comment says "mark the interpolation, never
+  the cell around it", on the very column the rule is about; and the helper EXPORTED two constants that
+  cannot work, since `page.evaluate` serializes only the function body — a future editor would have edited
+  them, changed nothing, and believed otherwise. Both fixed; a note now enumerates every place the inlined
+  literals move together. ⚠ **Closes the class on the ADMIN side ONLY** — the friend surface has the same
+  latent exposure with nothing marked, safe today only because its spec provisions its own friend instead of
+  reading the template. Marking it belongs to the row that first sweeps a surface rendering template names;
+  **PI-T11's planned `portal-vocabulary.spec.js` is the named next case and must IMPORT the helper, never
+  grow a third copy.** ⚠⚠ **ORCHESTRATOR ERROR WORTH RECORDING, because it cost a 12-minute run and read
+  exactly like a regression:** my first full run showed **5 failed**, all `magic-link.spec.js`, all **429**.
+  The cause was mine, not the repo's — `e2e/README.md` names the variable correctly as
+  **`RATE_LIMIT_MAGIC_MAX`** and I had been setting `RATE_LIMIT_MAGIC_LINK_MAX` all session. An unread name
+  is silently ignored, so the TIGHTEST bucket sat at its default **10** and only bit partway through a long
+  run. `CLAUDE.md` said "ALL FIVE `RATE_LIMIT_*_MAX`" — a **glob**, which is what invited the wrong guess —
+  so this commit **names all five explicitly** with the tell (a 429 on an assertion that expected 400/200).
+  Fourth instance in two days of a rule stated narrower or vaguer than what it protects. Review: 1 round →
+  **approve** (0 blocker, 0 major, 6 minor — 5 the implementer's, 1 mine: this row body still read as an
+  open decision and still issued the now-false "never report green" directive, both struck with pointers).
+  Gate: `vite build` + `node --check` clean; orchestrator's own **full suite 1865/0/4 in 11.9 min**, plus 82
+  passed across the admin-friends surface after the marker move. The 4 skips are the 3 limiter specs
+  (self-skipping BECAUSE the maxima are raised) + 1 `test.fixme`.
+
+- 2026-09-20 · PL-T4 · (this commit) · no PR (project convention) · **MODULE 15 IS COMPLETE.** Friend
+  surfaces close it: `FriendOrder`'s modal gains both props via `applyOrderPayment(response)` on GET/PUT/
+  submit, the success modal is re-pointed at PL-T3's `payBySquarePayload()` + `revolutLink()` (amount label
+  gated on the composed href), and `FriendBalanceCard` gains a „Zaplatiť" trigger
+  (`data-testid="pay-balance"`, `.btn.ok.sm`, before „Transakcie") plus its own `PaymentModal` mount. The
+  balance block is **QUOTED from `GET /friends/:id/balance`, never recomputed** — review confirmed no
+  client derives a symbol anywhere. `FriendTransactionsModal.vue` and `order-modals.spec.js` byte-untouched.
+  The sanctioned `money-rounding.spec.js` edit is exactly `independentQr`'s new `variableSymbol` threaded
+  from `cart()`; beneficiary, mock, drift logic and both non-vacuity gates untouched. New
+  `e2e/helpers/qr-pixels.js` decodes a RENDERED QR from pixels, compared byte-for-byte against an
+  independently hand-written encode (not the app's builder) with a stale-matrix gate. ⚠ **REVIEW CAUGHT AN
+  INVERTED ARCHITECTURE CLAIM — a comment asserting, as the current design, the exact refactor this codebase
+  warns is catastrophic.** The new clear-before-read was justified with "this card's instance survives a
+  session switch (`FriendPortalSession` is kept alive by `v-show`)". `FriendPortalSession.vue:36-41` says the
+  OPPOSITE and calls it load-bearing: the parent uses **`v-if`** (`FriendPortal.vue:1581`, plus
+  `:key="sessionSeq"`), and swapping it for `v-show` **brings all six session leaks back at once**. The CODE
+  was right; the reasoning beside it would have handed a future reader written confirmation that `v-show` is
+  the design. Corrected in all four copies; the module-18 seam comment leaned on the same premise and was
+  rewritten to the real hazard (two components each holding their own copy of the block = two homes for
+  "what does this friend owe"). **Lesson recorded: verify a claim in the file that OWNS it, rather than
+  inferring the mechanism from the symptom you are defending against.** ⚠ The client one-home sweep checked
+  only ONE of the two encode sites; it now loops over both, each with an `existsSync` non-vacuity guard —
+  a re-inlined payload that happened to be byte-equal on the fixtures would otherwise sail through every
+  pixel test. ⚠⚠ **MODULE-15 CLOSEOUT FULL SUITE: 1841 passed / 1 failed / 26 skipped / 11.8 min.** The one
+  failure is **DATA, not code** — see the new **FUP-T22** row: the template carries an active friend whose
+  NAME is the word `admin-friends-labels.spec.js:119` forbids. Orchestrator-verified by stashing only this
+  row's three view files and reproducing it identically. ⚠ **Two harness findings from the run, both now in
+  `e2e/README.md`:** (1) the recipe's recommended `RATE_LIMIT_AUTH_MAX=1000` is **too low for a full suite**
+  — at ~1870 tests the shared `authLimiter` exhausts around test ~1700 and the tail collapses into `429`s on
+  `admin login`, mostly in `beforeAll`, reading as **16 failed + 108 „did not run"**; all five maxima at
+  100000 gives the 1841/1/26 above. A rate-limit cascade is NOT a regression — the tell is a 429 on a
+  FIXTURE call, never on an assertion. (2) 21 of the 26 skips were silent and avoidable: `SERVER_LOG=<backend
+  log>` un-skips the "no stack reaches the log" families. Remaining 5: 3 limiter specs (self-skip BECAUSE the
+  maxima are raised) + 1 `test.fixme` + 1 more log-gated. Review: 1 round → **approve after revise**
+  (1 major + 3 minor, all fixed). Gate: `vite build` + `node --check` clean; orchestrator's own targeted runs
+  **153 passed / 0 failed**, then **127 / 0** after the fixes (incl. `portal-session-boundary.spec.js`, the
+  net for the rule the major touched). Also closed here: PL-T3's recorded item — `01-architecture.md:221`/
+  `:264` now name `lib/payment-links.js`, old reading struck. ⚠ **PO items still open for module 15:** the
+  balance `reference` copy „{Meno} / zostatok" is DRAFT; the `CN` 70 / `MSG` 140 caps are ISO defaults, not
+  verified quotes; and **three items need a real phone** — Revolut `?amount=` prefill, the real caps, and
+  whether a bank app decodes the query or splits it raw (which settles `PI=/VS…/SS/KS`'s bare slashes).
+
+- 2026-09-19 · PL-T4 · (this commit) · **implementer's measurements for the module-15 closeout** (the row's
+  own account is the entry the orchestrator writes; this is only what the runs taught).
+  ⚠ **FULL SUITE: 1841 passed / 1 failed / 26 skipped / 11.8 min**, per-run template copy, rebuilt frontend,
+  `--workers=1`. The one failure is `admin-friends-labels.spec.js:119` and it is **DATA, not code**: the
+  sweep greps the whole rendered friends list for `/prihlasovac/i`, and GR-T9's freshly rebuilt
+  `prod-template.sqlite` carries a real production row `id 72, name 'Prihlasovacie.meno'` (names are KEPT by
+  PO decision), verified against the file. It cannot pass against this template; untouched and reported.
+  ⚠ **THE FIRST FULL RUN MEASURED 16 failed / 108 „did not run“ AND WAS A LIE.** Every failure was a `429`
+  on `admin login`, most inside a `beforeAll` — which is what turns 16 failures into 108 tests that never
+  ran. The suite is ~1870 tests now and the README's recommended `RATE_LIMIT_AUTH_MAX=1000` no longer
+  survives one pass: the shared `authLimiter` exhausted around test ~1700 and the TAIL collapsed, reading as
+  a broad regression in whatever had just changed. Same tree, all five maxima at `100000` → the run above.
+  ⚠ **21 of the 26 skips were silent and avoidable:** the FUP-T7/T10/T11/T12/T13/T14/T15 "no stack reaches
+  the log" families are gated on `SERVER_LOG=<backend log path>`, which the recipe never set (spot-checked
+  with it exported: 53 passed). Both findings are now in `e2e/README.md` — the measurement in §Full-suite
+  runs, `SERVER_LOG` in the step-6 command. Genuine remaining skips: `rate-limit.spec.js`,
+  `rate-limit-isolation.spec.js`, `magic-link-rate-limit.spec.js` (all three self-skip BECAUSE the maxima
+  are raised — the documented trade) and `forced-change-ui.spec.js` (`test.fixme`, its own reason).
+  ⚠ **Review caught an INVERTED architecture claim in `FriendBalanceCard.vue`** (the code was right, the
+  rationale was not): the comment said the session subtree is kept alive by `v-show`, when
+  `FriendPortal.vue:1581` mounts it with `v-if` + `:key` and `FriendPortalSession.vue:36-41` calls that
+  `v-if` the six-leak guard in as many words. The false version described the exact refactor the codebase
+  warns against, next to the rule it would break. Rewritten in all four copies.
+
+- 2026-09-19 · PL-T3 · (this commit) · no PR (project convention) · **The client half: one home for payment
+  links.** New `frontend/src/lib/payment-links.js` — `revolutLink` (amount variant behind
+  `REVOLUT_AMOUNT_LINK`), `paymeLink`, `payBySquarePayload` (`variableSymbol` + `beneficiary =
+  creditorName || 'Gorifi'`), four exports pinned by an `Object.keys` assertion, imported relatively so
+  plain `node` can drive it — which is what makes the encoding testable. `PaymentModal.vue` gains ADDITIVE
+  props, an amount-suffixed Revolut label, a PayMe bar under `(pointer: coarse)` only, and a VS
+  `NeoCopyRow`; both guest views forward two props each. ⚠⚠ **THE ENCODING HAND-OFF, and it failed in the
+  direction nobody expects.** PL-T1 validated `creditor_name` for LENGTH ONLY and recorded that whoever put
+  it in a link owned the encoding. The first pass encoded thoroughly — **including the `PI=/VS…/SS/KS`
+  triplet's SLASHES**, emitting `PI=%2FVS…%2FSS%2FKS`. A bank app that splits the raw query rather than
+  URL-decoding then reads the escaped text verbatim: a malformed payment identification on **the one field
+  that makes a statement match a person**. Caught in review. **The rule is ENCODE VALUES, NEVER STRUCTURE** —
+  the VS alone is encoded, the separators stay bare. ⚠ **Why the tests could not see it, which is the
+  transferable half: a round-trip assertion cannot audit a wire format.** `searchParams.get('PI')` decodes,
+  so both forms are identical to it, and the raw pin had the encoded form baked into its expectation — a
+  test written from the implementation agrees with the implementation. Now pinned three ways (corrected raw
+  literal, a SEPARATE segment-level `PI=` assertion so a future rewrite of the literal cannot take it along,
+  and the raw segment of the RENDERED href), all three mutation-verified. ⚠ The converse still holds and is
+  its own test: a VS carrying `/`, `&`, `#` IS encoded, forging no triplet and inventing no parameter.
+  ⚠ **How the encoding was proved in the first place, worth reusing:** a value-only `get('CN')` check
+  round-trips even from a raw interpolation, so it proves NOTHING. The fixture is
+  `'A & B #1 +50% =x\nKaviareň'` and the assertion is the **full parameter KEY SET plus an empty fragment**
+  — a raw interpolation invents a ninth parameter named from the spaces and opens a hash. · Two more
+  by-construction fixes from review: `revolutAmountLabel` is now derived FROM THE HREF, so "the label and
+  the link are one number" holds by construction rather than by the callers' current ranges (side benefit:
+  the flag fallback is automatic and the component no longer imports the constant); and the Revolut control
+  is gated on `revolutHref`, not the raw prop — an EMPTY href is a link to the CURRENT URL, so a click
+  reloads and discards g-confirm's confirmation state, which is worse than the shipped visibly-broken link.
+  Generalised: **gate every control on its own composed value, never on the raw prop it was built from.**
+  ⚠ **SIX struck "props frozen" claims, not the three the row listed** — 06 §UC-GX-005, the component
+  header, 15's header, **18 ×2 and 20 ×1**. The implementer scoped the last three out ("another module's
+  file"); **orchestrator overruled**: the claim is false, a strike is not a scope edit, and the rows that
+  read those lines (PI-T7, GP-T1) are exactly the ones who would act on them. Operational rule recorded:
+  **find the copies by `grep`, never from a mental inventory — that is what turned three into six.** Each
+  strike now states what "frozen" still protects. Third instance today of a rule stated narrower than what
+  it protects. ⚠ **A FOURTH, FORCED spec edit** beyond the three sanctioned: §UC-PL-006's second
+  `label.field-lbl` makes a single-string `toHaveText` a strict-mode violation — retargeted to the array
+  form, which pins both labels AND their order, strictly more. `money-rounding.spec.js` **byte-untouched**
+  (the friend encode site is PL-T4's) — verified. ⚠ Backward compatibility: a caller passing neither new
+  prop gets the shipped bysquare object, key order included, pinned twice — which is why the friend spec
+  runs unmodified. ⚠ Deliberate: `PROGRESS.md:203`'s completed RD-GX-2 row still says "props API frozen" —
+  left as a historical build-log entry, the same classification applied to FC-T4's row earlier today.
+  Review: 1 round → **approve** (0 blocker, 0 major, 4 minor, all fixed). Gate: `vite build` + `node --check`
+  clean; orchestrator's own runs **192 passed / 0 failed**, then **172 / 0** after the fixes, on per-run
+  template copies with a rebuilt frontend. ⚠ **THREE PO VERIFICATION ITEMS, none a gate:** (1) Revolut
+  `?amount=&currency=EUR` prefilling on a real phone — if not, flip the flag, one line, and the label's
+  amount goes with it by construction; (2) the real PayMe `CN` 70 / `MSG` 140 caps (ISO/defensible
+  defaults, the SBA PDF is still not text-extractable); (3) **whether a bank app decodes the query or splits
+  it raw** — only a real phone settles the `PI` form, and the two raw pins exist to make a change visible.
+  ⚠ Module-15 closeout item: `01-architecture.md:221`/`:264` now describe the composition's location as
+  half true (the library calls stayed in the component, the payload and link composition moved).
+
+- 2026-09-19 · PL-T2 · (this commit) · no PR (project convention) · **The VS reaches every payer and every
+  admin surface.** Guest 201 + `statusPayload` (canonical AND legacy pair) now composed by PL-T1's
+  `guestPaymentBlock()` — **both seam comments discharged**, `routes/guest.js` no longer imports
+  `guestPaymentReference` at all (the helper calls it); friend order GET/PUT/submit gain top-level
+  `payment:{variable_symbol}` (bare `orders.id`), `payment:null` on the no-order GET and the PUT `deleted`
+  branch; `GET /friends/:id/balance` gains a full `payment` block; the admin unpaid overview and orders tab
+  gain `variable_symbol` on friend AND nested guest rows (`null` on placeholders); the guest mail gains a
+  „Variabilný symbol" row; `CycleDetail` shows „VS …" on the receivables card and both order-row kinds.
+  **No new route, no SQL, no migration** — every value is derived from an id the payload already carried
+  (review verified: zero new SELECT/JOIN/INSERT/UPDATE lines in the backend diff), so the guest-aggregate
+  and row-multiplication rules are untouched. ⚠ **BYTE IDENTITY WAS THE WHOLE RISK** (`routes/guest.js` is
+  +40/−39, a rewrite of two blocks) **and it is pinned three ways**: a full `toEqual` against values the
+  test itself set; an **ORDERED `Object.keys`** comparison (catches a drop, an unannounced addition AND a
+  reordering — `toEqual` catches none of the third); and `JSON.stringify(status) === JSON.stringify(created)`
+  across 201 / canonical / legacy pair. Independent half: `guest-order.spec.js:270` and
+  `guest-status.spec.js:189` assert the same four fields against independently derived values and are
+  **byte-untouched**. `amount` stays `order.total` — **the module-20 seam has NOT moved** (GP-T1 still owns
+  the `+ delivery_fee` flip). ⚠ **DEVIATION FROM THE SPEC'S WORDING, declared not hidden:** §UC-PL-003 item 4
+  phrases the balance block as inline in `routes/friends.js`. Written that way it would have been the SECOND
+  hand-composed payment block — the exact defect `guestPaymentBlock()` exists to prevent, with PL-T4 and
+  module 21 queued as consumers. It is `balancePaymentBlock(friend)` in `helpers/payment.js` instead; the
+  spec specifies the FIELD SET, not the composition site, and review confirmed values match exactly
+  (`roundMoney(Math.max(0, -balance))` → `-26.189999999999998` becomes `26.19`; `0` and a credit both yield
+  `+0`). ⚠ **A DRAFT CART COLLIDED WITH A SHIPPED PIN** (`guest-admin-view.spec.js:1237` — that money cell
+  must be exactly „-"). A draft has an `orders.id`, so the payload legitimately carries a VS. Fixed in the
+  VIEW (`v-if="isOrdered(order) && order.variable_symbol"`), **not** by weakening the payload and **not** by
+  editing the shipped spec — that file is untouched. Both halves now pinned: the API asserts the draft row
+  DOES carry `String(order.id)`; the UI asserts its row has no „VS ". ⚠ **Deliberate, recorded as a rule
+  rather than a case:** a CANCELLED guest sub-order DOES keep its VS on the orders tab, because the refund
+  queue quotes the same symbol and a cancelled-but-paid order is exactly the row an admin matches money back
+  against. The test is "does this row correspond to money that moved or must move" — a draft never owed
+  anything; a cancelled paid order owes a refund. ⚠ **Both one-home sweeps still return ONLY the helper**
+  (`padStart`, `payment_iban`) — every new symbol derived and every setting read through it. Mail: one label
+  constant pushed into the existing `paymentRows` array, so text and HTML share the one mechanism;
+  `creditor_name` deliberately absent from the mail; **no `payme.sk` / `revolut.me` URL** (08's one-origin
+  pin), asserted as absence beside positive assertions on the same body so it is non-vacuous;
+  `mailgun-harness.js` reused untouched. Review: 1 round → **approve** (0 blocker, 0 major, 3 minor, all
+  fixed). ⚠⚠ **THE PATTERN, now recorded as the lesson it is:** the third narrower-than-what-it-protects rule
+  found TODAY — GR-T9's scrub verification covering fewer columns than the scrub, FUP-T21's one-home rule
+  naming two of three homes, and this row's CLAUDE.md line naming two of the four byte-identical fields.
+  **Enumerate the whole set at the point of statement, or point at the file that IS the set.** Giveaway: a
+  rule whose sentence is shorter than the test that enforces it. Gate: `node --check` clean on 5 backend
+  files; orchestrator's own runs **665 passed / 12 skipped / 0 failed** across 15 files in two batches, then
+  **209 / 0 / 0** after the fixes, on per-run template copies with a rebuilt frontend. ⚠ **Still OPEN for the
+  PO:** the balance `reference` copy „{Meno} / zostatok" is draft, and the 70-char `CN` cap is the ISO bound,
+  not a verified PayMe quote.
+
+- 2026-09-19 · PL-T1 · (this commit) · no PR (project convention) · **Module 15 opens: the ONE server home
+  for payment data.** New `helpers/payment.js` — the VS scheme (friend = `orders.id` plain, guest =
+  `9`+6 digits, balance = `8`+6 digits), `paymentSettings()` as the ONE reader, `guestPaymentBlock()`,
+  and `MAX_CREDITOR_NAME_LENGTH`. New admin setting `payment_creditor_name` (70, mirrored as `maxlength`,
+  „Meno príjemcu" in AdminSettings, published on the PUBLIC `payment-settings`), seed 3b, and
+  `payment-links.spec.js` (25 tests). **VS is DERIVED, never stored** — no column, no migration. No new
+  route; `/api/admin/payment-settings` stays PUBLIC and is NOT in `ADMIN_ENDPOINTS` (pinned: anonymous 200,
+  wrong token 200, `/settings` still 401). ⚠ **The collision guard is the heart of the row.** All three
+  exports funnel through one private `variableSymbolFor`, which refuses anything but an integer
+  `0 < id < 1_000_000` and returns `''`. Friend VS is then ≤6 digits and the prefixed ones are exactly 7,
+  so the spaces cannot overlap **by LENGTH, not merely by value** — the collision is unreachable, not
+  unlikely. Review verified it by BRUTE FORCE rather than by reading: re-implemented the schemes and swept
+  the whole legal domain — **2,999,997 distinct values, 0 collisions**, `1_000_000` empty on all three.
+  Refusing FRIEND ids at 1e6 (not 8e6) is deliberate and is what §UC-PL-001's acceptance criteria says.
+  ⚠ **Fail-closed:** an empty VS is a degraded payment; a wrong VS is money matched to the wrong person.
+  The refusal logs kind + `typeof` ONLY — never the id or the row — and the id always comes from a DB row,
+  never a request body, so it is not a remote log-flood vector (FUP-T3/T7). ⚠ **THE TWO-HELPERS QUESTION,
+  asked before coding and answered rather than dodged:** `guestPaymentReference()` STAYS in
+  `helpers/guest-orders.js`; `payment.js` IMPORTS it. Split by CONCEPT — `guest-orders.js` owns "how a
+  guest sub-order describes itself" (built from `guest_name`, 4 shipped spec pins, its 4 call sites already
+  import that module for the surrounding loaders), `payment.js` owns "what the payer is told to do".
+  Moving it buys a file name and costs 4 call sites + 4 spec headers + CLAUDE.md. The enforceable half is
+  MACHINE-CHECKED instead: a spec walks `backend/src` and fails if `padStart(6` appears outside the helper,
+  with non-vacuity gates (>20 files walked, and the legal home must contain it). ⚠ **Review added the
+  OTHER half:** the READER one-home was unpinned, so a later row could re-inline a raw settings read
+  unnoticed — now a second sweep pins `'payment_iban'` to `helpers/payment.js` alone. That required
+  exporting `SETTING_IBAN`/`SETTING_REVOLUT`/`SETTING_CREDITOR_NAME` and binding them in the three writes:
+  reads were centralised, **writes were not**, and a drifted write key stores a setting nothing reads back.
+  ⚠ **`guestPaymentBlock()` ships DEFINED BUT UNWIRED, deliberately** — wiring it adds fields to a public
+  payload, which is PL-T2's row and acceptance (§UC-PL-003 item 1). §UC-PL-001's table reads present-tense;
+  the backlog is the finer authority. Not dead code: the child probe asserts every field. Seam comments now
+  sit at BOTH hand-composed blocks in `routes/guest.js`, each naming the other. ⚠ **Seed 3b needed its OWN
+  guard** — the existing branch writes only when BOTH payment keys are empty, so folding the new key in
+  would have skipped it forever on any DB with an IBAN, making every later module-15 test vacuous. Writes
+  only when empty, so a real value survives. ⚠ **`payment_creditor_name` is deliberately NOT scrubbed**
+  (account holder's name, not a credential; the endpoint publishes it by design; names kept by PO decision)
+  — now recorded AT the `DELETE` in `scrub-template.sql`, because the previous commit added the two sibling
+  payment keys there and README points readers at that file. Consequence: no spec may hardcode the seeded
+  name; none does. ⚠ **FOR THE PO, at module closeout:** the public endpoint now pairs a real IBAN with a
+  real account-holder NAME, unauthenticated. Spec-mandated (§UC-PL-002 "public data by definition") and the
+  decision is closed, but the PAIRING is the new part and name+IBAN is direct-debit-mandate input. Cheap
+  mitigation if it ever matters: serve the name only from PL-T2's payment-bearing payloads, not the bare
+  settings endpoint. ⚠ **Recorded for PL-T3:** the name is validated for LENGTH ONLY — no control-character
+  or whitespace rule — and PL-T3 puts it in a `CN=` query parameter and a bysquare beneficiary field, so
+  `encodeURIComponent`, never raw interpolation. ⚠ **The 70 is the ISO 20022 `Nm` bound, NOT a verified
+  quote** — payme.sk publishes no caps and the SBA standard PDF is not text-extractable; spec OPEN struck
+  with the finding. One number, one home, so a correction is one edit. Review: 1 round → **approve**
+  (0 blocker, 0 major, 5 minor, all fixed). Gate: `node --check` clean; orchestrator's own runs
+  **431 passed / 12 skipped / 0 failed**, then **416 / 12 / 0** after the fixes, on per-run template copies
+  with a rebuilt frontend.
+
+- 2026-09-19 · GR-T9 · (this commit) · no PR (project convention) · **Fixture accumulation, finished — and a
+  REAL DATA LEAK found in the artifact that was supposed to prevent it.** ⚠ **Most of this row had already
+  landed in `97b29de`** (the prod-shaped template, `make-test-db.sh`, the "database is an INPUT" README
+  section) and the row did not know it — check before rebuilding. ⚠ Row cites `share-dialog.spec.js:260`;
+  it is `:275`, and it implies `item-packed` needed one site fixed. Both superseded by this entry.
+  · **What was genuinely left:** (1) the README's MAIN recipe still taught `DB_PATH=/tmp/gorifi-e2e.sqlite`
+  — one fixed reused path — thirty lines under the section saying to copy per run, i.e. the wrong half was
+  the one inside the code block, which is the half people copy. Rewritten as a numbered recipe (build → stop
+  by OWNING PID → confirm port free → copy template to a `mktemp -u` path → start → seed → run) with the env
+  it was missing. (2) **`item-packed.spec.js` was NOT fixed by `97b29de` — that commit fixed ONE OF TWO
+  identical sites.** The UI `beforeAll` seventy lines below still created products by FIXED NAME without
+  checking the response, so module 12's `duplicate_in_cycle` 409 left `p1.id` undefined → cart prices
+  nothing → `total 0` deletes the order → submit 404s, four steps from the cause. Orchestrator
+  mutation-verified: with the fix 3/3 three times on one DB; reverting ONLY that file, run 1 passes and run 2
+  fails — the exact reported signature. (3) The **1500 ms window at `share-dialog.spec.js:275` was LEFT
+  ALONE on measurement** — 7 runs, 15/15 every time, 15.7–16.4 s, no spread. This row was the ONE sanctioned
+  edit to that file in module 14 and it was NOT spent; the file is byte-identical. (4) Fixture teardown
+  REJECTED: 24 spec files define their own `makeCycle`/`makeHost` (no shared home), and teardown would have
+  to unwind the orders/guest-link/sub-order/ledger cascade the app owns. ⚠⚠ **THE LEAK — two rounds of it,
+  same species both times.** `make-test-db.sh`'s scrub enumerated columns; its "fail-closed" verification
+  enumerated FEWER. Round 1 (found by the implementer): `payment_iban` + `payment_revolut_username` — the
+  PO's real bank account, in every template built since 2026-08-31, masked because `seed.mjs` only fills
+  payment settings when BOTH are empty ("already present, left untouched"). Round 2 (found by REVIEW, in the
+  artifact rebuilt after that fix): **11 real personal Gmail addresses in `friends.google_email`** (third
+  parties, not the PO — `friends.email` WAS randomised, so these were the only real ones left), a real
+  `invitations.google_sub` + `google_email` (NOT inert — `invitations.js:572,653` copies the sub onto the
+  friend at approval and `:321,580` match on it), and **76 production `friends.access_token`** values that
+  `friends.js:18` itself calls "a live auth credential". ⚠ **Never committed** — `e2e/fixtures/` is
+  git-ignored — so the repo and remote were always clean. **Fixed STRUCTURALLY, not by adding four columns:**
+  the SQL moved out of the shell heredoc into `e2e/scrub-template.sql` + `e2e/verify-scrub.sql` (one copy,
+  piped over ssh, so the local re-scrub runs the SAME BYTES as the server), verification rewritten as **one
+  named check per column the scrub touches — 22, in the scrub's own order, offenders named on failure**, and
+  a new `e2e/scrub-local.mjs` (`--verify` read-only by default / `--scrub`) with a raw byte scan, since this
+  box has no `sqlite3`. `access_token` REGENERATED rather than argued safe. The README no longer enumerates
+  columns at all — it points at the two files and records both misses, with the rule: **a verification
+  narrower than the scrub does not weaken the claim, it LAUNDERS it.** ⚠ Orchestrator verified the artifact
+  independently (11 SQL checks + raw byte scan, all zero) **and proved the gate NON-VACUOUS**: injecting
+  `real.person@gmail.com` and a production-shaped token into a copy makes `--verify` name both and exit 1.
+  ⚠ **The readiness probe in the new recipe COULD NEVER SUCCEED** (review): it polled `/api/cycles`, which is
+  `requireAdmin` — measured 401, `curl -sf` exit 22 — so it was a blind `sleep 15` dressed as a health check,
+  in a recipe whose whole deliverable is that it was executed literally. Now `/api/health` (public,
+  `index.js:126`); the recipe runs ~14 s faster, which IS the sleep it was burning. ⚠ **The inode mechanism
+  the orchestrator asked for was WRONG for this recipe** and had been copied into CLAUDE.md: `mktemp -u`
+  means nothing is swapped under the server, and a plain `cp` TRUNCATES IN PLACE rather than unlinking. The
+  actionable half (free the port first; `EADDRINUSE` lands in the second server's log ONLY; the tell is
+  `seed.mjs` saying `exists`) is now primary in both copies, the deleted-inode state demoted to a sub-note
+  scoped to the fixed-path variant that actually causes it, and the round-1 learnings paragraph struck in
+  place with a pointer. ⚠ **Also closed, pre-existing:** a failed `.backup`/scrub left an **UNSCRUBBED**
+  production snapshot in the server's `/tmp` (`set -e` aborts before cleanup) — now a `trap … EXIT`, the
+  single home for that `rm`. ⚠ **The shell gate was fail-OPEN** — it ignored lines with the wrong field
+  count, so a malformed verification downloaded under a "verified" banner. Now every line must be
+  `name|integer` AND the line count must equal a **derived** check count; proved against eight synthetic
+  shapes. That fix exposed one more: under `set -e`, `cond && echo` is `cond || abort`, so a real leak found
+  alongside a matching count would have aborted before printing the offender. Review: 2 rounds → **approve**
+  (1 blocker + 2 major + 3 minor, all closed). Gate: 77 passed / 0 failed ×3 on per-run copies; `item-packed`
+  3/3 five consecutive times on ONE DB. ⚠⚠ **NO COMMIT CAN REACH THE OLD FILES:** `e2e/fixtures/` is
+  git-ignored, so **anyone holding a template built before 2026-09-19 must run
+  `node e2e/scrub-local.mjs --scrub <path>`** — those copies carry the 11 addresses and 76 tokens.
+
+- 2026-09-19 · GA-T11 · (this commit) · no PR (project convention) · **A friend with no password had no
+  on-screen way to set one** — the change-password fold is gated on `hasCredentials`, so it is hidden
+  exactly for the people who need it. Closes the gap recorded at `friends.js:358` and deferred by GA-T7.
+  ⚠ **NEITHER EXISTING ROUTE FITS, and the row's first reason was wrong.** `change-password` 400s
+  without a password; `setup-credentials` would NOT 409 (it needs BOTH columns). The real reason is
+  security, written out at `friends.js:1185-1200`: ownership checks are **no defence against the shared
+  password**, because in legacy mode `POST /friends/auth {password:<shared>, friendId:<anyone>}` mints a
+  session that IS the victim's resolved identity. The **modern-mode guard** is the load-bearing control
+  (GA-T5's rule) — and `setup-credentials` cannot have one, since it serves the transition-mode setup
+  flow by definition. Hence a new route. · **`POST /api/friends/:id/set-password`**: `requireGoogleLinkOwner`
+  (4th caller, reused) → **409 `field:'auth_mode'`** outside modern, AFTER the owner gate so anonymous
+  stays a uniform 401 for the sweep → 404 → **409** when a password exists → username 400/409 → FUP-T11
+  type guard → bcrypt ABOVE the tx → one UPDATE + `invalidateLoginTokens` inside → `SQLITE_CONSTRAINT`→409
+  → `invalidateFriendSessions` + re-mint (expiry read BEFORE invalidation, `via` NULL). **No `await` in
+  the handler** — that is what keeps check-then-write atomic under `instances: 1`; stated with the
+  re-check obligation if one is ever added. **No rate limiter**, justified: nothing attacker-suppliable
+  is verified, both siblings hash with none, five buckets stay five. Joins `FRIEND_IDENTITY_ENDPOINTS`
+  (401 anonymously AND with an admin token), never `ADMIN_ENDPOINTS`. ⚠ **EMPIRICAL FINDING that
+  contradicted the brief's premise:** nothing that leaves `password_hash` NULL ever writes a `username`
+  **via a friend-reachable path**, so a password-only route would have refused 100% of reachable callers
+  — the optional-`username` branch is the ONLY one that works. Also measured: a pre-flip session does NOT
+  survive, because `PUT /api/admin/settings` DELETEs every `friend_sessions` row on a mode change
+  (`admin.js:556`). The one modern-mode session such a friend can hold comes from `POST /friends/auth/google`.
+  ⚠⚠ **AND THE USERNAME HALF OF THAT FINDING WAS FALSE — caught in review, in SEVEN copies.**
+  `PUT /:id/admin-username` (`friends.js:1679`) writes `username` without touching `password_hash`, so an
+  admin CAN hand a password-less friend a username; it is the only such writer (every `UPDATE friends SET`
+  / `INSERT INTO friends` walked). The code was always right — `let username = friend.username; if
+  (username == null) {…}`, so a body `username` is **not read at all** when one exists, making
+  "never a rename" structural rather than checked — but the false sentence was the stated JUSTIFICATION
+  for that branch, in `CLAUDE.md` among others, and a reader taking it at face value would delete the
+  branch as dead code and reintroduce FUP-T20's portal-side rename **on a credential route**. All seven
+  corrected, three of them carrying an explicit "this is not dead code" line. The diff's own e2e was
+  already proving the sentence wrong (`giveUsername()` builds exactly that row). · Frontend: `Nastaviť
+  heslo` fold in the profile modal, gated on the strict `hasCredentials === false && authMode === 'modern'`
+  (never `!x` — GA-T6's rule), username input only while NULL, errors in `.banner.danger.slim`, emits
+  `friend-merged{hasCredentials:true}` so the change fold replaces it in place. ⚠ **The absence pin
+  DELETED as this row's explicit obligation** (`google-auth.spec.js`) and replaced with the positive path;
+  `portal-profile-modal.spec.js:265` needed **no** retarget (its stub publishes no `hasCredentials` at all,
+  and absent ≠ false) — one widening line added instead. Review: 1 round → **approve** (2 minors), every
+  security claim verified against the code rather than the report. Gate: `node --check` clean; orchestrator's
+  own runs **282 passed / 0 failed / 0 skipped** ×2 on fresh DBs with a rebuilt frontend. ⚠ **Optional
+  hardening taken** (reviewer's non-finding): `… WHERE id = ? AND password_hash IS NULL` + `changes === 0`
+  → the same 409, giving the first-time-only rule the dual-layer shape the username collision already had.
+  IA-T3 intact — the early return does FEWER writes, never more, and `invalidateLoginTokens` sits inside
+  the branch so a refused write never drops outstanding magic links. No HTTP test can reach that branch
+  under `instances: 1` (the pre-check always answers first); recorded at the route rather than faked, so
+  the missing test is not read as a missing guard. ⚠ **PRODUCT-OWNER DECISION NEEDED:** GA-T7's unlink
+  warning ("…kým vám správca nenastaví nové heslo") is gated on exactly the friends who now also see
+  "Nastaviť heslo" **in the same open modal** — a same-screen contradiction, not merely stale copy.
+  Neither half is false and the sentence is signed product-owner text pinned in three e2e places, so it
+  ships UNCHANGED; the likely fix is to point the warning at the fold instead of the admin. ⚠ **Recorded,
+  not defects:** legacy mode still has no answer (the mode guard is precisely why), and transition mode's
+  setup dialog is dismissible, so a friend who closes it has no way back that session.
+
+- 2026-09-19 · FUP-T19 · (this commit) · no PR (project convention) · **`POST /api/admin/logout` was
+  unauthenticated and destroyed the ONE app-wide admin session** — any anonymous caller could end it,
+  and a loop of them could keep the admin permanently logged out, indistinguishable from a bug. No
+  data breach, no privilege escalation: an unauthenticated DENIAL of the admin surface. ⚠ **SHAPE
+  DECIDED BEFORE CODING, and `requireAdmin` was the WRONG answer** — the row said to check the callers
+  first, and the callers say no: FOUR admin views (`AdminDashboard.vue:173`, `AdminFriends.vue:279`,
+  `AdminCatalog.vue:812`, `AdminBakeryProducts.vue:193` — the row named one) carry the same
+  `await api.logout(); localStorage.removeItem('adminToken'); router.push(...)` with **no try/catch**,
+  while `api.js`'s `request()` THROWS on a non-ok response. A 401 would abort before the local clear
+  and before the redirect, stranding an admin on a dead dashboard with no way out — and stale tokens
+  are ROUTINE since module 10, whose `POST /google-login` mints and rotates the same single row. Built
+  instead: the route stays PUBLIC and answers a byte-identical idempotent `{success:true}` 200, and
+  deletes only for the holder of the CURRENT token, via the SAME exported `isValidAdminToken` that
+  `requireAdmin` calls (expiry check included) so the two cannot drift — `middleware/admin-auth.js` is
+  byte-untouched. Binds NO body and no query, so no unbindable-body surface. **Frontend-free**:
+  `request()` already attaches `X-Admin-Token` on every call. ⚠ Bonus, found in review: this also
+  kills a CSRF logout — a cross-origin simple POST cannot set that header. ⚠ **DELIBERATELY NOT in
+  `ADMIN_ENDPOINTS`** (that sweep asserts 401-without-a-token, the OPPOSITE of this contract); the WHY
+  is recorded at the route and in the list, with the mount's seven unguarded routes now enumerated
+  EXHAUSTIVELY with line numbers (`POST /setup` is public but self-limiting — it 400s once
+  `admin_password` exists). ⚠ **NO RATE LIMITER, and that is a decision:** `authLimiter` shares a
+  per-IP bucket with `/login` and `/google-login`, so anonymous logout floods would lock the admin out
+  of LOGGING IN — the office-NAT failure the five-bucket split exists to prevent, and the exact
+  inversion of the denial this row fixes; a sixth bucket buys nothing since the handler is now a pure
+  no-op without the token and answers byte-identically either way (no oracle). Recorded as
+  "do not fix this in". · **Item 2, same file:** a corrupt `settings.admin_google_subs` read as EMPTY
+  (right, fails closed) but the next write `INSERT OR REPLACE`d straight over it, destroying entries a
+  human could have salvaged. The raw value is now parked byte-for-byte under `admin_google_subs_corrupt`
+  BEFORE any overwrite (key-value table, no migration), with a **bounded** 200-char excerpt logged at
+  the read and both write sites. Two judgment calls, both review-confirmed: parking fires only when the
+  read discards the value WHOLE (parse throws, or not an array) — a well-formed array whose members the
+  filter drops is NOT parked, because the read showed the admin everything it kept; and an existing
+  parked copy is **never clobbered**, since a second corruption means nobody has looked at the first
+  one yet. `DELETE /google-allowlist` writes unconditionally and therefore parks too. The key is read
+  by no route (all 28 `FROM settings` reads in `backend/src` are key-scoped) so it cannot leak; the
+  `/"sub"/` strip pins are untouched. Review: 1 round → **approve** (1 minor: a miscounted route
+  enumeration, fixed). Gate: `node --check` clean; orchestrator's own runs **200 passed / 0 failed /
+  0 skipped** ×2 on fresh DBs (`api-security` + `google-auth` + `admin-auth`). e2e purely ADDITIVE
+  (+216/−1, nothing deleted); the destructive logout test runs on a THROWAWAY backend
+  (`startBackend`, own port + own DB) so the shared `admin_token` is never left deleted — the
+  one-admin-token trap handled structurally, not by cleanup. ⚠ **Recorded, NOT acted on:** public,
+  unrated `POST /api/admin/verify` is a pre-existing token oracle (`{valid:true}` vs 401) — the
+  companion to a future "bound the admin-token check surface" row; and a stale-token logout now leaves
+  a dead `admin_token` row until expiry or the next login (harmless, the expiry check rejects it).
+
+- 2026-09-19 · FUP-T21 · (this commit) · no PR (project convention) · **The last live copy of the
+  "login name" lie, and the guard sentence that let it survive.** FUP-T20 fixed the shipped UI; this
+  row retires every artefact that still described the retired one. ONE line of executable change:
+  `PATCH /friends/:id/profile`'s blank/non-string `name` 400 now answers `'Meno a priezvisko je
+  povinné'`, byte-identical to `POST /` and admin `PATCH /:id`. Everything else is comments, specs and
+  e2e pins. ⚠ **The rule is now anchored to the STRING, not to a route list** — `CLAUDE.md`: "ONE
+  string with THREE homes in `routes/friends.js` … grep the string, re-word every hit or none", with a
+  cross-reference comment at all three sites (the admin `PATCH /:id` site had none). The first draft
+  named TWO of the three: the same under-enumeration failure this row exists to close, caught in
+  review. ⚠ **The one-file grep guard was widened at its ORIGIN.** `07 §UC-IA-007` is where the rule
+  is stated and where three code comments point (`FriendPortalSession.vue:1758`,
+  `portal-profile-modal.spec.js:388`/`:414`); it was NOT in the row's original scope and still carried
+  four live claims, incl. two "⚠ Do NOT touch `FriendPortalSession.vue`" bullets — the precise
+  narrowness the bug is attributed to, intact at its source. Now struck-with-pointer; the two-file
+  form is byte-identical across all eight copies (`CLAUDE.md`, `07`, `11` ×3, `18`, `e2e/README.md`,
+  `admin-friends-labels.spec.js`). ⚠ **Also swept and missed by a literal-message grep:**
+  `e2e/README.md`'s "the identical label in `FriendPortalSession.vue` is correct there" — the exact
+  sentence `admin-friends-labels.spec.js:26` records as having been WRONG. Sweep on the CONCEPT, not
+  the string. e2e: both pins retargeted (case (a), cited) — `friends-consolidation.spec.js` renamed to
+  pin the real invariant and STRENGTHENED (`toContain`→`toBe`, row read-back, non-vacuity gate, since
+  `makeFriendWithSession` returns no `name` and a naive read-back would pass vacuously);
+  `nonstring-body-shape.spec.js` constant + one assertion label; `portal-profile-modal.spec.js`
+  comment-only, tests byte-unchanged. ⚠ **A comment claiming "a test protects this" is load-bearing —
+  run the mutation before writing it.** Round 2 caught the implementer's own comment asserting the 400
+  SHAPE was pinned by `nonstring-body-shape.spec.js`; it is not (that file pins status + `error`
+  string; `expectNoInternals()` only greps for stack traces), proven by adding `field:'name'` and
+  reding nothing. No marker was added — orchestrator decision, message text only — but the stated
+  reason was false and is now true. Review: 2 rounds → **approve** (2 major + 2 minor, all real, all
+  closed). Gate: `node --check` green; orchestrator's own runs 333 passed / 12 skipped / 0 failed
+  ×3 on fresh DBs (`friends-consolidation` + `nonstring-body-shape` + `portal-profile-modal`).
+  **No UI change** (the branch is unreachable behind the client guard + disabled save) — no new e2e
+  flow, the existing pins are the coverage. ⚠ **Recorded, NOT folded in:** `03 §UC-FL-009`'s field
+  table predates FC-T4 (Mobil/Email) and GA-T7 (Google section) and its payload line still says
+  `{name, packeta_address}` — annotated `⚠ OPEN` in place, those rows' scope. ⚠ Classification call,
+  deliberate: `10-google-auth.md:688`'s "`portal-profile-modal.spec.js` passes UNCHANGED" is GA-T7's
+  own per-row gate (true then, true now), not an untouchability claim — left alone. `PROGRESS.md:276`
+  (FC-T4 row) likewise a historical record.
 
 - 2026-08-27 · GR-T8 · (this commit) · no PR (project convention) · **MODULE 14 IS COMPLETE.** A guest
   who gave an e-mail now gets a confirmation carrying the items, the total, the payment reference and

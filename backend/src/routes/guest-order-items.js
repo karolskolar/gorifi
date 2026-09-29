@@ -2,6 +2,7 @@ import { Router } from 'express';
 import db from '../db/schema.js';
 import { unpackOrder, hostOwnOrder } from '../helpers/packing.js';
 import { guestOrderStatus } from '../helpers/guest-orders.js';
+import { deliveryOf } from '../helpers/delivery.js';
 
 const router = Router();
 
@@ -43,7 +44,8 @@ router.patch('/:id/packed', (req, res) => {
 
   // The sub-order carries no host column — the link does (GSO-T5 rule).
   const subOrder = db.prepare(`
-    SELECT gord.id, gord.status, glink.host_friend_id, glink.cycle_id
+    SELECT gord.id, gord.link_id, gord.status, gord.handed_over_at, gord.packeta_address,
+           glink.host_friend_id, glink.cycle_id
     FROM guest_orders gord
     JOIN guest_order_links glink ON glink.id = gord.link_id
     WHERE gord.id = ?
@@ -60,15 +62,66 @@ router.patch('/:id/packed', (req, res) => {
   const newPacked = item.packed ? 0 : 1;
   const ownOrder = hostOwnOrder(subOrder.host_friend_id, subOrder.cycle_id);
 
-  const toggle = db.transaction(() => {
-    db.prepare('UPDATE guest_order_items SET packed = ? WHERE id = ?').run(newPacked, item.id);
+  // ⚠ GP-T6 (20 §UC-GP-010): WHOSE BAG IS THIS ITEM IN? A via_host colleague's bag
+  // travels inside the host's, so un-checking it re-opens the host's bag (the
+  // auto-unpack below) and is refused once the host's bag has left. A PACKETA guest is
+  // their OWN party — the admin posts that parcel, the host never holds it — so the
+  // host's order is none of this item's business in EITHER direction: no auto-unpack
+  // (it would post a ledger reversal of the host's total for a bag that is not theirs),
+  // and no `handed_over` refusal on the host's stamp (only the guest's own stamp locks
+  // their checklist). `hostBag` is the one variable both halves read, so they cannot
+  // disagree. Asked of `helpers/delivery.js` — the one home of „is this a Packeta bag"
+  // — never re-stated here; the twin predicate is `packingItemStats()`'s
+  // `packeta_address IS NULL`, and the two must move together (a host that may pack
+  // without the bag must not be un-packed by it either).
+  const isPacketaBag = deliveryOf(subOrder).type === 'packeta';
+  const hostBag = isPacketaBag ? null : ownOrder;
 
-    if (newPacked === 0 && ownOrder && ownOrder.packed) {
-      unpackOrder(ownOrder);
+  // ⚠ STAGE ORDER (DP-T4, 16 §UC-DP-007), and here it has TWO predicates because a
+  // guest item can un-pack two different bags:
+  //   • the sub-order's OWN `handed_over_at` — this colleague's bag has left (which
+  //     is also the only stamp a host with NO own order ever has), and
+  //   • the HOST's own order being handed over — because the un-pack below reaches
+  //     `unpackOrder(ownOrder)` and would take the host's delivered bag back apart,
+  //     ledger reversal and all, through a checkbox on somebody else's row.
+  // Checking (0 → 1) is unaffected in both cases: a colleague who orders after the
+  // host's bag went out still gets packed normally.
+  if (newPacked === 0 && (subOrder.handed_over_at || (hostBag && hostBag.handed_over_at))) {
+    return res.status(409).json({
+      error: 'Balíček je už odovzdaný — najprv zrušte odovzdanie.',
+      reason: 'handed_over',
+    });
+  }
+
+  const toggle = db.transaction(() => {
+    // ⚠ Both halves of the gate REPEATED AS THIS UPDATE'S OWN PREDICATE, so the
+    // check and the write are one statement. The host clause binds `null` when the
+    // host has no own order OR the bag is a Packeta parcel (`hostBag` is null — GP-T6)
+    // — `SELECT 1 FROM orders WHERE id = NULL` matches nothing, so `NOT EXISTS` is
+    // true and the absence of a host bag is not a refusal.
+    const written = db.prepare(`
+      UPDATE guest_order_items SET packed = ?
+       WHERE id = ?
+         AND (? = 1 OR (
+           NOT EXISTS (SELECT 1 FROM guest_orders WHERE id = ? AND handed_over_at IS NOT NULL)
+           AND NOT EXISTS (SELECT 1 FROM orders WHERE id = ? AND handed_over_at IS NOT NULL)
+         ))
+    `).run(newPacked, item.id, newPacked, item.guest_order_id, hostBag ? hostBag.id : null);
+    if (written.changes === 0) return { conflict: 'handed_over' };
+
+    if (newPacked === 0 && hostBag && hostBag.packed) {
+      unpackOrder(hostBag);
     }
+    return { ok: true };
   });
 
-  toggle();
+  const toggled = toggle();
+  if (toggled.conflict === 'handed_over') {
+    return res.status(409).json({
+      error: 'Balíček je už odovzdaný — najprv zrušte odovzdanie.',
+      reason: 'handed_over',
+    });
+  }
 
   const updated = db.prepare('SELECT * FROM guest_order_items WHERE id = ?').get(item.id);
   const order = ownOrder
@@ -78,7 +131,9 @@ router.patch('/:id/packed', (req, res) => {
   res.json({
     ...updated,
     // Same field name the friend route answers with, so the Distribution view can
-    // patch the host card's "Zabaliť" state from either kind of tap.
+    // patch the host card's "Zabaliť" state from either kind of tap. ⚠ For a
+    // PACKETA item (GP-T6) this still reports the host's own order truthfully — it
+    // just cannot have moved — and the board's guest party does not read it.
     order_packed: order ? order.packed : 0,
     host_order_id: ownOrder ? ownOrder.id : null,
   });

@@ -566,6 +566,12 @@ anonymous ⇒ 401, wrong friend ⇒ 403.
 - **krajín** — `countries` (1 krajina / 2–4 krajiny / 5+ krajín).
 - **kg spolu** — `total_kg` formatted by the house kg rule: up to 2 decimals, trailing
   zeros stripped, dot decimal (the RD-FO-2 `Math.round` rule — never `toFixed(2)`).
+  ⚠ The rule has ONE home since FUP-T24: `frontend/src/lib/kg.js kgLabel()`. Do NOT
+  hand-write it here — that is the copy #5 this row existed to prevent. ⚠⚠ BUT
+  `kgLabel` takes **grams** and `total_kg` is in **KILOGRAMS** (`helpers/analytics.js
+  variantToKg()` returns `0.250` for a 250 g bag), so `kgLabel(total_kg)` prints a
+  number 1000× too small. Convert at the call site (`kgLabel(total_kg * 1000)`) or add
+  a second named export beside it; do not change `kgLabel`'s signature.
 - **séria** — `streak` (1 cyklus po sebe / 2–4 cykly po sebe / 5+ cyklov po sebe);
   hidden when 0. This is a STAT, not a badge — the Verný-streak badge is module 14.
 - `OPEN:` header labels + composition need product sign-off (proposed above).

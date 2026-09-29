@@ -32,6 +32,7 @@ import onboardingRouter from './routes/onboarding.js';
 import guestLinksRouter from './routes/guest-links.js';
 import guestOrdersRouter from './routes/guest-orders.js';
 import guestRouter from './routes/guest.js';
+import guestWaitlistRouter from './routes/guest-waitlist.js';
 import magicLinkRouter from './routes/magic-link.js';
 import coffeeProductsRouter from './routes/coffee-products.js';
 import imagesRouter from './routes/images.js';
@@ -114,6 +115,10 @@ app.use('/api/order-items', requireAdmin, orderItemsRouter);
 // the MIXED-auth /api/guest-orders router next door — nothing a host or a guest
 // does touches this flag.
 app.use('/api/guest-order-items', requireAdmin, guestOrderItemsRouter);
+// 19 §UC-GL-009: the admin's read + delete of the guest waitlist. Single-audience
+// (admin only), so the WHOLE mount is gated — the public signup is
+// `POST /api/guest/:token/waitlist` on the bare guest router above, never here.
+app.use('/api/guest-waitlist', requireAdmin, guestWaitlistRouter);
 
 // Module 12 (PC-T2): the coffee-product catalog — WHOLE-MOUNT admin, like
 // bakery-products. No public/friend route may ever live on this router

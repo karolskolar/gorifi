@@ -39,7 +39,9 @@ const props = defineProps({
   // Lines that are NOT products and belong to no purpose — today only the Packeta
   // delivery fee. They render after every group, with no header and no
   // quantity/size, but they DO keep the amount column so their figure stays aligned
-  // with the lines above.
+  // with the lines above. An extra MAY carry `testid` (20 §UC-GP-004: g-confirm's
+  // `confirm-delivery-fee`); without one the `<li>` has no testid attribute at all,
+  // so every shipped caller renders byte-identically.
   extras: { type: Array, default: () => [] },
   // Preferred group order, e.g. FriendOrder's `availablePurposes`, so the cart lists
   // its groups in the same order as the category strip above it. Purposes missing
@@ -88,20 +90,20 @@ function fmt(amount) {
 <template>
   <ul class="lines">
     <template v-for="group in groups" :key="group.purpose">
-      <li class="ln-group"><span class="badge acc-o">{{ group.purpose }}</span></li>
+      <li class="ln-group"><span class="badge acc-o" data-user-copy>{{ group.purpose }}</span></li>
       <li
         v-for="item in group.items"
         :key="item.key"
         class="ln"
         :data-testid="lineTestid"
       >
-        <span class="ln-name" :title="item.name">{{ item.name }}</span>
+        <span class="ln-name" :title="item.name" data-user-copy>{{ item.name }}</span>
         <span class="mono ln-qty">{{ item.quantity }}×</span>
         <span class="mono ln-size">{{ item.size }}</span>
         <span class="mono ln-amt">{{ fmt(item.amount) }}</span>
       </li>
     </template>
-    <li v-for="extra in extras" :key="extra.key" class="ln">
+    <li v-for="extra in extras" :key="extra.key" class="ln" :data-testid="extra.testid || null">
       <span class="ln-name">{{ extra.name }}</span>
       <span class="mono ln-amt">{{ fmt(extra.amount) }}</span>
     </li>

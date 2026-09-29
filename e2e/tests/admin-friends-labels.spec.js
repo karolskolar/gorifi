@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { collectAppCopy, collectAllCopy, collectMarkedData } from '../helpers/copy-sweep.js'
 
 // IA-T5 / 07 §UC-IA-007 — AdminFriends.vue: the relabel + the dead `?create=1` receiver.
 //
@@ -59,20 +60,27 @@ async function loginAsAdmin(page) {
   await expect(page).toHaveURL(/\/admin\/dashboard/)
 }
 
-// Every rendered string a human can read: visible text plus the attributes that render
-// as copy (placeholder, title, aria-label, alt, value on buttons).
-function collectCopy() {
-  return async () => {
-    const out = [document.body.innerText]
-    for (const el of document.querySelectorAll('*')) {
-      for (const attr of ['placeholder', 'title', 'aria-label', 'alt']) {
-        const v = el.getAttribute(attr)
-        if (v) out.push(v)
-      }
-    }
-    return out.join('\n')
-  }
-}
+// ⚠⚠ THE SWEEP IS THE APP'S OWN COPY, NOT THE DATA IT RENDERS (FUP-T22). The
+// collector moved to `e2e/helpers/copy-sweep.js` — ONE home, shared with
+// `portal-profile-modal.spec.js`, which used to carry a byte copy of it. It still
+// reads text AND the copy attributes; what it now drops is every `[data-user-copy]`
+// subtree, i.e. the values a PERSON typed.
+//
+// That is not a theoretical distinction. `e2e/fixtures/prod-template.sqlite` carries
+// an ACTIVE FRIEND WHOSE NAME IS `Prihlasovacie.meno` (GR-T9's production-shaped
+// template, names KEPT by PO decision) — somebody once typed the mislabelled field's
+// own label into it, which is this bug's fossil. Rendering that row turned the sweep
+// below red on DATA and no code change could make it green (PL-T4's closeout
+// measured 1841 passed / 1 failed on exactly this line).
+//
+// ⚠ The exclusion is NOT "subtract the known names as strings": a friend named
+// exactly like a real mislabel would then mask a genuine defect. It is by DOM
+// subtree, and the view marks only the interpolations — `Bez e-mailu`, `Neúplné`,
+// `dočasné heslo` and every `title=` beside them sit in the same cells and are still
+// swept. ⚠ A new data field rendered WITHOUT the marker makes this file go red on
+// some unlucky name; the repair is to mark the data render, never to narrow the
+// regex. The third test below machine-checks both directions of that, so the guard
+// is never only ever seen passing.
 
 test.describe('AdminFriends — the name field no longer claims to be a login', () => {
   test.beforeEach(async ({ page }) => {
@@ -118,18 +126,118 @@ test.describe('AdminFriends — the name field no longer claims to be a login', 
 
   test('no rendered copy on the page or in the modal claims the name is a login', async ({ page }) => {
     // Closed state.
-    const listCopy = await page.evaluate(collectCopy())
-    expect(listCopy, 'friends list still claims a login').not.toMatch(/prihlasovac/i)
+    const listCopy = await page.evaluate(collectAppCopy())
+    expect(
+      listCopy,
+      'friends list still claims a login — OR a person-supplied value on this page is '
+        + 'rendered without the `data-user-copy` marker `e2e/helpers/copy-sweep.js` '
+        + 'excludes by (a friend NAMED like the mislabel); check which before touching copy',
+    ).not.toMatch(/prihlasovac/i)
 
     // Open state — the modal is where the claim lived.
     await page.getByRole('button', { name: /Pridať priateľa|Pridať prvého priateľa/ }).first().click()
     await expect(page.getByRole('dialog').getByText('Nový priateľ')).toBeVisible()
-    const modalCopy = await page.evaluate(collectCopy())
-    expect(modalCopy, 'new-friend modal still claims a login').not.toMatch(/prihlasovac/i)
+    const modalCopy = await page.evaluate(collectAppCopy())
+    expect(
+      modalCopy,
+      'new-friend modal still claims a login — OR a person-supplied value behind it is '
+        + 'rendered without the `data-user-copy` marker `e2e/helpers/copy-sweep.js` '
+        + 'excludes by; check which before touching copy',
+    ).not.toMatch(/prihlasovac/i)
 
     // Non-vacuity: the sweep really does see this page's copy, including attributes.
     expect(modalCopy).toContain('Nový priateľ')
     expect(modalCopy).toMatch(/interná poznámka/i)
+  })
+
+  // ⚠ FUP-T22 — THE GUARD, MUTATION-PROVEN IN BOTH DIRECTIONS, EVERY RUN.
+  // A guard that has only ever been seen passing is not evidence, and the test above
+  // now skips part of the page, so "it is green" is exactly the claim that needs
+  // checking. Injecting into the live DOM (rather than reverting the view) tests the
+  // COLLECTOR, which is what the exclusion changed; the view half stays covered by
+  // the source grep in `portal-profile-modal.spec.js`.
+  test('the sweep still trips on a mislabel — and not on a friend NAMED like one', async ({ page }) => {
+    // ⚠ The probes below append to `thead tr`, and the list renders an empty-state
+    // scaffold with NO table when there are no friends (the second test's state) — an
+    // unguarded probe would throw an opaque TypeError instead of saying why.
+    await expect(page.locator('thead tr').first()).toBeVisible()
+    await expect(page.locator('tbody tr').first()).toBeVisible()
+
+    // ── Direction 1: app copy that lies is caught, in TEXT …
+    await page.evaluate(() => {
+      const th = document.createElement('th')
+      th.id = 'fup-t22-probe'
+      th.textContent = 'Prihlasovacie meno'
+      document.querySelector('thead tr').appendChild(th)
+    })
+    expect(
+      await page.evaluate(collectAppCopy()),
+      'an injected mislabel in the header did NOT trip the sweep — the guard is hollow',
+    ).toMatch(/prihlasovac/i)
+    await page.evaluate(() => document.getElementById('fup-t22-probe').remove())
+
+    // … and in an ATTRIBUTE (the half `innerText` cannot see; a partial revert that
+    // fixes the header and leaves the placeholder behind must still fail).
+    await page.evaluate(() => {
+      const input = document.createElement('input')
+      input.id = 'fup-t22-probe'
+      input.setAttribute('placeholder', 'Zobrazuje sa v prihlasovacom dropdowne')
+      document.querySelector('thead tr').appendChild(input)
+    })
+    expect(
+      await page.evaluate(collectAppCopy()),
+      'an injected mislabel in a placeholder did NOT trip the sweep',
+    ).toMatch(/prihlasovac/i)
+    await page.evaluate(() => document.getElementById('fup-t22-probe').remove())
+
+    // Back to clean, so the next assertions mean something.
+    expect(await page.evaluate(collectAppCopy())).not.toMatch(/prihlasovac/i)
+
+    // ── Direction 2: the SAME string as person-supplied DATA is not a claim about
+    // the field, and must not trip it. This is friend id 72 of the shipped template,
+    // reproduced on whatever row this target happens to have.
+    const marked = await page.evaluate(collectMarkedData())
+    expect(marked.length, 'nothing on this page is marked `data-user-copy`').toBeGreaterThan(0)
+
+    await page.evaluate(() => {
+      const el = document.querySelector('tbody [data-user-copy]')
+      el.dataset.fupT22Saved = el.textContent
+      el.textContent = 'Prihlasovacie meno'
+    })
+    expect(
+      await page.evaluate(collectAppCopy()),
+      'a friend NAMED like the mislabel tripped the copy sweep — the false positive is back',
+    ).not.toMatch(/prihlasovac/i)
+    // Non-vacuity for the exclusion itself: the string really IS rendered on the page.
+    expect(await page.evaluate(collectAllCopy())).toMatch(/prihlasovac/i)
+    await page.evaluate(() => {
+      const el = document.querySelector('tbody [data-user-copy]')
+      el.textContent = el.dataset.fupT22Saved
+      delete el.dataset.fupT22Saved
+    })
+
+    // ── The exclusion is NARROW: it drops the data and nothing else. Real values
+    // from this target (not a hardcoded fixture row) leave the app-copy sweep while
+    // the app's own copy in the SAME cells stays in it.
+    const sample = marked[0]
+    const appCopy = await page.evaluate(collectAppCopy())
+    const allCopy = await page.evaluate(collectAllCopy())
+    expect(allCopy, `marked data is not on the page: ${JSON.stringify(sample)}`).toContain(sample)
+    expect(appCopy, `marked data leaked into the app-copy sweep: ${JSON.stringify(sample)}`).not.toContain(sample)
+    expect(appCopy, 'the exclusion swallowed the app copy beside the data').toContain('Prihlásenie')
+    expect(appCopy).toContain('Meno a priezvisko')
+
+    // ⚠ And against the SHIPPED template this is not a thought experiment: friend
+    // id 72 is named `Prihlasovacie.meno`. Whenever such a row is actually on the
+    // page, pin both halves on the REAL data — the unfiltered sweep sees it (so the
+    // exclusion above is being proven against something) and the app-copy sweep does
+    // not. Conditional on purpose: the file runs against staging too.
+    const trapped = marked.filter((t) => /prihlasovac/i.test(t))
+    if (trapped.length) {
+      expect(allCopy, `unfiltered sweep missed rendered data: ${JSON.stringify(trapped)}`).toMatch(/prihlasovac/i)
+      expect(appCopy, `a friend's NAME trips the copy sweep: ${JSON.stringify(trapped)}`).not.toMatch(/prihlasovac/i)
+      console.log(`[FUP-T22] target renders ${trapped.length} person-supplied value(s) matching /prihlasovac/i — excluded as data`)
+    }
   })
 })
 

@@ -2,13 +2,61 @@ import { Router } from 'express';
 import db from '../db/schema.js';
 import { variantToKg } from '../helpers/analytics.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
-import { cycleSubOrdersByHost, guestOrderStatus } from '../helpers/guest-orders.js';
+import { cycleSubOrdersByHost, guestOrderStatus, loadSubOrder } from '../helpers/guest-orders.js';
 import { guestCycleItems } from '../helpers/guest-aggregation.js';
 import { bindValue } from '../helpers/bind-value.js';
 import { roundMoney } from '../helpers/pricing.js';
 import { readPickup } from '../helpers/pickup.js';
+import { packingItemStats } from '../helpers/packing.js';
+import { deliveryOf, deliveryGroupOrder, TARGET_LABELS } from '../helpers/delivery.js';
+import {
+  orderStage,
+  guestOrderStage,
+  readHandOverBatch,
+  partyDelivery,
+  inheritingGuests,
+} from '../helpers/handover.js';
+import { enqueueForHandOver } from '../helpers/outbox.js';
+import { markCycleReady, CYCLE_STAGES, LOCKED_STAGE_DEFAULT } from '../helpers/cycle-stage.js';
+import { purgeWaitlistAfterTwoCompletions } from '../helpers/guest-waitlist.js';
 
 const router = Router();
+
+// ─── the two planning dates (CS-T1, 17 §UC-CS-001/002) ──────────────────────
+//
+// `opens_at` (planned opening of ordering) and `closes_at` (the ordering deadline)
+// are stored as ISO `YYYY-MM-DD` TEXT and validated HERE, at the only two routes
+// that write them, so the „o n týždňov" derivation downstream is never fed free
+// text. SQLite has no DATE affinity worth the name (resolved conflict 7), so the
+// column cannot help.
+//
+// ⚠ `expected_date` beside them is a DIFFERENT field and stays FREE TEXT and
+// untouched (PO decision 2026-09-19: `expected_date` = the DELIVERY expectation,
+// `closes_at` = the ordering deadline). They are published side by side; nothing
+// here reads, relabels or migrates `expected_date`.
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+// True only for a real calendar date in ISO form. The round-trip is what rejects
+// `2026-13-40` and `2026-02-30`: `new Date('2026-02-30T00:00:00Z')` does not throw,
+// it ROLLS OVER to 2026-03-02, so a format check alone would store a date that is
+// not the one the admin typed. UTC midnight on both sides, so no timezone can shift
+// the day out from under the comparison.
+function isIsoDate(value) {
+  if (typeof value !== 'string' || !ISO_DATE.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+// The shared refusal for both writers. `value` has already been through
+// `bindValue`, so `undefined` means "absent or unbindable ⇒ skip" (the shipped
+// FUP-T13 contract — the stored value survives) and `null`/`''` mean "clear".
+// Anything else must be a real date or the whole request is refused with nothing
+// written.
+function badDate(field, value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (isIsoDate(value)) return null;
+  return { error: 'Neplatný dátum', field };
+}
 
 // The admin's ordering surfaces below (`roastery_breakdown` here, the "Podľa
 // produktu" sheet in GET /:id/summary) count guest bags as well as friend ones
@@ -46,6 +94,90 @@ function matchesRoasteryFilter(roastery, roasteryFilter) {
   if (!roasteryFilter) return true;
   if (roasteryFilter === '_default') return roastery === null || roastery === undefined || roastery === '';
   return roastery === roasteryFilter;
+}
+
+// ─── the distribution payload's derived fields (DP-T2, 16 §UC-DP-003) ────────
+//
+// ⚠ EVERYTHING BELOW IS COMPUTED IN JAVASCRIPT OVER ROWS THE EXISTING QUERIES
+// ALREADY RETURN. That is the whole point: the guest half of a party's weight and
+// of the cycle's plan comes from the sub-orders `cycleSubOrdersByHost()` already
+// nested under their host, never from a second `LEFT JOIN` onto `orders`. A join
+// would multiply each friend row by that host's sub-order count — one host would
+// become three parties, `totals.count` and every plan card would inflate, and the
+// host's OWN grams would be counted once per colleague (CLAUDE.md §Money & data,
+// the GSO-T6/T8 trap, and the same rule the roastery breakdown above states at
+// length). Doing it here makes the multiplication impossible by construction.
+//
+// ⚠ The field is called `kg` and it carries GRAMS — §UC-DP-003's wording, and the
+// unit the client's kg display rule expects (`frontend/src/lib/kg.js kgLabel`,
+// the one home for it since FUP-T24 — do not re-state the expression). `variantToKg()`
+// (helpers/analytics.js) stays the one weight authority; the ×1000 is rounded per
+// LINE so the binary dust of 0.096 × 3 × 1000 never reaches the payload. A variant
+// the map does not know — a bakery `unit` line, an unknown string, or a prototype
+// key like `'constructor'`, which makes that lookup yield a FUNCTION and the
+// product NaN — scores 0 g, the `variantGrams()` fail-closed posture.
+function lineGrams(variant, quantity) {
+  const kg = variantToKg(variant, quantity);
+  return Number.isFinite(kg) ? Math.round(kg * 1000) : 0;
+}
+
+function itemsGrams(items) {
+  let grams = 0;
+  for (const item of Array.isArray(items) ? items : []) {
+    grams += lineGrams(item?.variant, item?.quantity);
+  }
+  return grams;
+}
+
+const LOC_KEY = /^loc([1-9][0-9]*)$/;
+
+/** `loc<id>` → the integer id, anything else → null. */
+function locIdOf(targetKey) {
+  const hit = LOC_KEY.exec(targetKey);
+  return hit ? Number(hit[1]) : null;
+}
+
+// ⚠ `guestStage()` and the friend half of `partyStage()` MOVED to
+// `helpers/handover.js` in DP-T3 (as `guestOrderStage()` / `orderStage()`), because
+// the hand-over routes answer the same `stage` in their mutation payloads. Two
+// copies is how the row the board patches in place stops agreeing with the row a
+// reload fetches. The synthetic-host branch below stays here: it is the board's own
+// derivation and has no mutation counterpart.
+
+/**
+ * The synthetic host's hand-over, DERIVED: they have no `orders` row to stamp, so
+ * their bag has left only when every LIVE sub-order in it has (the cancelled ones
+ * are already filtered out of `guest_orders[]`). Timestamps are SQLite
+ * `YYYY-MM-DD HH:MM:SS`, which sorts lexicographically, so no Date parsing.
+ */
+function derivedHandedOver(subOrders) {
+  if (!Array.isArray(subOrders) || subOrders.length === 0) return null;
+  let max = null;
+  for (const sub of subOrders) {
+    if (!sub.handed_over_at) return null;
+    if (max === null || String(sub.handed_over_at) > String(max)) max = sub.handed_over_at;
+  }
+  return max;
+}
+
+/**
+ * A party's stage. `handed` wins over `packed` (it implies it), and the two kinds of
+ * party read DIFFERENT sources on purpose: a friend with an own order reads
+ * `orders.packed` — the column the ledger moment writes (helpers/packing.js) — while
+ * a synthetic host has no such column and is measured by `packingItemStats()`, the
+ * SAME union `PATCH /orders/:id/packed` gates on. Re-deriving either here would be a
+ * second home for the pack rule.
+ */
+function partyStage(party, cycleId) {
+  if (party.handed_over_at) return 'handed';
+  if (party.has_own_order) return orderStage(party);
+  // GP-T6: a Packeta guest party is ONE sub-order — the shared guest stage rule, the
+  // one `PATCH /guest-orders/:id/handed-over` gates on (never the host's union).
+  if (party.kind === 'guest') return guestOrderStage(party);
+  const stats = packingItemStats({ orderId: null, friendId: party.id, cycleId });
+  const total = Number(stats?.total || 0);
+  const packedCount = Number(stats?.packed_count || 0);
+  return total > 0 && packedCount === total ? 'packed' : 'to_pack';
 }
 
 // Get all order cycles (admin)
@@ -150,7 +282,7 @@ router.get('/:id', requireAdmin, (req, res) => {
 
 // Get public cycle info (no auth required) - for friend ordering page
 router.get('/:id/public', (req, res) => {
-  const cycle = db.prepare('SELECT id, name, status, markup_ratio, expected_date, type, plan_note, parcel_enabled, parcel_fee FROM order_cycles WHERE id = ?').get(req.params.id);
+  const cycle = db.prepare('SELECT id, name, status, markup_ratio, expected_date, type, plan_note, parcel_enabled, parcel_fee, opens_at, closes_at, stage FROM order_cycles WHERE id = ?').get(req.params.id);
   if (!cycle) {
     return res.status(404).json({ error: 'Cyklus nebol nájdený' });
   }
@@ -213,9 +345,27 @@ router.post('/', requireAdmin, (req, res) => {
   const expected_date = bindValue(req.body.expected_date);
   const type = bindValue(req.body.type);
   const plan_note = bindValue(req.body.plan_note);
+  // CS-T1 (17 §UC-CS-002): the two planning dates are settable at creation too.
+  // ⚠ `stage` in a CREATE body is IGNORED, deliberately and silently: a new cycle is
+  // `open` or `planned`, and stage is meaningless on both. The only ways in are the
+  // lock transition (which writes `ordered`) and the admin's PATCH on a locked cycle.
+  const opens_at = bindValue(req.body.opens_at);
+  const closes_at = bindValue(req.body.closes_at);
   const { bakery_product_ids, coffee_product_ids, status } = req.body;
   if (!name) {
     return res.status(400).json({ error: 'Nazov je povinny' });
+  }
+
+  // Validation BEFORE any write — a refusal creates no cycle at all.
+  const badOpens = badDate('opens_at', opens_at);
+  if (badOpens) return res.status(400).json(badOpens);
+  const badCloses = badDate('closes_at', closes_at);
+  if (badCloses) return res.status(400).json(badCloses);
+  if (opens_at && closes_at && closes_at < opens_at) {
+    return res.status(400).json({
+      error: 'Uzávierka nemôže byť pred otvorením',
+      reason: 'dates_order',
+    });
   }
 
   const cycleType = type || 'coffee';
@@ -225,7 +375,7 @@ router.post('/', requireAdmin, (req, res) => {
   const friendsCount = db.prepare('SELECT COUNT(*) as count FROM friends WHERE active = 1').get();
   const totalFriends = friendsCount.count;
 
-  const result = db.prepare('INSERT INTO order_cycles (name, status, total_friends, expected_date, type, plan_note) VALUES (?, ?, ?, ?, ?, ?)').run(name, cycleStatus, totalFriends, expected_date || null, cycleType, plan_note || null);
+  const result = db.prepare('INSERT INTO order_cycles (name, status, total_friends, expected_date, type, plan_note, opens_at, closes_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(name, cycleStatus, totalFriends, expected_date || null, cycleType, plan_note || null, opens_at || null, closes_at || null);
   const cycleId = result.lastInsertRowid;
 
   // For bakery cycles, snapshot selected bakery products into the products table
@@ -313,7 +463,8 @@ router.post('/', requireAdmin, (req, res) => {
   res.status(201).json(cycle);
 });
 
-// Update cycle (lock/unlock/complete/password/markup_ratio/expected_date) (admin)
+// Update cycle (lock/unlock/complete/password/markup_ratio/expected_date/opens_at/
+// closes_at/stage) (admin)
 router.patch('/:id', requireAdmin, (req, res) => {
   // FUP-T13 — same binder hazard as POST, plus the half a status check cannot see:
   // an UPDATE that coerced an unbindable value to NULL would answer 200 while WIPING
@@ -327,7 +478,9 @@ router.patch('/:id', requireAdmin, (req, res) => {
   const expected_date = bindValue(req.body.expected_date);
   const plan_note = bindValue(req.body.plan_note);
   const parcel_fee = bindValue(req.body.parcel_fee);
-  const { status, parcel_enabled } = req.body;
+  const opens_at = bindValue(req.body.opens_at);
+  const closes_at = bindValue(req.body.closes_at);
+  const { status, parcel_enabled, stage } = req.body;
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(req.params.id);
 
   if (!cycle) {
@@ -338,12 +491,102 @@ router.patch('/:id', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'Neplatny status' });
   }
 
+  // ─── CS-T1 (17 §UC-CS-002): dates on any status, stage while locked ────────
+  //
+  // ⚠ EVERY CHECK BELOW RUNS BEFORE THE UPDATE IS BUILT. A 400 or a 409 must leave
+  // the row BYTE-IDENTICAL — the refusal tests read it back — so nothing may be
+  // written before all of them have passed.
+  const badOpens = badDate('opens_at', opens_at);
+  if (badOpens) return res.status(400).json(badOpens);
+  const badCloses = badDate('closes_at', closes_at);
+  if (badCloses) return res.status(400).json(badCloses);
+
+  // The ORDER check reads the row AS IT WOULD BE after this body is applied, not
+  // the body alone: editing only the deadline of a cycle that already has an
+  // opening must still be refused when it lands before it. `undefined` = untouched
+  // ⇒ the stored value; `null`/`''` = cleared ⇒ nothing to compare against.
+  const nextOpens = opens_at === undefined ? cycle.opens_at : (opens_at || null);
+  const nextCloses = closes_at === undefined ? cycle.closes_at : (closes_at || null);
+  if (nextOpens && nextCloses && nextCloses < nextOpens) {
+    return res.status(400).json({
+      error: 'Uzávierka nemôže byť pred otvorením',
+      reason: 'dates_order',
+    });
+  }
+
+  // ⚠ `stage` is NOT read through `bindValue`: that helper answers "can SQLite bind
+  // this?", and the question here is the stricter "is this one of the three enum
+  // values?". A non-string shape (`{}`, `true`, `[1]`, `null`) fails the
+  // `includes()` and lands on the SAME 400 as `'packed'` — it must never reach the
+  // CHECK constraint, because a `SQLITE_CONSTRAINT_CHECK` throw is a 500.
+  const stageProvided = stage !== undefined;
+  if (stageProvided && !(typeof stage === 'string' && CYCLE_STAGES.includes(stage))) {
+    return res.status(400).json({ error: 'Neplatná fáza' });
+  }
+  // The EFFECTIVE status — this body's, else the stored one. Checked BEFORE the
+  // unlock coupling below, so `{ status: 'open', stage: 'arrived' }` on a locked
+  // cycle is this 409 and writes nothing at all (neither the status nor the stage).
+  const effectiveStatus = status || cycle.status;
+  if (stageProvided && effectiveStatus !== 'locked') {
+    return res.status(409).json({
+      error: 'Fázu možno meniť len pri uzamknutom cykle',
+      reason: 'not_locked',
+    });
+  }
+
   const updates = [];
   const values = [];
 
   if (status) {
     updates.push('status = ?');
     values.push(status);
+  }
+
+  // The status↔stage coupling, so the admin's shipped Uzamknúť / Odomknúť buttons
+  // need no client change. All three branches write `stage` in the SAME UPDATE as
+  // the status.
+  //
+  // ⚠ `completed` and `planned` leave `stage` ALONE on purpose. On a completed
+  // cycle it is the historical record of where the coffee ended, and the friend-
+  // facing step index derives from `status` FIRST (§UC-CS-005), so a stale value can
+  // never render as current.
+  if (stageProvided) {
+    // Any of the three, in any order, while locked — `ready → arrived` is a legal
+    // admin correction. The API is reversible; the UI offers forward buttons only
+    // (PO O3).
+    updates.push('stage = ?');
+    values.push(stage);
+  } else if (status === 'locked' && cycle.status === 'open') {
+    // ⚠ FUP-T26 (2026-09-20): `=== 'open'`, NOT the shipped `!== 'locked'`.
+    // §UC-CS-002's table scopes this rule in its own parenthetical — „`status:
+    // 'locked'` **(transition INTO locked from `open`)** ⇒ `stage = body.stage ??
+    // 'ordered'`" — and its sibling row covers `locked → locked`. NOTHING in the
+    // table authorises a stage write when the cycle is `completed` or `planned`,
+    // and `!== 'locked'` fired from both.
+    //
+    // The sharp one was `completed → locked`, the admin's recovery path for a
+    // mis-completed round: it RESET a handed-out round's `stage` from `ready` to
+    // `ordered`, walking the friend-facing timeline BACKWARDS from step 5
+    // („Zabalené, rozvážame") to step 2 („Objednávky uzavreté…"). It also
+    // contradicted the row beside it — „`completed` ⇒ `stage` untouched, it is the
+    // historical record of where the coffee ended" (and §UC-CS-003's „a hand-over
+    // on a completed cycle leaves `stage` as it was").
+    //
+    // ⚠ `planned → locked` narrows with it and that is deliberate: it now leaves
+    // `stage` as it stood (NULL on a normally-planned round), and §UC-CS-001's
+    // no-backfill rule makes `locked` + NULL a first-class state every reader maps
+    // to `ordered` — `stageIndex()`, the admin's two stage buttons and
+    // `markCycleReady()`'s `stage IS NULL OR stage <> 'ready'` predicate all handle
+    // it. So the screen is identical, and a round re-locked after a stale `ready`
+    // (the `locked(ready) → planned` fall-through, left standing as conformant)
+    // no longer rewinds either.
+    //
+    // An admin who WANTS the reset still has it, explicitly: `{ status: 'locked',
+    // stage: 'ordered' }` takes the `stageProvided` branch above.
+    updates.push('stage = ?');
+    values.push(LOCKED_STAGE_DEFAULT);
+  } else if (status === 'open' && cycle.status === 'locked') {
+    updates.push('stage = NULL');
   }
   if (name) {
     updates.push('name = ?');
@@ -365,6 +608,17 @@ router.patch('/:id', requireAdmin, (req, res) => {
     updates.push('plan_note = ?');
     values.push(plan_note || null);
   }
+  // Writable on EVERY status — planning happens on `planned`, the deadline is
+  // edited while `open`, and corrections come afterwards. `''` clears, exactly as
+  // `expected_date`/`plan_note` beside them.
+  if (opens_at !== undefined) {
+    updates.push('opens_at = ?');
+    values.push(opens_at || null);
+  }
+  if (closes_at !== undefined) {
+    updates.push('closes_at = ?');
+    values.push(closes_at || null);
+  }
   if (parcel_enabled !== undefined) {
     updates.push('parcel_enabled = ?');
     values.push(parcel_enabled ? 1 : 0);
@@ -377,9 +631,18 @@ router.patch('/:id', requireAdmin, (req, res) => {
     values.push(roundMoney(parcel_fee || 0));
   }
 
+  // 19 §UC-GL-005 rule 2 — the TRANSITION into `completed` (the admin's „Ukončiť";
+  // module 17 never auto-completes) purges every waitlist row whose guest has now been
+  // offered two openings and ordered in neither. Once per transition, never on a
+  // `completed → completed` re-save, and in the SAME transaction as the status write.
+  const completing = status === 'completed' && cycle.status !== 'completed';
+
   if (updates.length > 0) {
     values.push(req.params.id);
-    db.prepare(`UPDATE order_cycles SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    db.transaction(() => {
+      db.prepare(`UPDATE order_cycles SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+      if (completing) purgeWaitlistAfterTwoCompletions();
+    })();
   }
 
   const updated = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(req.params.id);
@@ -528,7 +791,8 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
   // Get friends who have submitted orders for this cycle (global friends)
   // Include packed status and balance
   const friendsWithOrders = db.prepare(`
-    SELECT f.id, f.name, o.id as order_id, o.status, o.paid, o.total, o.packed, o.packed_at,
+    SELECT f.id, f.name, f.phone, o.id as order_id, o.status, o.paid, o.total, o.packed, o.packed_at,
+           o.handed_over_at,
            o.pickup_location_id, o.pickup_location_note, pl.name as pickup_location_name,
            o.delivery_fee, o.packeta_address,
            COALESCE((SELECT SUM(amount) FROM transactions WHERE friend_id = f.id), 0) as balance
@@ -548,6 +812,20 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
   const liveSubOrders = (hostFriendId) =>
     (subOrdersByHost.get(hostFriendId) || []).filter((sub) => guestOrderStatus(sub) !== 'cancelled');
 
+  // ⚠ GP-T6 (20 §UC-GP-010 / D6): A PACKETA GUEST IS ITS OWN PARTY, not a bag inside
+  // its host's. Which sub-orders those are is asked of `helpers/delivery.js` — the one
+  // home of the classification — and asked AFTER the status filter above (a cancelled
+  // row keeps its address, UC-GP-006, and must be neither nested nor a party). The
+  // classifier checks the guest's OWN address first, so no host delivery is needed to
+  // tell the two apart; everything that is not `packeta` stays nested, exactly as
+  // before this row. `hostBagSubOrders()` is therefore what every HOST-side read below
+  // uses: the nested `guest_orders[]`, the synthetic host's existence, its kg and its
+  // derived hand-over — the same set `packingItemStats()` gates on and
+  // `inheritingGuests()` stamps.
+  const isPacketaSubOrder = (sub) => deliveryOf(sub).type === 'packeta';
+  const hostBagSubOrders = (hostFriendId) =>
+    liveSubOrders(hostFriendId).filter((sub) => !isPacketaSubOrder(sub));
+
   const distribution = friendsWithOrders.map(friend => {
     const items = db.prepare(`
       SELECT oi.id, oi.packed, p.name as product_name, p.purpose, p.roast_type, p.variant_label, oi.variant, oi.quantity, oi.price
@@ -564,7 +842,17 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
         p.name
     `).all(friend.order_id);
 
-    return { ...friend, has_own_order: true, items, guest_orders: liveSubOrders(friend.id) };
+    // `kind` / `key` (GP-T6, additive): `friends.id` and `guest_orders.id` are
+    // INDEPENDENT sequences, so a board keyed on a bare id would let friend 7 and
+    // Packeta guest 7 share a row key — the GSO-T7 `own:`/`guest:` collision lesson.
+    return {
+      kind: 'friend',
+      key: `friend:${friend.id}`,
+      ...friend,
+      has_own_order: true,
+      items,
+      guest_orders: hostBagSubOrders(friend.id),
+    };
   });
 
   // §Edge Cases, "host has no own order at lock time": the query above starts
@@ -584,17 +872,28 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
   const listedFriends = new Set(distribution.map((party) => party.id));
   for (const hostFriendId of subOrdersByHost.keys()) {
     if (listedFriends.has(hostFriendId)) continue;
-    const subOrders = liveSubOrders(hostFriendId);
-    // Only cancelled bags left ⇒ nothing to hand over, so not a pickup party.
+    const subOrders = hostBagSubOrders(hostFriendId);
+    // Only cancelled bags left ⇒ nothing to hand over, so not a pickup party. ⚠ And
+    // (GP-T6, 20 §UC-GP-010 item 2) only PACKETA bags left ⇒ nothing to COLLECT either:
+    // those guests are their own parties below, so a host with no own order and no
+    // via_host colleague is absent.
     if (subOrders.length === 0) continue;
 
-    const balance = db.prepare(
-      'SELECT COALESCE(SUM(amount), 0) as balance FROM transactions WHERE friend_id = ?'
-    ).get(hostFriendId);
+    // ⚠ `phone` rides along with the balance rather than in a second query: this
+    // branch is already per-host, and the Packeta row and the label sheet both need
+    // the number (§UC-DP-003).
+    const balance = db.prepare(`
+      SELECT f.phone AS phone,
+             COALESCE((SELECT SUM(amount) FROM transactions WHERE friend_id = f.id), 0) AS balance
+        FROM friends f WHERE f.id = ?
+    `).get(hostFriendId);
 
     distribution.push({
+      kind: 'friend',
+      key: `friend:${hostFriendId}`,
       id: hostFriendId,
       name: subOrders[0].host_name,
+      phone: balance ? balance.phone : null,
       order_id: null,
       has_own_order: false,
       status: 'none',
@@ -602,6 +901,10 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
       total: 0,
       packed: 0,
       packed_at: null,
+      // ⚠ NOT a column on this party — there is no `orders` row to stamp. It is
+      // DERIVED below from the live sub-orders (§UC-DP-003), and declared here only
+      // so the key exists in the same position as on a friend party.
+      handed_over_at: null,
       // ⚠ THE EFFECTIVE PICKUP, not a hardcoded null (PO decision, 2026-09-03). This
       // party collects their colleagues' bags, so the picking sheet has to say where
       // — the reported bug was this row showing no pickup point at all.
@@ -622,7 +925,557 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
 
   distribution.sort((a, b) => a.name.localeCompare(b.name));
 
-  res.json({ cycle, distribution });
+  // ── GP-T6 (20 §UC-GP-010 item 1): the Packeta guest parties ─────────────────
+  //
+  // ⚠ BUILT FROM NAMED KEYS — the use case's literal list — and never spread from the
+  // sub-order row: that row carries `order_token`, the guest's only credential, which
+  // this party has no use for (CLAUDE.md: published to host/admin surfaces via the
+  // shared field list, never more widely than needed). The nested via_host rows keep
+  // the shared `GUEST_ORDER_FIELDS` shape exactly as before.
+  //
+  // `id: null` — the party is not a friend; `guest_order_id` is its identity and
+  // `key` is what the board keys its rows by. `packed` is DERIVED (every item
+  // checked, and at least one — `guest_orders` has no whole-order flag and none is
+  // added), through the SAME stage rule the hand-over routes use, so the 409
+  // `not_packed` of `PATCH /guest-orders/:id/handed-over` and this flag cannot
+  // disagree. `balance: null` — guests have no ledger (Decision 1). `status` is
+  // `'submitted'` because only live rows reach here.
+  //
+  // Sort (item 3): after every friend/host party, by name among themselves — the
+  // print sheet and the board's Packeta group read them together.
+  const guestParties = [];
+  for (const subOrders of subOrdersByHost.values()) {
+    for (const sub of subOrders) {
+      if (guestOrderStatus(sub) === 'cancelled' || !isPacketaSubOrder(sub)) continue;
+      const items = Array.isArray(sub.items) ? sub.items : [];
+      guestParties.push({
+        kind: 'guest',
+        key: `guest:${sub.id}`,
+        id: null,
+        guest_order_id: sub.id,
+        name: sub.guest_name,
+        host_friend_id: sub.host_friend_id,
+        host_name: sub.host_name,
+        phone: sub.guest_phone,
+        email: sub.guest_email,
+        order_id: null,
+        has_own_order: false,
+        status: 'submitted',
+        paid: sub.paid,
+        total: sub.total,
+        delivery_fee: sub.delivery_fee,
+        packeta_address: sub.packeta_address,
+        pickup_location_id: null,
+        pickup_location_note: null,
+        pickup_location_name: null,
+        packed: guestOrderStage({ items }) === 'packed' ? 1 : 0,
+        packed_at: null,
+        // ⚠ A real column on THIS party (unlike the synthetic host's derived one): the
+        // guest's own `guest_orders.handed_over_at`, written by the per-bag route.
+        handed_over_at: sub.handed_over_at,
+        balance: null,
+        items,
+        guest_orders: [],
+      });
+    }
+  }
+  guestParties.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+  distribution.push(...guestParties);
+
+  // ── DP-T2 (§UC-DP-003): delivery, stage, weight, and the cycle's plan ───────
+  //
+  // Everything from here down is ADDITIVE. Not one key above is renamed, retyped or
+  // dropped — `guest-distribution.spec.js` and `order-pickup-edit.spec.js` read this
+  // payload and must keep passing untouched.
+
+  // ⚠ ONE query for the whole (small) table, not one lookup per party. It is both
+  // the N+1 escape `helpers/delivery.js` documents (`locationsById`) and the source
+  // of `locations[]`, and it is deliberately UNFILTERED: a point that was
+  // soft-deleted after a party chose it must still name itself, exactly as
+  // `pickupOf()` and `delivery.js locationRow()` both do.
+  const locationRows = db.prepare('SELECT id, name, address, active, for_coffee, for_bakery FROM pickup_locations').all();
+  const locationsById = new Map(locationRows.map((row) => [row.id, row]));
+
+  // "Active for this cycle's type" — the same filter the friend's picker applies
+  // (`GET /api/pickup-locations?type=…`). These are the points that get a plan card
+  // even with nobody on them, so the admin can tell "no bags there" apart from
+  // "that point is not set up".
+  const isBakery = (cycle.type || 'coffee') === 'bakery';
+  const activeIds = new Set(
+    locationRows.filter((row) => row.active && (isBakery ? row.for_bakery : row.for_coffee)).map((row) => row.id)
+  );
+
+  for (const party of distribution) {
+    // The pickup columns on the row are the ones `helpers/pickup.js` already
+    // resolved (the SELECT for a friend, `readPickup()` for a synthetic host), so
+    // this only NAMES what is there — `delivery.js` is read-only by contract.
+    party.delivery = deliveryOf(party, { locationsById });
+
+    let guestGrams = 0;
+    for (const sub of party.guest_orders) {
+      // ⚠ `{ host: party.delivery }` IS THE CALL-SITE CONTRACT (DP-T1). A guest bag
+      // without its own Packeta address travels inside the host's bag, so it must
+      // inherit the host's group — never be classified standalone, which is what
+      // would make it tickable on its own on the board. The helper fails closed if
+      // this is omitted; that backstop is not a licence to omit it.
+      sub.delivery = deliveryOf(sub, { host: party.delivery, locationsById });
+      sub.kg = itemsGrams(sub.items);
+      sub.stage = guestOrderStage(sub);
+      guestGrams += sub.kg;
+    }
+
+    // ⚠ CYCLE-LEVEL weight includes guests — this is the bag the admin carries, and
+    // `guest_orders` here is already the LIVE set (cancelled bags filtered out
+    // above), so a called-off order weighs nothing. Per-FRIEND aggregates elsewhere
+    // (cycle progress, analytics, rewards) still must not fold guests in.
+    party.kg = itemsGrams(party.items) + guestGrams;
+
+    // ⚠ The synthetic host's hand-over is DERIVED from its bags; a Packeta guest
+    // party's is its own column, already on the row — deriving it from its (empty)
+    // `guest_orders[]` would erase it.
+    if (!party.has_own_order && party.kind !== 'guest') {
+      party.handed_over_at = derivedHandedOver(party.guest_orders);
+    }
+    party.stage = partyStage(party, cycle.id);
+  }
+
+  // ── plan / totals / locations ───────────────────────────────────────────────
+  // Counts are over PARTIES: a host with nested `via_host` guests is ONE bag.
+  const partiesByKey = new Map();
+  const referencedIds = new Set();
+  for (const party of distribution) {
+    const key = party.delivery.target_key;
+    if (!partiesByKey.has(key)) partiesByKey.set(key, []);
+    partiesByKey.get(key).push(party);
+    const locId = locIdOf(key);
+    if (locId !== null) referencedIds.add(locId);
+  }
+
+  // ⚠ A DANGLING id (the `pickup_locations` row is gone outright) keeps its key and
+  // loses only its label. Dropping such a party from the plan would hide a real bag,
+  // so it is ordered in like any other.
+  //
+  // ⚠ ~~Reachable today, because `DELETE /api/pickup-locations/:id` only soft-deletes
+  // when an `orders` row references the point, and a host with no own order stores
+  // their pickup on `guest_order_links`.~~ **FIXED by FUP-T23** — that delete now asks
+  // `helpers/pickup.js pickupLocationInUse()`, which knows BOTH stores, so no API
+  // path produces a dangling id any more. The tolerance STAYS: databases written
+  // before the fix still carry dangling ids, and a bag must never be dropped over a
+  // missing label. (The e2e fixture for it is now a DB_PATH-gated direct write —
+  // `distribution-handover.spec.js`.)
+  const planLocationIds = [...new Set([...referencedIds, ...activeIds])];
+  const orderedKeys = deliveryGroupOrder(planLocationIds.map((id) => ({ id })));
+
+  const plan = [];
+  for (const key of orderedKeys) {
+    const parties = partiesByKey.get(key) || [];
+    const locId = locIdOf(key);
+    // Packeta and "Osobne" are not configurable places: they appear only when a bag
+    // is actually going that way. A pickup point appears when it is active for this
+    // cycle's type, even at zero.
+    if (parties.length === 0 && !(locId !== null && activeIds.has(locId))) continue;
+
+    let label;
+    if (parties.length > 0) {
+      // Taken from the party so a group title can never disagree with the row under it.
+      label = parties[0].delivery.target_label;
+    } else {
+      label = locId !== null ? (locationsById.get(locId)?.name ?? null) : TARGET_LABELS[key];
+    }
+
+    plan.push({
+      target_key: key,
+      target_label: label ?? null,
+      type: locId !== null ? 'pickup' : key,
+      count: parties.length,
+      // ⚠ `packed_count` INCLUDES the handed-over parties (handed implies packed):
+      // the board's two-tone bar is `handed / count` plus `(packed − handed) / count`
+      // (§UC-DP-010), which only adds up while this is a superset.
+      packed_count: parties.filter((party) => party.stage === 'packed' || party.stage === 'handed').length,
+      handed_count: parties.filter((party) => party.stage === 'handed').length,
+      kg: parties.reduce((sum, party) => sum + party.kg, 0),
+    });
+  }
+
+  const totals = {
+    count: distribution.length,
+    packed_count: distribution.filter((party) => party.stage === 'packed' || party.stage === 'handed').length,
+    handed_count: distribution.filter((party) => party.stage === 'handed').length,
+  };
+
+  // The names behind the `loc<id>` keys, so the board needs no second call. A
+  // dangling id has no row and simply is not here — the plan card above already
+  // renders it label-less. The picker keeps its own `GET /api/pickup-locations`
+  // call: that one is the EDITABLE list and is filtered to active points.
+  const locations = planLocationIds
+    .map((id) => locationsById.get(id))
+    .filter(Boolean)
+    .sort((a, b) => a.id - b.id)
+    .map((row) => ({ id: row.id, name: row.name, address: row.address }));
+
+  res.json({ cycle, distribution, plan, totals, locations });
+});
+
+// Admin: STAGE 3 IN BULK — „Odovzdať zabalené (n)" for a whole group
+// (DP-T4, 16 §UC-DP-006). ONE transaction, all-or-nothing.
+//
+// It is the per-group button behind the board's plan cards: every bag at one
+// pickup point, or every Packeta parcel, leaves in one action. The per-bag routes
+// (`PATCH /orders/:id/handed-over`, `PATCH /guest-orders/:id/handed-over`, DP-T3)
+// stay the unit of CORRECTION; this is the unit of WORK.
+//
+// ⚠ **ALL-OR-NOTHING, AND THE 409 NAMES THE OFFENDERS.** The admin confirmed
+// „n balíčkov prejde" against a SNAPSHOT the board fetched seconds ago. If another
+// device un-packed one of them in between, a partial success would leave the toast
+// count wrong and one bag silently behind — with no screen anywhere that says which.
+// So the whole batch aborts, the response lists exactly the ids that blocked it, and
+// the admin reloads and decides. Every refusal below is reached BEFORE the first
+// write, and the writes themselves abort by THROWING, so the transaction rolls back
+// rather than relying on the order of the statements staying as it is today.
+//
+// ⚠ **ONE TIMESTAMP FOR THE WHOLE BATCH**, read once and bound to every UPDATE. The
+// plan card's „odovzdané" bar and module 21's segments group by it, and two bags
+// that left together must not land a second apart in the record.
+//
+// ⚠ **ALREADY-HANDED IDS ARE SKIPPED, NOT ERRORS** — re-running a group after
+// adding one bag to it is the normal way this button is used. A skipped bag is
+// counted in `already_handed` and **mints nothing**: `enqueueForHandOver` only ever
+// sees the bags this call actually STAMPED. That is DP-T3's lesson applied here —
+// the dedupe on a `queued` row holds only until module 21 moves one to `released`,
+// after which an enqueue for a no-op would be a duplicate „your coffee is at X"
+// message to a real person, for a request that changed nothing.
+//
+// ⚠ **NO `transactions` ROW, EVER, AND NO `await`.** Stage 2 (`packed`) is the
+// ledger moment (`helpers/packing.js`); stage 3 is ledger-neutral by construction,
+// in bulk exactly as per bag. The handler is fully synchronous, which is what keeps
+// the check-then-write atomic under `instances: 1` (CLAUDE.md, GA-T8).
+//
+// ⚠ **REVERSAL IS NOT BULK.** Un-hand-over stays per bag (§UC-DP-004/005); a bulk
+// reversal is a Phase 2 item and is deliberately NOT implemented here.
+//
+// ⚠ RECORDED FOR THE BOARD ROWS (DP-T5/T6/T7), because it decides WHICH ids the
+// group button should send:
+//   • A guest listed EXPLICITLY in `guest_order_ids` with an unchecked item aborts
+//     the whole batch — while the same bag merely INHERITED from its host in the
+//     same batch goes through, because inheritance has no pack gate (§UC-DP-004).
+//     That asymmetry is literally what §UC-DP-005/006 mandate, and it is narrow,
+//     but it means „send every id I can see" is NOT equivalent to „send the hosts".
+//     The group button should send the party ids (orders, plus the guest ids of
+//     synthetic hosts) rather than every nested guest row it happens to render.
+//   • The work here is LINEAR in the number of ids and fully synchronous — a few
+//     indexed statements per bag inside one transaction that blocks every other
+//     request under `instances: 1`. `HAND_OVER_BATCH_MAX` is what bounds it.
+//
+// Status codes:
+//   400 — the body is not `{ order_ids: int[], guest_order_ids: int[] }` with at
+//         least one id, or an id belongs to another cycle / does not exist
+//         (`reason: 'foreign_id'`, both lists echoed)
+//   404 — unknown cycle
+//   409 — `not_packed` (an unpacked or non-submitted order, or a guest bag with no
+//         items or an unchecked one) / `cancelled` (a called-off guest bag, listed
+//         separately), naming every offender; NOTHING is written
+//   200 — `{ handed_over, already_handed, guests_inherited, queued_notifications,
+//         cycle_stage, handed_over_at }`
+router.post('/:id/distribution/hand-over', requireAdmin, (req, res) => {
+  const batch = readHandOverBatch(req.body);
+  if (!batch) {
+    return res.status(400).json({
+      error: 'Zadajte, ktoré balíčky sa odovzdávajú',
+      reason: 'invalid_ids',
+    });
+  }
+
+  const cycle = db.prepare('SELECT id FROM order_cycles WHERE id = ?').get(req.params.id);
+  if (!cycle) {
+    return res.status(404).json({ error: 'Cyklus nebol nájdený' });
+  }
+  const cycleId = cycle.id;
+
+  // ⚠ THE ABORT IS A THROW, NOT A RETURN. better-sqlite3 commits a transaction that
+  // returns normally, so a refusal discovered after the first UPDATE would COMMIT
+  // the bags written before it — the partial success this route exists to prevent.
+  // Throwing rolls the whole thing back whatever the statement order, which makes
+  // all-or-nothing structural instead of a property of how this function is written.
+  class BatchRefusal extends Error {
+    constructor(status, body) {
+      super('hand-over batch refused');
+      this.status = status;
+      this.body = body;
+    }
+  }
+
+  const apply = db.transaction(() => {
+    // ── 1. resolve every id, and refuse a FOREIGN one before anything else ────
+    // „Foreign" covers an id from another cycle AND one that does not exist: both
+    // answer the same 400, so the endpoint is not an existence oracle for rows in
+    // cycles the caller did not name.
+    const readOrder = db.prepare(`
+      SELECT id, friend_id, cycle_id, status, packed, handed_over_at
+        FROM orders WHERE id = ?
+    `);
+    const readGuest = db.prepare(`
+      SELECT gord.id, gord.link_id, gord.status, gord.handed_over_at,
+             glink.host_friend_id, glink.cycle_id
+        FROM guest_orders gord
+        JOIN guest_order_links glink ON glink.id = gord.link_id
+       WHERE gord.id = ?
+    `);
+
+    const orderRows = new Map();
+    const guestRows = new Map();
+    const foreignOrderIds = [];
+    const foreignGuestIds = [];
+
+    for (const id of batch.orderIds) {
+      const row = readOrder.get(id);
+      if (!row || row.cycle_id !== cycleId) foreignOrderIds.push(id);
+      else orderRows.set(id, row);
+    }
+    for (const id of batch.guestOrderIds) {
+      const row = readGuest.get(id);
+      if (!row || row.cycle_id !== cycleId) foreignGuestIds.push(id);
+      else guestRows.set(id, row);
+    }
+    if (foreignOrderIds.length > 0 || foreignGuestIds.length > 0) {
+      throw new BatchRefusal(400, {
+        error: 'Niektoré balíčky nepatria do tohto cyklu',
+        reason: 'foreign_id',
+        order_ids: foreignOrderIds,
+        guest_order_ids: foreignGuestIds,
+      });
+    }
+
+    // ── 2. the OFFENDERS, all of them, before the first write ─────────────────
+    // An already-handed bag is checked FIRST and skipped: it has demonstrably left,
+    // so re-asking „is it packed?" would refuse a re-run of a group over something
+    // that is already done. (It also covers the recorded seam where a bag was
+    // cancelled AFTER it was handed over — see the note at the end of this handler.)
+    const notPackedOrderIds = [];
+    const notPackedGuestIds = [];
+    const cancelledGuestIds = [];
+
+    for (const id of batch.orderIds) {
+      const row = orderRows.get(id);
+      if (row.handed_over_at) continue;
+      // A non-submitted order cannot be packed at all, so it is an offender for the
+      // same reason and with the same reason string (§UC-DP-006).
+      if (row.status !== 'submitted' || !row.packed) notPackedOrderIds.push(id);
+    }
+    for (const id of batch.guestOrderIds) {
+      const row = guestRows.get(id);
+      if (row.handed_over_at) continue;
+      if (guestOrderStatus(row) === 'cancelled') { cancelledGuestIds.push(id); continue; }
+      // The pack gate, asked of the SHARED stage rule (helpers/handover.js) rather
+      // than re-derived here: a bag is packable only when it HAS items and every one
+      // is checked off. The same rule is re-asserted as the UPDATE's own predicate
+      // below — this half is what produces the NAMED offender.
+      if (guestOrderStage(loadSubOrder(id)) === 'to_pack') notPackedGuestIds.push(id);
+    }
+
+    if (notPackedOrderIds.length > 0 || notPackedGuestIds.length > 0 || cancelledGuestIds.length > 0) {
+      const onlyCancelled =
+        notPackedOrderIds.length === 0 && notPackedGuestIds.length === 0;
+      throw new BatchRefusal(409, {
+        error: onlyCancelled
+          ? 'Zrušené objednávky kolegov sa nedajú odovzdať.'
+          : 'Najprv označte všetky balíčky ako zabalené',
+        reason: onlyCancelled ? 'cancelled' : 'not_packed',
+        order_ids: notPackedOrderIds,
+        guest_order_ids: notPackedGuestIds,
+        // Listed SEPARATELY (§UC-DP-006): „not packed yet" is a thing the admin
+        // fixes by packing, „cancelled" is a bag that will never be handed to
+        // anybody. The board highlights them differently.
+        cancelled_guest_order_ids: cancelledGuestIds,
+      });
+    }
+
+    // ── 3. the writes ─────────────────────────────────────────────────────────
+    // ONE timestamp, read once. `CURRENT_TIMESTAMP` is the same expression the
+    // per-bag routes stamp with, so the two writers produce byte-identical strings.
+    const stamp = db.prepare('SELECT CURRENT_TIMESTAMP AS stamp').get().stamp;
+
+    const stampOrder = db.prepare(`
+      UPDATE orders SET handed_over_at = ?
+       WHERE id = ? AND status = 'submitted' AND packed = 1 AND handed_over_at IS NULL
+    `);
+    const stampInheritedGuest = db.prepare(
+      'UPDATE guest_orders SET handed_over_at = ? WHERE id = ? AND handed_over_at IS NULL'
+    );
+    // The per-bag gate of §UC-DP-005, as the UPDATE's OWN predicate — the same
+    // statement `PATCH /guest-orders/:id/handed-over` runs. ⚠ `COALESCE(packed, 0)`
+    // because the column is nullable: a bare `packed = 0` drops NULL rows in SQL's
+    // three-valued logic, which is the dangerous direction (it would hand over a bag
+    // nobody checked).
+    const stampOwnGuest = db.prepare(`
+      UPDATE guest_orders SET handed_over_at = ?
+       WHERE id = ?
+         AND handed_over_at IS NULL
+         AND COALESCE(status, 'submitted') <> 'cancelled'
+         AND NOT EXISTS (
+           SELECT 1 FROM guest_order_items WHERE guest_order_id = ? AND COALESCE(packed, 0) = 0
+         )
+         AND EXISTS (SELECT 1 FROM guest_order_items WHERE guest_order_id = ?)
+    `);
+
+    const stampedBags = [];
+    const inheritedGuestIds = new Set();
+    let handedOver = 0;
+    let alreadyHanded = 0;
+    let guestsInherited = 0;
+    // Whether anything actually took the batch's own timestamp. A call that only
+    // stamped a LATE colleague onto an already-handed bag wrote that bag's original
+    // stamp instead, so reporting the batch one would name a string no row carries.
+    let usedBatchStamp = false;
+
+    // ORDERS FIRST, and that order is load-bearing: a guest whose host is in the
+    // same batch must be stamped by the HOST's write (inherited once, stamped once,
+    // enqueued once — §UC-DP-006), so the explicit pass below can skip it.
+    for (const id of batch.orderIds) {
+      const row = orderRows.get(id);
+
+      if (row.handed_over_at) {
+        alreadyHanded += 1;
+      } else {
+        const written = stampOrder.run(stamp, id);
+        if (written.changes === 0) {
+          // Unreachable under `instances: 1` (the offender pass above ran in this same
+          // synchronous transaction), and kept because it is the layer that survives
+          // PM2 cluster mode and the day this handler gains an `await`.
+          throw new BatchRefusal(409, {
+            error: 'Najprv označte všetky balíčky ako zabalené',
+            reason: 'not_packed',
+            order_ids: [id],
+            guest_order_ids: [],
+            cancelled_guest_order_ids: [],
+          });
+        }
+        handedOver += 1;
+        usedBatchStamp = true;
+      }
+
+      // ⚠ THE INHERITANCE PASS RUNS FOR AN ALREADY-HANDED ORDER TOO — the skip above
+      // skips the ORDER, never its bag. A colleague whose sub-order arrived AFTER the
+      // host's bag went out has no stamp of its own, and the per-bag route
+      // (`PATCH /orders/:id/handed-over`, §UC-DP-004) deliberately stamps exactly
+      // that case on a repeat call. Skipping the whole party here would make the two
+      // writers of this column disagree, in the open-cycle window where a late
+      // sub-order is reachable — and the bag left behind would be invisible from the
+      // group button that is supposed to be the unit of work.
+      //
+      // ⚠ THE STAMP BOUND HERE IS THE **BAG'S**, not always the batch's: the host's
+      // own `handed_over_at` when it already had one, the batch stamp when this call
+      // wrote it. Same rule as the per-bag route (which reads the column back and
+      // binds it), and it is what keeps a host and their colleagues carrying the
+      // identical string. `handed_over_at` in the response reports the batch stamp
+      // only when something actually took it.
+      const bagStamp = row.handed_over_at || stamp;
+
+      // The FULL §UC-DP-004 write for this bag: its delivery through the one home,
+      // its live `via_host` guests, the same stamp on every one of them. ⚠ No pack
+      // gate on inheritance, exactly as per bag — the colleague's bag travels inside
+      // the host's, so it left when the host's did.
+      const delivery = partyDelivery(cycleId, row.friend_id);
+      if (!row.handed_over_at) {
+        stampedBags.push({
+          kind: 'friend', cycleId, orderId: id, friendId: row.friend_id, delivery,
+        });
+      }
+
+      for (const guest of inheritingGuests(row.friend_id, cycleId, delivery)) {
+        // An already-handed guest keeps its own first record — the predicate says so
+        // — and is therefore not counted and not enqueued again. On an already-handed
+        // order this is what makes the pass a no-op for everyone but the late arrival.
+        if (stampInheritedGuest.run(bagStamp, guest.id).changes === 0) continue;
+        guestsInherited += 1;
+        inheritedGuestIds.add(guest.id);
+        stampedBags.push({
+          kind: 'guest', cycleId, guestOrderId: guest.id,
+          hostFriendId: row.friend_id, delivery: guest.delivery,
+        });
+      }
+    }
+
+    for (const id of batch.guestOrderIds) {
+      // ⚠ THE DEDUPE. This bag was just inherited from its host in this same batch:
+      // it is stamped, counted (in `guests_inherited`) and enqueued already. Without
+      // this skip its UPDATE would report `changes === 0` — indistinguishable from
+      // the pack gate refusing — and turn a perfectly good batch into a 409.
+      if (inheritedGuestIds.has(id)) continue;
+
+      const row = guestRows.get(id);
+      if (row.handed_over_at) { alreadyHanded += 1; continue; }
+
+      if (stampOwnGuest.run(stamp, id, id, id).changes === 0) {
+        throw new BatchRefusal(409, {
+          error: 'Najprv označte všetky položky ako zabalené',
+          reason: 'not_packed',
+          order_ids: [],
+          guest_order_ids: [id],
+          cancelled_guest_order_ids: [],
+        });
+      }
+      handedOver += 1;
+      usedBatchStamp = true;
+
+      // A guest bag is classified WITH ITS HOST's delivery (the DP-T1 call-site
+      // contract): the row itself carries no pickup, and a host with no own order
+      // keeps theirs on the link.
+      const hostDelivery = partyDelivery(cycleId, row.host_friend_id);
+      stampedBags.push({
+        kind: 'guest', cycleId, guestOrderId: id, hostFriendId: row.host_friend_id,
+        delivery: deliveryOf(loadSubOrder(id), { host: hostDelivery }),
+      });
+    }
+
+    // ⚠ ONLY THE BAGS THIS CALL ACTUALLY STAMPED (the DP-T3 rule). A skipped
+    // already-handed bag is not an event and mints nothing.
+    const queued = enqueueForHandOver(stampedBags);
+
+    // §UC-DP-009 — the module-17 seam, inside the transaction, once per request
+    // (never once per row). LIVE since CS-T1: a batch hand-over on a LOCKED cycle
+    // promotes it to `ready`. ⚠ `cycle_stage` is the STAGE STRING (or null), not the
+    // helper's `{ changed }` flag — read `.stage`.
+    const { stage: cycleStage } = markCycleReady(cycleId);
+
+    return {
+      handedOver,
+      alreadyHanded,
+      guestsInherited,
+      queued,
+      cycleStage,
+      stamp: usedBatchStamp ? stamp : null,
+    };
+  });
+
+  let applied;
+  try {
+    applied = apply();
+  } catch (err) {
+    if (err instanceof BatchRefusal) return res.status(err.status).json(err.body);
+    throw err;
+  }
+
+  // ⚠ RECORDED, NOT FIXED (DP-T3 review, 2026-09-20; see the DP-T4 and WA-T5 rows of
+  // PROGRESS.md). A sub-order CANCELLED AFTER it was handed over stays stamped and
+  // keeps its `queued` message. This route only ever SKIPS such a bag (the
+  // already-handed branch above) — it grows no cancel path of its own, so it is not
+  // the place the seam closes. ⚠ And the „one door" premise recorded on the row does
+  // not hold: no hand-over route has a cycle-status gate, so a bag CAN be handed over
+  // while the cycle is still open, which is exactly when the host's DELETE and the
+  // guest's own empty cart are allowed. All THREE cancel doors are reachable after a
+  // hand-over, so the fix belongs either at `softCancelGuestOrder()` (the one home
+  // all three share) or at module 21's release, never at the admin cancel alone.
+  res.json({
+    handed_over: applied.handedOver,
+    already_handed: applied.alreadyHanded,
+    guests_inherited: applied.guestsInherited,
+    queued_notifications: applied.queued,
+    cycle_stage: applied.cycleStage,
+    // Additive to §UC-DP-006's response: the one stamp the batch wrote (null when
+    // it stamped nothing), so DP-T7 can patch the board's rows in place without
+    // guessing which of them moved.
+    handed_over_at: applied.stamp,
+  });
 });
 
 // Reconcile which CATALOG products a cycle offers — the picker from cycle

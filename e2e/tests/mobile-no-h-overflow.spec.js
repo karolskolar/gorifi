@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { ADMIN_PASSWORD, FRIENDS_PASSWORD, CYCLE_NAME } from '../fixtures.js'
+// PI-T3 · 18 §UC-PI-019 item 3 — one home for portal → order navigation.
+import { gotoCycle } from '../helpers/portal.js'
 
 // The friend order page must never make the DOCUMENT scroll sideways on a phone.
 // When it does, the page can be scrolled off-centre and content is clipped off the
@@ -74,11 +76,10 @@ test.describe('Mobile layout — no horizontal document overflow', () => {
         }))
       }, [friend, session])
 
-      // A hard load of /cycle/:id bounces to the portal (FriendOrder defers auth
-      // restore to FriendPortal), so enter the way a real user does.
-      await page.goto('/')
-      await page.getByText(CYCLE_NAME, { exact: false }).first().click()
-      await page.waitForURL(/\/cycle\//)
+      // ⚠ PI-T3 · 18 §UC-PI-019 item 3 — the portal's cycle CARDS are retired
+      // (§UC-PI-005), so the cycle NAME is no longer a navigation affordance there.
+      // `helpers/portal.js gotoCycle()` still enters cold, through the same bounce.
+      await gotoCycle(page, cycleId)
 
       // The tab strip must actually be rendered, or this would pass vacuously.
       // Scope to the strip: an unscoped role=tab lookup can match more than one

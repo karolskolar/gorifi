@@ -1,5 +1,9 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+import { DatabaseSync } from 'node:sqlite'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+// FUP-T19: the one destructive logout case runs on a THROWAWAY backend, so the gate's
+// single app-wide admin token can never be left deleted for the next spec file.
+import { CAN_SPAWN_BACKEND, startBackend } from '../mailgun-harness.js'
 
 // API-level assertions for Phase 1: server-side admin authorization, no
 // credential leakage, CORS lockdown. These are deterministic and are the
@@ -29,6 +33,39 @@ const ADMIN_ENDPOINTS = [
   { method: 'patch', path: '/api/orders/cycle/1/friend/1/pickup', data: { pickup_location_id: 1 } },
   // GSO-T7: the guest half of the per-item Distribution checkbox.
   { method: 'patch', path: '/api/guest-order-items/1/packed' },
+  // 16 §UC-DP-003 / §UC-DP-013 item 2 (DP-T2): the distribution read. ⚠ It has
+  // ALWAYS been `requireAdmin` (routes/cycles.js, the `/:id/distribution` handler) —
+  // what was missing until this row is the REGRESSION NET, not the guard. It is the
+  // single richest admin payload in the app: every party's name and phone number,
+  // every friend's balance, and every guest sub-order INCLUDING its `order_token`
+  // (published through the shared `GUEST_ORDER_FIELDS` since GR-T1). A future edit
+  // that dropped the guard would hand an anonymous caller a working guest credential
+  // for every bag in the cycle, so it belongs in this sweep permanently.
+  { method: 'get', path: '/api/cycles/1/distribution' },
+  // order-labels-pdf (merged at the module 15–20 delivery): the label sheet carries
+  // names, phones and Packeta points — `requireAdmin` in routes/cycles.js.
+  { method: 'get', path: '/api/cycles/1/labels' },
+  // 16 §UC-DP-004 / §UC-DP-013 (DP-T3): STAGE 3, the two hand-over WRITERS. They
+  // stamp `handed_over_at` on a friend bag (and, by inheritance, on every live guest
+  // bag inside it) and queue the „your coffee is at X" messages. An anonymous caller
+  // reaching either one could mark a whole cycle's bags as handed over — which on
+  // the board is the admin's only record of what has actually left the flat — and
+  // fill the outbox for module 21 to send.
+  { method: 'patch', path: '/api/orders/1/handed-over', data: { handed_over: true } },
+  // ⚠ The guest half rides the MIXED /api/guest-orders mount. `handed_over` is
+  // ADMIN-only exactly as `paid` is, while `PATCH /:id/delivered` and `DELETE /:id`
+  // on the same prefix stay HOST-identity routes in FRIEND_IDENTITY_ENDPOINTS below.
+  // Only this one joins the admin sweep.
+  { method: 'patch', path: '/api/guest-orders/1/handed-over', data: { handed_over: true } },
+  // 16 §UC-DP-006 / §UC-DP-013 (DP-T4): the BULK hand-over. Strictly more powerful
+  // than the two per-bag writers above — one anonymous call could stamp every bag of
+  // a whole pickup group as handed over and fill module 21's outbox with „your coffee
+  // is at X" messages for deliveries that never happened.
+  {
+    method: 'post',
+    path: '/api/cycles/1/distribution/hand-over',
+    data: { order_ids: [1], guest_order_ids: [] },
+  },
   // GSO-T6: the admin half of the MIXED-auth /api/guest-orders router (the host
   // half is gated by friend identity instead — see guest-host-view.spec.js).
   { method: 'patch', path: '/api/guest-orders/1/paid', data: { paid: true } },
@@ -38,6 +75,10 @@ const ADMIN_ENDPOINTS = [
   // has NO paid blockade (D4), so it is strictly more powerful than the host route
   // on the same prefix and must never be reachable without an admin token.
   { method: 'post', path: '/api/guest-orders/1/cancel' },
+  // 20 §UC-GP-009 (GP-T5): the admin's delivery correction of a guest sub-order back to
+  // „cez {host}" — zeroes the fee on any row, paid ones included, so it must never be
+  // reachable without an admin token (a host Bearer is 401 too — guest-packeta.spec.js).
+  { method: 'patch', path: '/api/guest-orders/1/delivery', data: { method: 'via_host' } },
   // 14 §UC-GR-004 / §UC-GR-010 item 1 (GR-T3): the admin half of the now-MIXED
   // /api/guest-links router — READ every host's share link for a cycle, CREATE one
   // for a friend who has not shared yet, and REGENERATE an existing one. ⚠ The three
@@ -53,6 +94,21 @@ const ADMIN_ENDPOINTS = [
   { method: 'get', path: '/api/guest-links/cycle/1/all' },
   { method: 'post', path: '/api/guest-links/cycle/1/host/1' },
   { method: 'post', path: '/api/guest-links/cycle/1/host/1/regenerate' },
+  // 19 §UC-GL-001 as amended by the PO decision of 2026-09-19 (GL-T1): the ADMIN half
+  // of a host's STANDING guest link — read (mints lazily) + regenerate. On the MIXED
+  // /api/friends mount, so the guard is per-route. The regenerate retires the host's
+  // standing URL for every new visitor, and the read hands out a working guest
+  // credential, so anonymous must never reach either. ⚠ The HOST's own pair
+  // (`/api/guest-links/standing[/regenerate]`) is in `FRIEND_IDENTITY_ENDPOINTS` below —
+  // one helper, two guards, two sweeps.
+  { method: 'get', path: '/api/friends/1/guest-link/standing' },
+  { method: 'post', path: '/api/friends/1/guest-link/standing/regenerate' },
+  // 19 §UC-GL-009 (GL-T3): the guest WAITLIST, admin side — non-member names and
+  // phones in full, and a delete. A single-audience router, so the WHOLE mount is
+  // requireAdmin. ⚠ The public signup `POST /api/guest/:token/waitlist` must NEVER
+  // join this list (the URL token is its credential).
+  { method: 'get', path: '/api/guest-waitlist' },
+  { method: 'delete', path: '/api/guest-waitlist/1' },
   // 07 §UC-IA-008 item 1: the approval endpoint MINTS A LOGIN for a new friend, and
   // it lives on the MIXED /api/invitations mount (GET /code/:code and POST /register
   // are public), so its guard is per-route rather than on the mount. Anonymous must
@@ -73,12 +129,32 @@ const ADMIN_ENDPOINTS = [
   // `google-auth.spec.js` by MESSAGE, which is what distinguishes "the handler
   // refused you" from "the guard did".
   //
-  // ⚠ `/api/admin` is a MIXED mount (public `setup-status`, `login`, `verify`,
-  // `payment-settings`, `google-login`), so these guards are per-route.
+  // ⚠ `/api/admin` is a MIXED mount, so these guards are per-route. SEVEN routes on it
+  // carry no `requireAdmin`, and the enumeration is exhaustive on purpose (the
+  // documentation-discipline rule: a list a reader will trust must name every member) —
+  // verified against `backend/src/routes/admin.js`: `GET /setup-status` (:367),
+  // `POST /setup` (:373), `POST /login` (:393), `POST /verify` (:423),
+  // `POST /logout` (:480), `GET /payment-settings` (:503), `POST /google-login` (:333).
+  // `POST /setup` is public but SELF-LIMITING — it 400s (`Admin uz je nastaveny`) once
+  // `settings('admin_password')` exists, so on any live instance it is closed, which is
+  // why it is not a hole and not in this sweep.
+  //
+  // ⚠ `POST /api/admin/logout` is one of those seven and is
+  // ABSENT FROM THIS LIST BY DECISION, not by oversight (FUP-T19): it answers an
+  // idempotent 200 to everyone and deletes the session row only for the holder of
+  // the CURRENT token, so a 401 assertion here would pin the opposite of its
+  // contract. Its effect-level invariants — anonymous and stale callers destroy
+  // nothing — are pinned in the two `FUP-T19` describes at the bottom of this file,
+  // and the reasoning is repeated at the route.
   { method: 'get', path: '/api/admin/google-allowlist' },
   { method: 'post', path: '/api/admin/google-allowlist', data: { id_token: 'TEST:evil:evil@example.test' } },
   { method: 'delete', path: '/api/admin/google-allowlist', data: { email: 'evil@example.test' } },
   { method: 'post', path: '/api/cycles', data: { name: 'evil' } },
+  // 17 §UC-CS-002 (CS-T1): the cycle PATCH was never listed — it wrote status,
+  // password, markup and the dates, and now it writes `stage` too, which is the
+  // friend-facing „kde je moja káva". 01-architecture §Permissions lists the cycle
+  // stage PATCH as admin. No NEW route: the same `router.patch('/:id', requireAdmin)`.
+  { method: 'patch', path: '/api/cycles/1', data: { stage: 'arrived' } },
   // 12 §UC-PC-011 item 1 (PC-T2): the catalog import trio. The mount is
   // whole-mount `requireAdmin` (`app.use('/api/coffee-products', requireAdmin,
   // …)`), but the sweep still pins each route individually — a later
@@ -121,6 +197,23 @@ const ADMIN_ENDPOINTS = [
   // already-public products listing that shipped the same bytes inline). Do
   // not "fix" it in; its anonymous-200 pin lives in catalog-images.spec.js.
   { method: 'post', path: '/api/coffee-products/convert-images' },
+  // FUP-T23: the FOUR admin routes of the `/api/pickup-locations` MIXED mount.
+  //
+  // ⚠ NONE of them was in this sweep until now, and the mount carries no
+  // `requireAdmin` of its own (`index.js:77`) — every guard is per handler, which is
+  // exactly the mixed-mount shape the rules flag. There was no live exposure, but a
+  // future edit dropping one of those four `requireAdmin` arguments would have
+  // shipped green. Only the PUBLIC `GET /api/pickup-locations` (the friend/guest
+  // picker list) belongs in `PUBLIC_ENDPOINTS` below — it is there, and it stays.
+  //
+  // ⚠ Found by the FUP-T23 review, correcting that row's own comment, which had
+  // declined to write a local rejection test on the false claim that this sweep
+  // already covered the DELETE. A comment asserting coverage that does not exist is
+  // worse than no comment.
+  { method: 'get', path: '/api/pickup-locations/all' },
+  { method: 'post', path: '/api/pickup-locations', data: { name: 'evil' } },
+  { method: 'patch', path: '/api/pickup-locations/1', data: { name: 'evil' } },
+  { method: 'delete', path: '/api/pickup-locations/1' },
 ]
 
 const PUBLIC_ENDPOINTS = [
@@ -182,6 +275,35 @@ const FRIEND_IDENTITY_ENDPOINTS = [
   { method: 'put', path: '/api/friends/1/google-link' },
   { method: 'delete', path: '/api/friends/1/google-link' },
   { method: 'post', path: '/api/friends/1/google-prompt-dismissed' },
+  // GA-T11 — the FIRST password (`POST /api/friends/:id/set-password`). Friend-OWNED,
+  // so it belongs here and NOT in `ADMIN_ENDPOINTS`: an admin token must not mint a
+  // friend a credential through it (the admin path is `PUT /:id/reset-password`, which
+  // is a different route and raises `must_change_password`).
+  //
+  // ⚠ It passes this target-agnostic sweep only because the ownership gate runs BEFORE
+  // the modern-mode 409 — the same ordering argument the two `google-link` routes rely
+  // on, and the reason the route is written in that order. With the checks reversed,
+  // this sweep would see 409 on a legacy target (which the shared seed is) and 401 on
+  // a modern one, i.e. it would fail for a deployment setting rather than a bug.
+  { method: 'post', path: '/api/friends/1/set-password' },
+  // PI-T9 — 18 §UC-PI-013 item 16. The friend's own acknowledgement of „Ako to
+  // funguje". Friend-OWNED, so it belongs here and NEVER in `ADMIN_ENDPOINTS`: an
+  // admin token is not host identity, and there is no admin path to this column at
+  // all (there is deliberately no way to clear it either).
+  //
+  // ⚠ It passes this target-agnostic sweep for the same ordering reason the three
+  // routes above do — `requireFriendOwner` runs BEFORE the row lookup, so an
+  // anonymous caller gets 401 rather than the 404 an id that does not exist on the
+  // target would otherwise produce.
+  { method: 'post', path: '/api/friends/1/explainer-seen' },
+  // GL-T1 — 19 §UC-GL-001 / §UC-GL-011 item 1. The host's STANDING guest link: the
+  // lazy-minting read and the in-place rotation. HOST identity (`requireHost()`), so
+  // they belong here and NEVER in `ADMIN_ENDPOINTS`: an admin token is not host
+  // identity, and bare shared-password auth resolves no host (401 in both modes). The
+  // admin's own read/regenerate is a DIFFERENT path on /api/friends/:id (above).
+  // ⚠ The guard runs first, so an anonymous caller never reaches the mint.
+  { method: 'get', path: '/api/guest-links/standing' },
+  { method: 'post', path: '/api/guest-links/standing/regenerate' },
 ]
 
 test.describe('API security — friend-identity authorization', () => {
@@ -238,5 +360,138 @@ test.describe('API security — CORS lockdown', () => {
     const acao = res.headers()['access-control-allow-origin']
     expect(acao, 'evil origin must never be granted').not.toBe('https://evil.example.com')
     await ctx.dispose()
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FUP-T19 — `POST /api/admin/logout`
+//
+// ⚠⚠ THIS ROUTE IS PUBLIC ON PURPOSE AND MUST NOT JOIN `ADMIN_ENDPOINTS` ABOVE.
+// The sweep asserts 401-without-a-token; this route deliberately answers 200 to
+// everyone, so listing it there would pin the OPPOSITE of its contract. Its real
+// invariant is not the status code but the EFFECT: without the current token,
+// nothing is deleted. That is what this describe pins, and it is the reason the
+// omission above is a decision rather than an oversight (the WHY is also recorded
+// at the route itself, in `backend/src/routes/admin.js`).
+//
+// ⚠ WHY NOT `requireAdmin`: `AdminDashboard.vue:173` calls `api.logout()` with NO
+// try/catch, and `api.js`'s `request()` throws on a non-ok response — a 401 would
+// abort before `localStorage.removeItem('adminToken')` and before the redirect,
+// leaving an admin holding a stale token stuck on a dead dashboard with no way to
+// log out. A stale token is routine since module 10: `POST /api/admin/google-login`
+// rotates THE ONE app-wide token, so a second browser holding the previous one is
+// exactly this case. An idempotent 200 (the GSO-T5 convergence idiom) closes the
+// unauthenticated denial AND lets the stale client finish its own cleanup.
+//
+// ⚠ THE DESTRUCTIVE HALF RUNS ON A THROWAWAY BACKEND, and that is structural, not a
+// preference: there is ONE `admin_token` row app-wide, so a successful logout on the
+// shared gate would invalidate the token every other spec file captured — the IA trap
+// GA-T10 documents. On a throwaway backend the deletion dies with the process, so this
+// file can never leave the gate's admin session destroyed. The two NON-destructive
+// cases (anonymous, stale) are safe anywhere and therefore run against whatever
+// `BASE_URL` points at, which is where they are worth the most.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const LOGOUT_OK = { success: true }
+
+test.describe('API security — POST /api/admin/logout is public but not destructive (FUP-T19)', () => {
+  test('an ANONYMOUS logout is a 200 no-op — the admin session survives it', async ({ request }) => {
+    const login = await request.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
+    expect(login.status(), 'admin login for the anonymous-logout probe').toBe(200)
+    const { token } = await login.json()
+
+    // The `request` fixture carries no default headers (`playwright.config.js` sets
+    // none), so this call is genuinely anonymous — the same shape as every
+    // `ADMIN_ENDPOINTS` probe above, which is exactly what makes them comparable.
+    const res = await request.post('/api/admin/logout')
+    expect(res.status(), 'the route stays publicly callable').toBe(200)
+    expect(await res.json(), 'and its body is unchanged').toEqual(LOGOUT_OK)
+
+    // ⚠ THE ACTUAL SECURITY FIX, and it needs more than a status code: the session
+    // the anonymous caller tried to end must still be usable.
+    const after = await request.get('/api/friends', { headers: { 'X-Admin-Token': token } })
+    expect(after.status(), 'an anonymous POST must not end the admin session').toBe(200)
+  })
+
+  test('a STALE token (rotated out by a later login) logs out nothing — the live session survives', async ({ request }) => {
+    const first = await request.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
+    expect(first.status()).toBe(200)
+    const stale = (await first.json()).token
+
+    // The rotation module 10 made routine: a second mint replaces the one row.
+    const second = await request.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
+    expect(second.status()).toBe(200)
+    const live = (await second.json()).token
+    expect(live, 'the second login really did rotate the token').not.toBe(stale)
+    expect((await request.get('/api/friends', { headers: { 'X-Admin-Token': stale } })).status(),
+      'non-vacuity: the stale token is genuinely dead').toBe(401)
+
+    const res = await request.post('/api/admin/logout', { headers: { 'X-Admin-Token': stale } })
+    expect(res.status(), 'the stale client still gets its 200 and can finish its cleanup').toBe(200)
+    expect(await res.json()).toEqual(LOGOUT_OK)
+
+    const after = await request.get('/api/friends', { headers: { 'X-Admin-Token': live } })
+    expect(after.status(), 'a stale token must not end somebody else’s session').toBe(200)
+
+    const garbage = await request.post('/api/admin/logout', { headers: { 'X-Admin-Token': 'not-a-real-token' } })
+    expect(garbage.status(), 'a garbage token is the same no-op').toBe(200)
+    expect(await garbage.json()).toEqual(LOGOUT_OK)
+    expect((await request.get('/api/friends', { headers: { 'X-Admin-Token': live } })).status(),
+      'and it leaves the live session alone too').toBe(200)
+  })
+})
+
+test.describe('API security — logout WITH the current token really logs out (FUP-T19)', () => {
+  test('the current token deletes the row; a second logout is still 200; a fresh login recovers', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    let backend
+    let ctx
+    try {
+      backend = await startBackend({})
+      ctx = await playwrightRequest.newContext({ baseURL: backend.baseUrl })
+      const readToken = () => {
+        const db = new DatabaseSync(backend.dbPath)
+        try {
+          return db.prepare("SELECT value FROM settings WHERE key = 'admin_token'").get()
+        } finally {
+          db.close()
+        }
+      }
+
+      const login = await ctx.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
+      expect(login.status(), 'harness admin login (did seed.mjs run?)').toBe(200)
+      const token = (await login.json()).token
+      expect(readToken(), 'the session row exists before we touch it').toBeTruthy()
+
+      // Non-vacuity for the two no-op cases above, read off the row itself rather
+      // than off a status code: neither an anonymous nor a stale caller may delete it.
+      expect((await ctx.post('/api/admin/logout')).status()).toBe(200)
+      expect((await ctx.post('/api/admin/logout', { headers: { 'X-Admin-Token': 'wrong' } })).status()).toBe(200)
+      expect(readToken(), 'the row survived both refused logouts').toBeTruthy()
+      expect((await ctx.get('/api/friends', { headers: { 'X-Admin-Token': token } })).status()).toBe(200)
+
+      // …and the holder of the CURRENT token really does end the session.
+      const out = await ctx.post('/api/admin/logout', { headers: { 'X-Admin-Token': token } })
+      expect(out.status()).toBe(200)
+      expect(await out.json()).toEqual(LOGOUT_OK)
+      expect(readToken(), 'the session row is gone').toBeUndefined()
+      expect((await ctx.get('/api/friends', { headers: { 'X-Admin-Token': token } })).status(),
+        'and the token it destroyed no longer opens anything').toBe(401)
+
+      // Idempotence (GSO-T5): logging out twice is not an error, and the client that
+      // already lost its session still gets a clean answer.
+      const again = await ctx.post('/api/admin/logout', { headers: { 'X-Admin-Token': token } })
+      expect(again.status()).toBe(200)
+      expect(await again.json()).toEqual(LOGOUT_OK)
+      expect(readToken()).toBeUndefined()
+
+      // The way back is unaffected: password login mints a new session.
+      const relogin = await ctx.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
+      expect(relogin.status(), 'logging out did not break logging back in').toBe(200)
+      expect((await ctx.get('/api/friends', { headers: { 'X-Admin-Token': (await relogin.json()).token } })).status()).toBe(200)
+    } finally {
+      await ctx?.dispose()
+      await backend?.stop()
+    }
   })
 })

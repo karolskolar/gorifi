@@ -1,5 +1,7 @@
-import { test, expect, request as playwrightRequest } from '@playwright/test'
+import { test, expect, devices, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+// PI-T3 · 18 §UC-PI-019 item 3 — one home for portal → order navigation.
+import { gotoCycle } from '../helpers/portal.js'
 // ⚠ CROSS-TREE IMPORT, DELIBERATE. `bysquare` and `qrcode` are the frontend's own
 // dependencies — the very packages `PaymentModal.vue` generates the code with — and
 // this file must encode INDEPENDENTLY of the app to be worth anything. Adding a
@@ -7,8 +9,10 @@ import { ADMIN_PASSWORD } from '../fixtures.js'
 // no gain: the e2e recipe already builds the frontend, so its `node_modules` is
 // present by construction. If this import ever fails, run `npm install` in
 // `frontend/` — do NOT weaken it into a `test.skip`, it guards money.
-import { encode, decode, PaymentOptions, CurrencyCode, Version } from '../../frontend/node_modules/bysquare/lib/index.js'
-import QRCode from '../../frontend/node_modules/qrcode/lib/index.js'
+import { decode } from '../../frontend/node_modules/bysquare/lib/index.js'
+// GP-T3 — the pixel reader + the independent encode live in the shared QR helper now.
+import { readQrModules as readModules, independentQr } from '../helpers/qr-pixels.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // RD-GX-2 — the shared "Platba" modal (06 §UC-GX-005) and the g-confirm screen
 // (§UC-GX-004).
@@ -68,12 +72,14 @@ let guestOrder = null
 
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 async function makeHost() {
   const username = `gx2pay_${uniq}`.slice(0, 30)
@@ -132,6 +138,13 @@ test.beforeAll(async () => {
   guestOrder = await submit.json()
   expect(guestOrder.payment.iban, 'the seed configures payment settings').toBeTruthy()
   expect(guestOrder.payment.revolut_username).toBeTruthy()
+  // ⚠ SANCTIONED SPEC EDIT (PL-T3) — the NON-VACUITY GATE for everything this row adds.
+  // The VS and the creditor name are what the amount link, the PayMe link, the QR
+  // beneficiary and the copy row are all built from; a seed that left either blank would
+  // turn half the assertions below into "absent, as expected" and say nothing.
+  // `seed.mjs` 3b writes the creditor name under its own guard for exactly this reason.
+  expect(guestOrder.payment.variable_symbol, 'PL-T2 put the VS in the 201').toBeTruthy()
+  expect(guestOrder.payment.creditor_name, 'seed 3b configures a creditor name').toBeTruthy()
 })
 
 test.afterAll(async () => {
@@ -151,99 +164,18 @@ async function openFromStatus(page) {
   return d
 }
 
-/**
- * Reads the QR's module matrix off the RENDERED PIXELS of the <img>. Everything
- * here is derived from the image alone — the bounding box of the dark modules, the
- * module pitch from the 7-module top-left finder run, and the symbol size snapped
- * to the only legal series (21, 25, … ≡ 1 mod 4). Nothing about the expected
- * payload leaks in.
- */
-async function readModules(page) {
-  return page.evaluate(async () => {
-    const img = document.querySelector('.qr img')
-    if (!img) return { error: 'no img' }
-    if (!img.complete) await new Promise((r) => { img.onload = r })
-    const n = img.naturalWidth
-    const cv = document.createElement('canvas')
-    cv.width = n
-    cv.height = n
-    const cx = cv.getContext('2d')
-    cx.drawImage(img, 0, 0)
-    const px = cx.getImageData(0, 0, n, n).data
-    const dark = (x, y) => px[(y * n + x) * 4] < 128
-
-    let minX = n, minY = n, maxX = -1, maxY = -1
-    for (let y = 0; y < n; y++) {
-      for (let x = 0; x < n; x++) {
-        if (!dark(x, y)) continue
-        if (x < minX) minX = x
-        if (y < minY) minY = y
-        if (x > maxX) maxX = x
-        if (y > maxY) maxY = y
-      }
-    }
-    if (maxX < 0) return { error: 'all light' }
-
-    let run = 0
-    while (dark(minX + run, minY)) run++
-    const width = maxX - minX + 1
-    // The module pitch is fractional (a 45-module symbol painted into 234 px), so
-    // `width / pitch` lands near — not on — the true size. Snap it to the series.
-    const approx = width / (run / 7)
-    let size = 21
-    let best = Infinity
-    for (let s = 21; s <= 177; s += 4) {
-      const d = Math.abs(s - approx)
-      if (d < best) { best = d; size = s }
-    }
-    const step = width / size
-    const rows = []
-    for (let r = 0; r < size; r++) {
-      let line = ''
-      for (let c = 0; c < size; c++) {
-        line += dark(Math.round(minX + (c + 0.5) * step), Math.round(minY + (r + 0.5) * step)) ? '1' : '0'
-      }
-      rows.push(line)
-    }
-    return { size, matrix: rows.join('\n') }
-  })
-}
-
-/**
- * The independent encode: the same inputs through the same two libraries, in Node,
- * with no knowledge of the component. `paymentDueDate` is "today" exactly as
- * `PaymentModal.generateQr()` computes it.
- */
-function independentQr(amount, reference, iban) {
-  const t = new Date()
-  const dateStr = t.getFullYear().toString()
-    + (t.getMonth() + 1).toString().padStart(2, '0')
-    + t.getDate().toString().padStart(2, '0')
-  const qrString = encode({
-    invoiceId: '',
-    payments: [{
-      type: PaymentOptions.PaymentOrder,
-      amount,
-      currencyCode: CurrencyCode.EUR,
-      paymentDueDate: dateStr,
-      variableSymbol: '',
-      constantSymbol: '',
-      specificSymbol: '',
-      originatorsReferenceInformation: '',
-      paymentNote: reference || '',
-      bankAccounts: [{ iban: iban.replace(/\s/g, ''), bic: '' }],
-      beneficiary: { name: 'Gorifi', street: '', city: '' },
-    }],
-  }, { version: Version['1.0.0'] })
-  const qr = QRCode.create(qrString, { errorCorrectionLevel: 'M' })
-  const rows = []
-  for (let r = 0; r < qr.modules.size; r++) {
-    let line = ''
-    for (let c = 0; c < qr.modules.size; c++) line += qr.modules.get(r, c) ? '1' : '0'
-    rows.push(line)
-  }
-  return { qrString, size: qr.modules.size, matrix: rows.join('\n') }
-}
+// ⚠ SANCTIONED SPEC EDIT (GP-T3, 20 §UC-GP-011 item 1 — „extract `readModules` +
+// `independentQr` … and import them; NO assertion changes"). Both helpers moved,
+// byte for byte, into `../helpers/qr-pixels.js` (the one shared QR home PL-T4 created
+// — the spec's `e2e/qr-helpers.js` predates it, see that file's header), so the
+// Packeta (total + fee) QR in `guest-packeta.spec.js` is checked by the SAME code:
+//   · `readModules(page)` ≡ `readQrModules(page)` at its default `.qr img` selector —
+//     the pixel reader: dark bounding box, pitch from the 7-module finder run, size
+//     snapped to 21 + 4k; nothing about the expected payload leaks in;
+//   · `independentQr(amount, reference, iban, variableSymbol = '', beneficiaryName =
+//     'Gorifi')` — the same inputs through the same two libraries, in Node, with no
+//     knowledge of the component; PL-T3's two sanctioned parameters kept as they were.
+// Every call site below is unchanged.
 
 // ---------------------------------------------------------------------------
 // (A) the QR
@@ -260,6 +192,8 @@ test.describe('RD-GX-2 · the Pay-by-Square payload (§UC-GX-005)', () => {
       guestOrder.payment.amount,
       guestOrder.payment.reference,
       guestOrder.payment.iban,
+      guestOrder.payment.variable_symbol,
+      guestOrder.payment.creditor_name,
     )
 
     expect(scanned.size, 'a real QR grid size (21 + 4k)').toBe(expected.size)
@@ -277,7 +211,17 @@ test.describe('RD-GX-2 · the Pay-by-Square payload (§UC-GX-005)', () => {
     // The reference is SERVER-owned (`guestPaymentReference()`), never composed here.
     expect(pay.paymentNote).toBe(guestOrder.payment.reference)
     expect(pay.paymentNote).toBe(`G${guestOrder.order.id} / Marek Platba / ${cycle.name}`)
-    expect(pay.beneficiary.name).toBe('Gorifi')
+    // ⚠ SANCTIONED SPEC EDIT (PL-T3). The two fields 15 §UC-PL-004 adds — and the reason
+    // the QR is worth re-pinning at all: the VS is what makes the bank statement match
+    // this sub-order automatically, and the beneficiary is what stops the QR and the
+    // PayMe link naming two different payees in the same app (D3).
+    expect(pay.variableSymbol, 'the server-owned VS is IN the scanned payload')
+      .toBe(guestOrder.payment.variable_symbol)
+    expect(pay.variableSymbol, 'the guest scheme: `9` + six digits (§UC-PL-001)')
+      .toBe(`9${String(guestOrder.order.id).padStart(6, '0')}`)
+    expect(pay.beneficiary.name, 'the configured creditor name, not the `Gorifi` default')
+      .toBe(guestOrder.payment.creditor_name)
+    expect(pay.beneficiary.name, 'non-vacuity: the seed really configured one').toBeTruthy()
   })
 
   test('a generation failure shows the shipped error copy — never an empty frame, never a fake QR', async ({ page }) => {
@@ -363,7 +307,19 @@ test.describe('RD-GX-2 · the Platba modal shell (§UC-GX-005)', () => {
     const rev = d.getByRole('link', { name: /Revolut/ })
     await expect(rev).toHaveAttribute('target', '_blank')
     await expect(rev).toHaveAttribute('rel', 'noopener noreferrer')
-    expect(await rev.getAttribute('href')).toBe(`https://revolut.me/${guestOrder.payment.revolut_username}`)
+    // ⚠ SANCTIONED SPEC EDIT (PL-T3, 15 §UC-PL-005 — R6.1). The href is the AMOUNT
+    // variant now: `?amount=<minor units>&currency=EUR`, so one tap opens Revolut with
+    // the sum already filled in. `25.00` ⇒ `2500`.
+    // ⚠ The accessible name still STARTS with the shipped label, which is why the
+    // `{ name: /Revolut/ }` lookup above still resolves — and the amount in that label
+    // must be the same number the link carries, or the guest taps through to a different
+    // sum than the one they read. Pinned as one assertion for both.
+    const minorUnits = Math.round(guestOrder.payment.amount * 100)
+    expect(minorUnits, 'non-vacuity: a real amount, not 0').toBeGreaterThan(0)
+    expect(await rev.getAttribute('href'))
+      .toBe(`https://revolut.me/${guestOrder.payment.revolut_username}?amount=${minorUnits}&currency=EUR`)
+    await expect(rev, 'the label carries the same amount as the link').toContainText('25.00 EUR')
+    await expect(rev.locator('span.mono'), 'money renders mono (02 §UC-DS-012)').toHaveText('(25.00 EUR)')
     const revStyle = await rev.evaluate((el) => {
       const cs = getComputedStyle(el)
       const p = el.parentElement
@@ -417,7 +373,17 @@ test.describe('RD-GX-2 · the Platba modal shell (§UC-GX-005)', () => {
     await expect(row.locator('.val')).toHaveText(guestOrder.payment.reference)
     expect(await row.locator('.val').evaluate((el) => getComputedStyle(el).fontFamily)).toMatch(/Courier/i)
 
-    await expect(d.locator('.field-lbl')).toHaveText('Poznámka k platbe (uveďte ju pri platbe)')
+    // ⚠ SANCTIONED SPEC EDIT (PL-T3), and the one edit in this file that was FORCED
+    // rather than planned. §UC-PL-006 item 2 puts a second `label.field-lbl`
+    // („Variabilný symbol") in this section, so a bare `toHaveText(<string>)` on this
+    // locator is a strict-mode violation the moment the VS row renders. RETARGETED, NOT
+    // WEAKENED: the array form pins both labels AND their order, which is strictly more
+    // than the single string pinned. The reference label itself is unchanged
+    // (§UC-PL-006 item 3).
+    await expect(d.locator('.field-lbl')).toHaveText([
+      'Poznámka k platbe (uveďte ju pri platbe)',
+      'Variabilný symbol',
+    ])
 
     // The 2 s flip, with the exclamation mark (resolved conflict #6, UC-DS-011).
     const copy = row.getByRole('button')
@@ -486,8 +452,9 @@ test.describe('RD-GX-2 · module 04 inherits the restyle (§UC-GX-005 shared-con
     await page.route('**/api/pickup-locations*', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }))
 
-    await page.goto('/')
-    await page.getByRole('heading', { name: cycle.name, exact: true }).click()
+    // ⚠ PI-T3 · 18 §UC-PI-019 item 3 — the cycle CARDS are retired (§UC-PI-005);
+    // `helpers/portal.js gotoCycle()` is the one home of portal → order navigation.
+    await gotoCycle(page, cycle.id)
     await expect(page.locator('.app .cartbar')).toBeVisible()
 
     // (B) from the friend side: `FriendOrder.vue` mounts `<PaymentModal>`
@@ -677,7 +644,7 @@ test.describe('RD-GX-2 · g-confirm (§UC-GX-004)', () => {
     // `.field-help` paragraph under the copy row is GONE (the screen was too
     // crowded). The absence is asserted, not just the new copy — otherwise a revert
     // of the removal passes silently.
-    await expect(col.getByText('Na tomto odkaze uvidíte stav objednávky - uložte si ho!')).toBeVisible()
+    await expect(col.getByText('Na tomto odkaze uvidíš stav objednávky - ulož si ho!')).toBeVisible()
     await expect(col.locator('.field-help'), 'no help paragraph on this screen any more').toHaveCount(0)
 
     // ⚠ §UC-GX-004 item 6 — a NEW prototype affordance: pure client-side navigation
@@ -686,5 +653,247 @@ test.describe('RD-GX-2 · g-confirm (§UC-GX-004)', () => {
     await col.getByRole('button', { name: 'Zobraziť stav objednávky' }).click()
     await expect(page).toHaveURL(shown)
     await expect(page.getByTestId('guest-status')).toBeVisible()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// (F) PL-T3 — the PayMe deep link and the variable-symbol row (15 §UC-PL-005,006)
+//
+// ⚠ NEW IN THIS FILE, AND THE ONLY SANCTIONED ADDITIONS (PROGRESS.md PL-T3): the
+// `independentQr` signature above, the Revolut href, the `.field-lbl` array, and
+// everything below. `money-rounding.spec.js` is deliberately NOT touched — the friend
+// encode site belongs to PL-T4.
+//
+// ⚠ `pointer: coarse` IS EMULATED, AND THE EMULATION IS ASSERTED. Chromium reports a
+// coarse primary pointer under Playwright's mobile device descriptor (viewport +
+// `hasTouch` + `isMobile`), which `ios-input-zoom.spec.js` already relies on for the A12
+// font-size rule. Both halves of this feature are one `matchMedia` call away from being
+// vacuous — "the button is absent" passes on a page that never rendered — so every test
+// below reads the media state back and gates on it.
+const { defaultBrowserType: _payme_dbt, ...IPHONE } = devices['iPhone 13']
+
+/** The `.m-body` sections, by testid rather than by tag: PayMe is an `<a>` too. */
+async function bodySections(dialog) {
+  return dialog.locator('.m-body').evaluate((el) => Array.from(el.children).map((c) => {
+    if (c.dataset.testid === 'payme-link') return 'payme'
+    if (c.tagName === 'A') return 'revolut'
+    if (c.querySelector('.qr, .sub.mono')) return 'qr'
+    if (c.querySelector('.copyrow')) return 'reference'
+    return c.tagName
+  }))
+}
+
+/** Opens the modal on the status page WITHOUT touching the viewport (device-emulated). */
+async function openOnDevice(page) {
+  await page.goto(`/g/${link.token}/o/${guestOrder.order.order_token}`)
+  await page.getByTestId('open-payment').click()
+  const d = page.getByRole('dialog')
+  await expect(d.locator('.m-title')).toHaveText('Platba')
+  return d
+}
+
+/** Serves the status payload with one `payment` field blanked — hermetic, no settings PUT. */
+async function blankPaymentField(page, field) {
+  await page.route(`**/api/guest/${link.token}/orders/${guestOrder.order.order_token}`, async (route) => {
+    const res = await route.fetch()
+    const body = await res.json()
+    body.payment = { ...body.payment, [field]: '' }
+    await route.fulfill({ response: res, body: JSON.stringify(body) })
+  })
+}
+
+test.describe('PL-T3 §UC-PL-006 — the PayMe bar, on a phone', () => {
+  test.use({ ...IPHONE, viewport: PHONE })
+
+  test('⚠ it renders, and its href carries the IBAN, the amount, the VS, the note and the payee', async ({ page }) => {
+    const d = await openOnDevice(page)
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches),
+      'non-vacuity: the emulated device must really report a coarse pointer').toBe(true)
+
+    const payme = d.getByTestId('payme-link')
+    await expect(payme).toBeVisible()
+    await expect(payme).toHaveText('Zaplatiť cez bankovú appku (PayMe)')
+    await expect(payme).toHaveAttribute('target', '_blank')
+    await expect(payme).toHaveAttribute('rel', 'noopener noreferrer')
+
+    const href = await payme.getAttribute('href')
+    const url = new URL(href)
+    expect(url.origin + url.pathname).toBe('https://payme.sk/')
+    expect([...url.searchParams.keys()], 'the exact documented parameter set, in order')
+      .toEqual(['V', 'IBAN', 'AM', 'CC', 'DT', 'PI', 'MSG', 'CN'])
+    expect(url.searchParams.get('V')).toBe('1')
+    expect(url.searchParams.get('IBAN'), 'whitespace-free, upper-case')
+      .toBe(guestOrder.payment.iban.replace(/\s/g, '').toUpperCase())
+    expect(url.searchParams.get('AM'), 'two decimals, and the same money the QR carries')
+      .toBe(guestOrder.payment.amount.toFixed(2))
+    expect(url.searchParams.get('CC')).toBe('EUR')
+    const t = new Date()
+    expect(url.searchParams.get('DT'), 'today, the same derivation the QR uses').toBe(
+      t.getFullYear().toString()
+      + (t.getMonth() + 1).toString().padStart(2, '0')
+      + t.getDate().toString().padStart(2, '0'),
+    )
+    expect(url.searchParams.get('PI')).toBe(`/VS${guestOrder.payment.variable_symbol}/SS/KS`)
+    // ⚠ On the RENDERED href too: the triplet's slashes must reach the bank app bare. A
+    // parsed read decodes, so it cannot tell `PI=/VS…/SS/KS` from `PI=%2FVS…%2FSS%2FKS` —
+    // and a bank app that splits the raw query rather than decoding it very much can.
+    expect(href.split('?')[1].split('&').find((p) => p.startsWith('PI=')))
+      .toBe(`PI=/VS${guestOrder.payment.variable_symbol}/SS/KS`)
+    expect(url.searchParams.get('MSG'), 'the SERVER-owned reference, never recomposed')
+      .toBe(guestOrder.payment.reference)
+    expect(url.searchParams.get('CN')).toBe(guestOrder.payment.creditor_name)
+  })
+
+  test('it wears the DEFAULT .btn ink/paper colours and spans the body, between Revolut and the QR', async ({ page }) => {
+    const d = await openOnDevice(page)
+    expect(await bodySections(d), 'Revolut → PayMe → QR → reference (§UC-PL-006)')
+      .toEqual(['revolut', 'payme', 'qr', 'reference'])
+
+    const style = await d.getByTestId('payme-link').evaluate((el) => {
+      const cs = getComputedStyle(el)
+      const p = el.parentElement
+      const pcs = getComputedStyle(p)
+      return {
+        bg: cs.backgroundColor,
+        w: el.getBoundingClientRect().width,
+        parent: p.clientWidth - parseFloat(pcs.paddingLeft) - parseFloat(pcs.paddingRight),
+      }
+    })
+    // No bank brand colour: there is no prototype for this bar and no PayMe asset is
+    // self-hosted — a remote logo would break the zero-external-requests CSP sweep. The
+    // footer's „Zavrieť" is a plain `.btn`, so it is the reference for "default".
+    const plain = await d.locator('.m-foot button').evaluate((el) => getComputedStyle(el).backgroundColor)
+    expect(style.bg, 'the default paper, not the Revolut blue').toBe(plain)
+    expect(style.bg).not.toBe('rgb(0, 117, 235)')
+    expect(style.w, '.btn.block spans the body').toBeCloseTo(style.parent, 0)
+  })
+
+  test('⚠ NO creditor name ⇒ no PayMe even on a phone, and the QR falls back to „Gorifi“', async ({ page }) => {
+    await blankPaymentField(page, 'creditor_name')
+    const d = await openOnDevice(page)
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches),
+      'non-vacuity: still a coarse pointer, so the absence is the NAME’s doing').toBe(true)
+    // Non-vacuity, the other half: the payment surface really rendered.
+    await expect(d.getByRole('link', { name: /Revolut/ })).toBeVisible()
+    await expect(d.getByTestId('payment-vs')).toBeVisible()
+
+    await expect(d.getByTestId('payme-link'), '§UC-PL-002 rule 1: no payee, no PayMe').toHaveCount(0)
+    expect(await bodySections(d)).toEqual(['revolut', 'qr', 'reference'])
+
+    // D3's other half: the payload's beneficiary is `creditorName || 'Gorifi'`, so a
+    // blank setting encodes byte-identically to what shipped.
+    await expect(d.getByAltText('Pay by Square QR')).toBeVisible()
+    const scanned = await readModules(page)
+    expect(scanned.error).toBeUndefined()
+    const expected = independentQr(
+      guestOrder.payment.amount,
+      guestOrder.payment.reference,
+      guestOrder.payment.iban,
+      guestOrder.payment.variable_symbol,
+      'Gorifi',
+    )
+    expect(scanned.matrix, 'the QR names Gorifi when no creditor name is configured').toBe(expected.matrix)
+    expect(decode(expected.qrString).payments[0].beneficiary.name).toBe('Gorifi')
+  })
+})
+
+test.describe('PL-T3 §UC-PL-006 — no PayMe on a fine pointer', () => {
+  test('⚠ the desktop DOM is UNCHANGED: the QR is the desktop path', async ({ page }) => {
+    const d = await openFromStatus(page)
+    // ⚠ NON-VACUITY, three ways: the pointer really is fine, the modal really is open,
+    // and the feature really is configured (a blank creditor name would make the
+    // absence below true for the wrong reason).
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(false)
+    await expect(d.getByRole('link', { name: /Revolut/ })).toBeVisible()
+    expect(guestOrder.payment.creditor_name, 'a PayMe link WOULD be possible here').toBeTruthy()
+
+    await expect(d.getByTestId('payme-link')).toHaveCount(0)
+    // The `v-if` is what keeps this true — a CSS-hidden `<a>` would still be a child.
+    expect(await bodySections(d)).toEqual(['revolut', 'qr', 'reference'])
+  })
+})
+
+test.describe('PL-T3 §UC-PL-006 item 2 — the variable-symbol copy row', () => {
+  test('⚠ it shows the server VS and copies exactly that string', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    const d = await openFromStatus(page)
+
+    const row = d.getByTestId('payment-vs')
+    await expect(row).toHaveClass(/\bcopyrow\b/)
+    await expect(row.locator('.val')).toHaveText(guestOrder.payment.variable_symbol)
+    expect(await row.locator('.val').evaluate((el) => getComputedStyle(el).fontFamily)).toMatch(/Courier/i)
+
+    // ⚠ The reference row keeps its OWN testid and its own meaning: `payment-reference`
+    // is read for its text and its single button by three shipped specs, and it must
+    // never start resolving to two rows.
+    await expect(d.getByTestId('payment-reference')).toHaveCount(1)
+    await expect(d.getByTestId('payment-reference').locator('.val')).toHaveText(guestOrder.payment.reference)
+
+    // What the guest actually types into their bank — read back off the clipboard, not
+    // inferred from the label flip.
+    const copy = row.getByRole('button')
+    await expect(copy).toHaveText('Kopírovať')
+    await copy.click()
+    await expect(copy).toHaveText('Skopírované!')
+    expect(await page.evaluate(() => navigator.clipboard.readText()))
+      .toBe(guestOrder.payment.variable_symbol)
+  })
+
+  test('a payload WITHOUT a variable symbol renders today’s modal, never a made-up one', async ({ page }) => {
+    await blankPaymentField(page, 'variable_symbol')
+    const d = await openFromStatus(page)
+    // Non-vacuity: the section it lives in is on screen.
+    await expect(d.getByTestId('payment-reference')).toBeVisible()
+    await expect(d.getByTestId('payment-vs')).toHaveCount(0)
+    await expect(d.locator('.field-lbl')).toHaveText(['Poznámka k platbe (uveďte ju pri platbe)'])
+
+    // And the QR degrades the same way: a VS-less payload, not an invented symbol.
+    await expect(d.getByAltText('Pay by Square QR')).toBeVisible()
+    const scanned = await readModules(page)
+    expect(scanned.error).toBeUndefined()
+    const expected = independentQr(
+      guestOrder.payment.amount,
+      guestOrder.payment.reference,
+      guestOrder.payment.iban,
+      '',
+      guestOrder.payment.creditor_name,
+    )
+    expect(scanned.matrix).toBe(expected.matrix)
+  })
+})
+
+test.describe('PL-T3 §UC-PL-007 item 2 — the g-confirm modal is wired too', () => {
+  test('⚠ the auto-opened confirmation modal carries the VS and the amount link, from the SUBMIT response', async ({ page }) => {
+    // ⚠ The OTHER guest surface. `GuestOrder.vue` takes its payment data ONLY from the
+    // submit response (06 §UC-GX-004) — never from a second fetch — so a wiring that
+    // worked on the status page can still be missing here. This is a fresh sub-order
+    // placed through the UI, so its id (and therefore its VS) is not the one the rest of
+    // this file uses.
+    await page.setViewportSize(PHONE)
+    await page.goto(`/g/${link.token}`)
+    const card = page.getByTestId(`product-${coffee.id}`)
+    await card.getByTestId('inc-250g').click()
+    await page.getByTestId('open-checkout').click()
+    const checkout = page.getByRole('dialog')
+    await checkout.getByTestId('guest-name').fill('Vlado Confirm')
+    await checkout.getByTestId('guest-phone').fill('0903 555 111')
+    await checkout.getByTestId('guest-submit').click()
+    await expect(page.getByTestId('guest-confirmation')).toBeVisible({ timeout: TIMEOUT })
+
+    // The Platba modal auto-opens on confirmation (§UC-GSO-003).
+    const d = page.getByRole('dialog')
+    await expect(d.locator('.m-title')).toHaveText('Platba')
+
+    const vs = (await d.getByTestId('payment-vs').locator('.val').textContent()).trim()
+    expect(vs, 'the guest scheme, on a sub-order this test never saw the id of').toMatch(/^9\d{6}$/)
+    expect(vs, 'and NOT the one the rest of the file uses — this is its own order')
+      .not.toBe(guestOrder.payment.variable_symbol)
+
+    // 12.50 = one 250 g bag at 10.00 × the cycle's 1.25 markup.
+    const rev = d.getByRole('link', { name: /Revolut/ })
+    expect(await rev.getAttribute('href'))
+      .toBe(`https://revolut.me/${guestOrder.payment.revolut_username}?amount=1250&currency=EUR`)
+    await expect(rev).toContainText('12.50 EUR')
+    await expect(d.locator('.m-head .sub')).toHaveText('Suma na úhradu: 12.50 EUR')
   })
 })

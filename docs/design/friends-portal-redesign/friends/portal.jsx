@@ -50,11 +50,11 @@ function CycleCard({ c, nav, onShare }) {
   const open = c.status === "open";
   const planned = c.status === "planned";
   return (
-    <div className={"card" + (open ? " hl" : "")} style={{ padding: 16, cursor: planned ? "default" : "pointer", opacity: planned ? 0.85 : 1 }}
+    <div className={"card" + (open ? " hl" : planned ? " dashed" : "")} style={{ padding: planned ? 14 : 16, cursor: planned ? "default" : "pointer", opacity: planned ? 0.7 : 1 }}
       onClick={() => !planned && nav(c.type === "bakery" ? "f-bakery" : "f-order")}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
         <div style={{ minWidth: 0 }}>
-          <div className="display" style={{ fontSize: 22, lineHeight: 1 }}>{c.name}</div>
+          <div className="display" style={{ fontSize: planned ? 18 : 22, lineHeight: 1, color: planned ? "var(--ink-dim)" : "var(--ink)" }}>{c.name}</div>
           <div className="mono sub" style={{ fontSize: 12, marginTop: 7, display: "flex", alignItems: "center", gap: 6 }}>{I.cal()} {c.date}</div>
         </div>
         {!planned && (
@@ -72,10 +72,12 @@ function CycleCard({ c, nav, onShare }) {
       </div>
       {open && (
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 12, borderTop: "2px solid rgba(10,10,10,0.12)", paddingTop: 12 }}>
-          <span className="sub" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            {c.guestCount ? <span className="tabbadge">{c.guestCount}</span> : null}
-            {c.guestCount ? "kolegovia cez váš odkaz" : "Objednávate aj pre kolegov?"}
-          </span>
+          {c.guestCount ? (
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 800, fontSize: 15, lineHeight: 1.2 }}>{c.guestCount} kolegovia{c.guestKilos ? <span> · {c.guestKilos} kg</span> : null}</div>
+              <div className="sub" style={{ fontSize: 12.5, marginTop: 2 }}>objednali cez váš odkaz</div>
+            </div>
+          ) : <span className="sub">Objednávate aj pre kolegov?</span>}
           <button className="btn sm" onClick={(e) => { e.stopPropagation(); onShare(c); }}>{I.share()} Zdieľať</button>
         </div>
       )}
@@ -175,12 +177,17 @@ function ProfileModal({ onClose }) {
   return (
     <Modal title="Upraviť profil" onClose={onClose}
       footer={<React.Fragment><button className="btn" onClick={onClose}>Zrušiť</button><button className="btn accent" onClick={onClose}>Uložiť</button></React.Fragment>}>
-      <div style={{ display: "flex", gap: 10 }}>
-        <Field label="Jedinečné ID"><div className="copyrow"><div className="val">{D.friend.code}</div></div></Field>
-        <Field label="Užívateľské meno"><div className="copyrow"><div className="val">{D.friend.username}</div></div></Field>
-      </div>
-      <Field label="Prihlasovacie meno *" help="Toto meno vidí správca a kolegovia.">
+      <Field label="Login" help="Prihlasovacie meno. Nemení sa.">
+        <div className="copyrow"><div className="val">{D.friend.username}</div></div>
+      </Field>
+      <Field label="Meno a priezvisko *" help="Celé meno. Uvádza sa na zásielke pri doručení Packetou a vidí ho správca aj kolegovia.">
         <Input defaultValue={D.friend.name} />
+      </Field>
+      <Field label="Mobil *" help="Pre koordináciu objednávky a odovzdanie.">
+        <Input defaultValue={D.friend.phone || ""} placeholder="09xx xxx xxx" inputMode="tel" />
+      </Field>
+      <Field label="E-mail" help="Voliteľné. Packeta naň posiela informácie o zásielke; slúži aj na obnovenie prístupu.">
+        <Input defaultValue={D.friend.email || ""} placeholder="meno@priklad.sk" inputMode="email" />
       </Field>
       <Field label="Adresa Packeta výdajného miesta" help="Predvolená adresa pre doručenie Packetou (voliteľné).">
         <Input defaultValue={D.friend.packeta} placeholder="napr. Z-BOX Hlavná 15, Bratislava" />

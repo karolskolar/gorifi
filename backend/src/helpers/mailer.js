@@ -36,7 +36,12 @@ const MAILGUN_TIMEOUT_MS = 10_000;
 
 // Deliberately loose — the authority on deliverability is Mailgun, not a regex. This
 // only catches "obviously not an address" so a typo does not burn a send.
-const EMAIL_SHAPE = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
+//
+// ⚠ EXPORTED (20 §UC-GP-002, GP-T1): a Packeta guest checkout REQUIRES a plausible
+// e-mail, and „plausible" is THIS regex — one home, so the checkout gate and the send
+// gate can never disagree about the same address. The frontend mirror lives in
+// `frontend/src/lib/email-shape.js` (GP-T3).
+export const EMAIL_SHAPE = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
 
 // Present only if ALL THREE are set; a partial configuration is treated as unconfigured
 // rather than half-attempted (an approval must not fail because a deploy forgot one var).

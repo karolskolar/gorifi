@@ -172,13 +172,39 @@ export async function startBackend(extraEnv) {
   }
 
   // The same seeding the local recipe does — it is what sets the admin password.
+  //
+  // ⚠⚠ `DB_PATH` MUST BE OVERRIDDEN HERE, AND IT WAS NOT UNTIL PI-T9 FOUND IT THE
+  // HARD WAY. `BASE_URL` alone used to be enough because `seed.mjs` was a pure HTTP
+  // client — it never opened a database, so the ambient `DB_PATH` the run recipe
+  // exports (the SHARED gate database) was inherited and harmlessly ignored.
+  // 18 §UC-PI-013's step 7 made `seed.mjs` write to `DB_PATH` directly, and that
+  // inherited value then pointed at the wrong file: every throwaway backend this
+  // helper starts was pre-stamping the GATE database instead of its own. Measured, on
+  // a 24-file run: `E2EExplainerGate` — the one row the seed must leave NULL — was
+  // stamped 14 s in, and `portal-explainer.spec.js` §10 reddened with no sign of why.
+  //
+  // The invariant, now that it is load-bearing: **`DB_PATH` names the database that
+  // `BASE_URL` is serving.** Anything that moves `BASE_URL` moves `DB_PATH` with it.
+  // `seed.mjs` also verifies the pairing itself and skips rather than writing into a
+  // stranger's database, so this line and that check cover the same mistake from both
+  // ends. ⚠ But `stdio: 'ignore'` means THIS caller — the one the check exists for —
+  // cannot read the message it prints, so the seed signals the mismatch with a
+  // non-zero exit code and the handler below is what makes it audible.
   await new Promise((resolve) => {
     const seed = spawn(process.execPath, [SEED_SCRIPT], {
       cwd: E2E_DIR,
-      env: { ...process.env, BASE_URL: baseUrl },
+      env: { ...process.env, BASE_URL: baseUrl, DB_PATH: dbPath },
       stdio: 'ignore',
     })
-    seed.on('exit', resolve)
+    seed.on('exit', (code) => {
+      if (code) {
+        console.error(
+          `[mailgun-harness] seed.mjs exited ${code} for ${baseUrl} (DB_PATH ${dbPath}) — `
+          + 'most likely the DB_PATH/BASE_URL pairing check; re-run it without stdio:ignore to read why.'
+        )
+      }
+      resolve()
+    })
     seed.on('error', resolve)
   })
 

@@ -39,6 +39,11 @@
 // only both pass if the flag is really the gate.
 
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding, logout, openProfile, expectChromeName } from '../helpers/portal.js'
 import { DatabaseSync } from 'node:sqlite'
 import { ADMIN_PASSWORD, FRIENDS_PASSWORD } from '../fixtures.js'
 import { execFileSync } from 'node:child_process'
@@ -71,6 +76,13 @@ const STRIP_RE = /google_sub/
 
 let seq = 0
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
+
+// ⚠ 18 §UC-PI-015 (PI-T10) — every fixture friend in this file that LOGS IN gets a
+// phone. „Mobil *" is required on the self-edit route from PI-T10 on, and the profile
+// modal auto-opens on a login when the stored phone is empty; without this, every
+// §UC-GA-006 prompt / §UC-GA-007 profile test in this file would be measuring a second
+// modal that opened by itself. Same containment shape as PI-T9's `explainerSeen`.
+const GA_FIXTURE_PHONE = '0900 123 456'
 const tag = (label) => `${label}-${uniq}-${++seq}`
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -136,10 +148,24 @@ function makeApi(ctx, adminToken, dbPath) {
       expect((await r.json()).authMode).toBe(mode)
     },
     /** Friend with a username + a password whose forced-change flag is CLEARED. */
-    async friendWithLogin(label, { keepForcedChange = false } = {}) {
+    /**
+     * ⚠ `explainerSeen` (PI-T9, 18 §UC-PI-013) DEFAULTS TO TRUE, and the default is
+     * the load-bearing half. A friend created here has never acknowledged „Ako to
+     * funguje", so every UI login in this file would land on `/ako-to-funguje` — a
+     * view with a BACK CHEVRON where the hamburger is (§UC-PI-003), which is what
+     * `logout()` / `openProfile()` / `expectChromeName()` all reach for. The stamp
+     * makes these fixtures behave like the established friends they stand in for.
+     * Pass `false` where the payload's own NULL is the subject.
+     */
+    async friendWithLogin(label, { keepForcedChange = false, explainerSeen = true } = {}) {
       const name = `GA4 ${label}`
       const username = `ga4${label}`.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 30)
-      const created = await ctx.post('/api/friends', { headers: admin(), data: { name } })
+      // ⚠ 18 §UC-PI-015 (PI-T10) — THE PHONE IS LOAD-BEARING, same shape as the
+      // `explainerSeen` stamp above it. „Mobil *" is required on the friend's own
+      // profile route now, and the profile modal AUTO-OPENS on a LOGIN for a friend
+      // whose stored phone is empty — which would put a second `NeoModal` on top of
+      // every §UC-GA-006 prompt and §UC-GA-007 profile test in this file.
+      const created = await ctx.post('/api/friends', { headers: admin(), data: { name, phone: GA_FIXTURE_PHONE } })
       expect(created.status(), 'friend create').toBe(201)
       const friend = await created.json()
       expect((await ctx.put(`/api/friends/${friend.id}/admin-username`, {
@@ -162,6 +188,15 @@ function makeApi(ctx, adminToken, dbPath) {
         })
         expect(chg.status(), 'clear forced change').toBe(200)
         password = 'ownPass123'
+      }
+      // ⚠ Written straight into the row rather than through the route: with
+      // `keepForcedChange` there is no usable session to authenticate with, and the
+      // helper must behave the same either way. `linkGoogle` above sets the module's
+      // other precondition the same way.
+      if (explainerSeen) {
+        withDb((db) => {
+          db.prepare("UPDATE friends SET explainer_seen_at = datetime('now') WHERE id = ?").run(Number(friend.id))
+        })
       }
       return { ...friend, username, password }
     },
@@ -190,10 +225,26 @@ function makeApi(ctx, adminToken, dbPath) {
 
     // ── GA-T5 (§UC-GA-004) ───────────────────────────────────────────────────
     /** A friend with NO credentials at all — the `warning: 'no_password'` fixture. */
-    async plainFriend(label) {
-      const created = await ctx.post('/api/friends', { headers: admin(), data: { name: `GA5 ${label}` } })
+    async plainFriend(label, { explainerSeen = true } = {}) {
+      // ⚠ 18 §UC-PI-015 (PI-T10) — THE PHONE IS LOAD-BEARING, same shape as the
+      // `explainerSeen` stamp above it. „Mobil *" is required on the friend's own
+      // profile route now, and the profile modal AUTO-OPENS on a LOGIN for a friend
+      // whose stored phone is empty — which would put a second `NeoModal` on top of
+      // every §UC-GA-006 prompt and §UC-GA-007 profile test in this file.
+      const created = await ctx.post('/api/friends', { headers: admin(), data: { name: `GA5 ${label}`, phone: GA_FIXTURE_PHONE } })
       expect(created.status(), 'friend create').toBe(201)
-      return created.json()
+      const friend = await created.json()
+      // ⚠ PI-T9 (18 §UC-PI-013), same default and same reason as `friendWithLogin`
+      // above: these friends log into the PORTAL (through the card's Google button),
+      // and an unacknowledged friend lands on `/ako-to-funguje`, where the hamburger
+      // the profile tests reach for is a back chevron. Written into the row because a
+      // credential-less friend has no session of their own to authenticate with.
+      if (explainerSeen) {
+        withDb((db) => {
+          db.prepare("UPDATE friends SET explainer_seen_at = datetime('now') WHERE id = ?").run(Number(friend.id))
+        })
+      }
+      return friend
     },
     async givePassword(id, password = 'somePass123') {
       const r = await ctx.put(`/api/friends/${id}/reset-password`, { headers: admin(), data: { password } })
@@ -369,7 +420,9 @@ test.describe('§UC-GA-003 — POST /api/friends/auth/google', () => {
     test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
     await withGoogleBackend({}, async ({ api, ctx }) => {
       await api.setModernMode()
-      const friend = await api.friendWithLogin(tag('happy'))
+      // ⚠ `explainerSeen: false` — this test's subject is the payload, and the NULL
+      // is what a friend who has never acknowledged the explainer publishes.
+      const friend = await api.friendWithLogin(tag('happy'), { explainerSeen: false })
       const sub = tag('sub-happy')
       api.linkGoogle(friend.id, { sub, email: 'linked@example.test' })
 
@@ -388,7 +441,16 @@ test.describe('§UC-GA-003 — POST /api/friends/auth/google', () => {
         'expiresAt', 'friend', 'googleLinked', 'googlePromptDismissed',
         'hasCredentials', 'mustChangePassword', 'success', 'token',
       ])
-      expect(Object.keys(body.friend).sort()).toEqual(['id', 'name', 'packeta_address', 'uid', 'username'])
+      // ⚠ SANCTIONED RETARGET (18 §UC-PI-013, PI-T9; 03 UC-FL-013 case (a)):
+      // `explainer_seen_at` joins the friend object of ALL FOUR login payloads, this
+      // one included, because the first-login gate has to be decidable before the
+      // portal paints. The PROTECTED PROPERTY is untouched and is the reason this
+      // line is an exact set rather than a `toContain`: a hand-picked literal turning
+      // into a `SELECT *` spread must still red here, and it still does — the row also
+      // holds `password_hash`, `access_token`, `invite_code`, `google_sub`,
+      // `display_name`, `phone`, `email`.
+      expect(Object.keys(body.friend).sort()).toEqual(['explainer_seen_at', 'id', 'name', 'packeta_address', 'uid', 'username'])
+      expect(body.friend.explainer_seen_at, 'a friend who has never acknowledged the explainer').toBeNull()
       expect(body.success).toBe(true)
       expect(body.friend.id).toBe(friend.id)
       expect(body.friend.username).toBe(friend.username)
@@ -1591,8 +1653,6 @@ const PROMPT_LATER = 'Teraz nie'
 const PROMPT_NEVER = 'Už sa nepýtať'
 const PROMPT_FOOTNOTE = 'Prepojenie nájdete kedykoľvek v profile.'
 
-const PORTAL_HEADING = 'Objednávkové cykly'
-
 /** Start a throwaway backend, put it in `mode`, and hand the test its API + a page. */
 async function withPortal({ mode = 'modern', env = {} } = {}, fn) {
   await withGoogleBackend(env, async (bundle) => {
@@ -1638,7 +1698,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       }
 
       // The friend IS logged in behind it — the prompt is a prompt, not a gate.
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
 
       // ⚠ One modal at a time: the credential-setup dialog and the forced gate must
       // not be up, and neither must a second copy of this one.
@@ -1683,7 +1743,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       expect(api.row(friend.id).google_prompt_dismissed, 'and writes nothing to the DB').toBe(0)
 
       // ── the next login shows it again ──────────────────────────────────────
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await loginModern(page, backend, friend)
       await expect(promptOf(page), 'a declined prompt returns at the next login').toBeVisible()
     })
@@ -1711,9 +1771,9 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       expect(api.row(friend.id).google_prompt_dismissed).toBe(1)
       expect(api.row(friend.id).google_sub, 'dismissing is not linking').toBeNull()
 
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await loginModern(page, backend, friend)
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
       await expect(promptOf(page), 'a dismissed prompt never auto-opens again').toHaveCount(0)
     })
   })
@@ -1730,12 +1790,12 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       await trackGoogle(page, { fulfilWith: GIS_STUB })
 
       await loginModern(page, backend, linked)
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
       await expect(promptOf(page), 'googleLinked === true ⇒ nothing to offer').toHaveCount(0)
 
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await loginModern(page, backend, dismissed)
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
       await expect(promptOf(page), 'googlePromptDismissed === true ⇒ silenced').toHaveCount(0)
     })
   })
@@ -1773,7 +1833,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       }))
       await page.goto(`${backend.baseUrl}/`)
 
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
       await expect(
         page.getByTestId('magic-prompt'),
         'the session really IS a magic-link session — ML-T6\'s own prompt is on screen'
@@ -1791,7 +1851,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       await promptOf(page).getByRole('button', { name: PROMPT_LATER, exact: true }).click()
 
       await page.reload()
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
       await expect(promptOf(page), 'a restore is not a login (§UC-GA-006)').toHaveCount(0)
     })
   })
@@ -1855,8 +1915,11 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
 
       // Non-vacuity: the portal really rendered. "Zero requests" is otherwise
       // satisfied by a page that failed to mount at all.
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
-      await expect(page.locator('.appbar')).toContainText(friend.name)
+      await expectLanding(page)
+      // ⚠ RETARGETED BY PI-T2 (18 §UC-PI-003, case (a)): the friend's name left the
+      // appbar for the drawer header, which is now the only place the chrome paints
+      // an identity. Same claim, one home (`helpers/portal.js`).
+      await expectChromeName(page, friend.name)
       await expect(page.getByTestId('google-signin'), 'the login card never rendered').toHaveCount(0)
       await page.waitForLoadState('networkidle')
       expect(hits,
@@ -1904,7 +1967,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       await page.getByPlaceholder('Zadajte heslo').fill(friend.password)
       await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
 
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
       await expect(promptOf(page), 'not modern ⇒ no link offer').toHaveCount(0)
 
       const handshake = await (await api.passwordLogin(friend.username, friend.password)).json()
@@ -1912,7 +1975,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       expect(handshake.googlePromptDismissed, '…and false').toBe(false)
 
       // ── flip the SAME backend to modern: the absence above cannot be vacuous ──
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await api.setAuthMode('modern')
       await loginModern(page, backend, friend)
       await expect(promptOf(page), 'modern ⇒ the very same friend is offered the link').toBeVisible()
@@ -1955,12 +2018,12 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       await gate.getByLabel(/^potvrdiť nové heslo$/i).fill('gatePass12345')
       await gate.getByRole('button', { name: /Nastaviť heslo a pokračovať/ }).click()
       await expect(gate).toHaveCount(0)
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
       await expect(promptOf(page), 'the prompt skips this login entirely').toHaveCount(0)
 
       // The next login has no gate, so it does get the prompt — the absence above is
       // about the gate, not about this friend.
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await loginModern(page, backend, { ...friend, password: 'gatePass12345' })
       await expect(promptOf(page)).toBeVisible()
     })
@@ -1999,19 +2062,30 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       await promptOf(page).getByRole('button', { name: PROMPT_LATER, exact: true }).click()
       await expect(promptOf(page)).toHaveCount(0)
 
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await loginInPlace(bob)
 
-      await expect(page.locator('.appbar')).toContainText(bob.name)
       await expect(promptOf(page), "Alice's decision must not reach Bob").toBeVisible()
 
       // …and back the other way, still in the same document: Bob dismissing must not
       // re-arm — or re-silence — Alice.
       await promptOf(page).getByRole('button', { name: PROMPT_LATER, exact: true }).click()
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await expect(promptOf(page)).toHaveCount(0)
+      // ⚠ RETARGETED BY PI-T2 (18 §UC-PI-003, case (a)) — and MOVED one step later,
+      // which is the load-bearing detail. The friend's name left the appbar for the
+      // drawer header, and the drawer opens from a hamburger that any open NeoModal's
+      // scrim covers. The Google prompt is exactly such a modal, so the identity claim
+      // is made once the prompt has been dismissed — the same claim, one step later,
+      // and still inside the SAME document (no reload), which is what this test is
+      // about.
+      await expectChromeName(page, bob.name)
+
+      await logout(page)
       await loginInPlace(alice)
-      await expect(page.locator('.appbar')).toContainText(alice.name)
       await expect(promptOf(page), 'each handshake owns its own decision').toBeVisible()
+      await promptOf(page).getByRole('button', { name: PROMPT_LATER, exact: true }).click()
+      await expect(promptOf(page)).toHaveCount(0)
+      await expectChromeName(page, alice.name)
     })
   })
 
@@ -2064,7 +2138,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       // silently dead. Nothing else in the suite can see this.
       await promptOf(page).getByRole('button', { name: 'Zatvoriť dialóg' }).click()
       await expect(promptOf(page)).toHaveCount(0)
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await expect(page.getByTestId('google-signin')).toBeVisible()
       await expect
         .poll(async () => (await page.evaluate(() => window.__gisCalls.initialize)).length,
@@ -2074,8 +2148,11 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       // Proof rather than inference: the callback the login card now owns really is a
       // LOGIN callback — firing it signs the (now linked) friend straight in.
       await page.evaluate((token) => window.__gisCallback({ credential: token }), `TEST:${sub}:me@example.test`)
-      await expect(page.locator('.appbar')).toContainText(friend.name)
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
+      // ⚠ RETARGETED BY PI-T2 (18 §UC-PI-003, case (a)): the friend's name left the
+      // appbar for the drawer header, which is now the only place the chrome paints
+      // an identity. Same claim, one home (`helpers/portal.js`).
+      await expectChromeName(page, friend.name)
 
       // ⚠ "NEVER FOR A GOOGLE LOGIN" (§UC-GA-006) — the one trigger branch that had no
       // assertion of its own. The two lines above do NOT cover it: the portal heading
@@ -2178,7 +2255,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       const hits = await trackGoogle(page)
 
       await loginModern(page, backend, friend)
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
       await expect(promptOf(page)).toHaveCount(0)
       await page.waitForLoadState('networkidle')
       expect(hits, 'an unconfigured deployment must be Google-free').toEqual([])
@@ -2249,8 +2326,8 @@ const sectionOf = (page) => page.getByTestId('profile-google')
  * as "no .m-title", which looks like a broken modal rather than a race.
  */
 async function openProfileSection(page) {
-  await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
-  await page.locator('.appbar .titles').click()
+  await expectLanding(page)
+  await openProfile(page)
   await expect(page.getByRole('dialog').locator('.m-title')).toHaveText('Upraviť profil')
   return sectionOf(page)
 }
@@ -2434,25 +2511,27 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
       await page.goto(`${backend.baseUrl}/`)
       await expect(page.getByTestId('google-signin')).toBeVisible()
       await fireCredential(page, `TEST:${sub}:nopass@example.test`)
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
 
       const section = await openProfileSection(page)
-      // ⚠ THE MISSING AFFORDANCE, pinned as an absence (constraint 3 above): this
-      // friend has no password, the change-password fold is keyed on `hasCredentials`
-      // and therefore hidden, and NOTHING replaces it — the profile offers no way to
-      // set a first password. Delete this assertion when the follow-up row lands.
+      // ⚠ WAS AN ABSENCE PIN, NOW THE POSITIVE (GA-T11 — e2e-immutability case (a),
+      // and this row is that assertion's stated mandate: it carried "delete this when
+      // the follow-up row lands"). It used to assert `toHaveCount(0)` over every
+      // `/heslo/i` button in this dialog, because a friend with no `password_hash` had
+      // NO way to get one: the change-password fold is keyed on `hasCredentials` and
+      // therefore hidden for exactly them, and `needsCredentialSetup` fires only in
+      // transition mode.
       //
-      // ⚠ Asserted as "no password control AT ALL", not as the absence of the string
-      // "Zmeniť heslo". That narrower form would (a) merely duplicate
-      // `portal-profile-modal.spec.js:265`, same locator and same condition, and
-      // (b) FAIL TO DETECT THE GAP CLOSING: a first-password affordance would be
-      // labelled "Nastaviť heslo", so it would sail straight past a check that only
-      // looks for "Zmeniť". `/heslo/i` catches both, and anything else somebody names
-      // it in Slovak.
-      const passwordControls = page.getByRole('dialog').getByRole('button', { name: /heslo/i })
-      await expect(passwordControls,
-        'a credential-less friend has NO password-setting control in the profile')
-        .toHaveCount(0)
+      // The invariant it protected is UNCHANGED and still asserted, only inverted:
+      // this friend must have a password control, and it must be the SET one, not the
+      // CHANGE one. The old pin was deliberately written on `/heslo/i` rather than on
+      // the string "Zmeniť heslo" precisely so that it would notice this difference —
+      // so the retarget names both labels explicitly.
+      const dialog = page.getByRole('dialog')
+      await expect(dialog.getByRole('button', { name: 'Nastaviť heslo', exact: true }),
+        'a credential-less friend is offered a FIRST password (GA-T11)').toHaveCount(1)
+      await expect(dialog.getByRole('button', { name: 'Zmeniť heslo', exact: true }),
+        'and never the CHANGE fold — there is no current password to prove').toHaveCount(0)
 
       await expect(section.getByTestId('profile-google-email')).toHaveText('nopass@example.test')
       await section.getByRole('button', { name: GOOGLE_UNLINK, exact: true }).click()
@@ -2471,6 +2550,77 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
       await expect(section).toContainText(GOOGLE_SECTION_HELPER)
       await expect(section.getByTestId('profile-google-warning')).toContainText(NO_PASSWORD_WARNING)
       expect(api.row(friend.id).google_sub).toBeNull()
+    })
+  })
+
+  test('⚠ GA-T11 — a credential-less friend SETS a first password from the profile, and can then log in with it', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    // The gap this row closes, driven end to end through the UI the friend actually
+    // has. `first-password.spec.js` owns the route's statuses and boundaries; what is
+    // asserted HERE is the part only a browser can prove: the control exists on the
+    // one surface a credential-less friend can reach in modern mode, it is wired to
+    // the right endpoint, the session survives the write (the route invalidates every
+    // session, including the presenting one), and the resulting password really works
+    // on the login card.
+    await withPortal({}, async ({ backend, api }) => {
+      const friend = await api.plainFriend(tag('setpw'))
+      const sub = tag('sub-setpw')
+      api.linkGoogle(friend.id, { sub, email: 'setpw@example.test' })
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      await page.goto(`${backend.baseUrl}/`)
+      await expect(page.getByTestId('google-signin')).toBeVisible()
+      await fireCredential(page, `TEST:${sub}:setpw@example.test`)
+      await expectLanding(page)
+
+      await openProfileSection(page)
+      const dialog = page.getByRole('dialog')
+      const fold = dialog.getByTestId('profile-set-password')
+
+      // Collapsed: one toggle, and the honest reason for it.
+      await expect(fold).toContainText('Zatiaľ nemáte vlastné heslo')
+      await fold.getByRole('button', { name: 'Nastaviť heslo', exact: true }).click()
+
+      // ⚠ The username field is here BECAUSE this fixture's `friends.username` is NULL
+      // — a password with no name to type beside it would not be a login at all. It is
+      // NOT the only reachable state: admin `PUT /:id/admin-username` sets a username
+      // without a password, and for such a friend this field is absent and the supplied
+      // one is ignored (never a rename). `first-password.spec.js` owns that branch.
+      const username = `ga11${uniq}`.toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 30)
+      const password = 'firstOwnPw123'
+      await fold.getByLabel('Užívateľské meno *').fill(username)
+      await fold.getByLabel(/^heslo$/i).fill(password)
+      await fold.getByLabel(/^potvrdiť heslo$/i).fill(password)
+
+      const [res] = await Promise.all([
+        page.waitForResponse((r) => r.url().includes('/set-password')),
+        fold.getByRole('button', { name: 'Nastaviť heslo', exact: true }).click(),
+      ])
+      expect(res.status(), 'the write went to the new route').toBe(200)
+      expect(res.request().method()).toBe('POST')
+
+      // ⚠ THE SESSION SURVIVED. The route deletes every `friend_sessions` row for this
+      // friend — the presenting one included — so a client that ignored the re-mint
+      // would look fine for one tick and 401 on its next request. Proving the portal is
+      // still usable is what catches that.
+      await expectLanding(page)
+
+      // The fold flips IN PLACE off the merged `hasCredentials`, with no reload: the
+      // set form is gone and the change form has taken its slot.
+      await expect(dialog.getByTestId('profile-set-password')).toHaveCount(0)
+      await expect(dialog.getByRole('button', { name: 'Zmeniť heslo', exact: true })).toHaveCount(1)
+
+      const row = api.withDb((db) => db.prepare('SELECT username, password_hash FROM friends WHERE id = ?').get(Number(friend.id)))
+      expect(row.username).toBe(username)
+      expect(row.password_hash, 'a real hash, not the plaintext').toMatch(/^\$2[aby]\$/)
+
+      // ⚠ AND IT IS A REAL LOGIN, not just a 200. Out of the portal and back in through
+      // the modern login card, with nothing but the name and password just chosen.
+      await page.evaluate(() => localStorage.clear())
+      await loginModern(page, backend, { username, password })
+      await expectLanding(page)
     })
   })
 
@@ -2576,7 +2726,7 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
 
       // ── 3. the LOGIN CARD takes it back when it re-renders ────────────────
       await page.getByRole('dialog').getByRole('button', { name: 'Zrušiť' }).click()
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await expect(page.getByTestId('google-signin')).toBeVisible()
       await expect
         .poll(async () => (await page.evaluate(() => window.__gisCalls.initialize)).length,
@@ -2587,8 +2737,11 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
 
       // Proof rather than inference: the callback it now owns is a LOGIN callback.
       await fireCredential(page, `TEST:${mySub}:own7@example.test`)
-      await expect(page.locator('.appbar')).toContainText(friend.name)
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
+      // ⚠ RETARGETED BY PI-T2 (18 §UC-PI-003, case (a)): the friend's name left the
+      // appbar for the drawer header, which is now the only place the chrome paints
+      // an identity. Same claim, one home (`helpers/portal.js`).
+      await expectChromeName(page, friend.name)
     })
   })
 
@@ -2637,10 +2790,17 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
       await closeModal()
 
       // ── direction 1: A's TRUE state must not reach B, who is unlinked ─────
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await loginInPlace(b)
-      await expect(page.locator('.appbar')).toContainText(b.name)
       await declinePrompt()
+      // ⚠ RETARGETED BY PI-T2 (18 §UC-PI-003, case (a)) — and MOVED one step later,
+      // which is the load-bearing detail. The friend's name left the appbar for the
+      // drawer header, and the drawer opens from a hamburger that any open NeoModal's
+      // scrim covers. The Google prompt is exactly such a modal, so the identity claim
+      // is made once the prompt has been dismissed — the same claim, one step later,
+      // and still inside the SAME document (no reload), which is what this test is
+      // about.
+      await expectChromeName(page, b.name)
       section = await openProfileSection(page)
       await expect(section, "A's link must not reach B").toContainText(GOOGLE_SECTION_HELPER)
       await expect(section.getByRole('button', { name: GOOGLE_UNLINK, exact: true })).toHaveCount(0)
@@ -2661,10 +2821,13 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
       await closeModal()
 
       // ── direction 2: B's FALSE state must not reach A, who IS linked ──────
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await loginInPlace(a)
-      await expect(page.locator('.appbar')).toContainText(a.name)
       await expect(promptOf(page), 'A is linked now — no prompt').toHaveCount(0)
+      // ⚠ RETARGETED BY PI-T2 (18 §UC-PI-003, case (a)): the friend's name left the
+      // appbar for the drawer header, which is now the only place the chrome paints
+      // an identity. Same claim, one home (`helpers/portal.js`).
+      await expectChromeName(page, a.name)
       section = await openProfileSection(page)
       await expect(section.getByTestId('profile-google-email'), "B's unlink must not reach A")
         .toHaveText('a@example.test')
@@ -2741,7 +2904,7 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
       await page.getByPlaceholder('Zadajte užívateľské meno').fill(friend.username)
       await page.getByPlaceholder('Zadajte heslo').fill(friend.password)
       await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
 
       await openProfileSection(page)
       await expect(sectionOf(page), 'not modern ⇒ no link offer the server would refuse')
@@ -2751,7 +2914,7 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
       await page.getByRole('dialog').getByRole('button', { name: 'Zrušiť' }).click()
 
       // ── flip the SAME backend to modern: the absence above cannot be vacuous ──
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await api.setAuthMode('modern')
       await loginModern(page, backend, friend)
       await promptOf(page).getByRole('button', { name: PROMPT_LATER, exact: true }).click()
@@ -3212,7 +3375,7 @@ test.describe('§UC-GA-008 — the invite-registration Google block', () => {
 
     const name = `GA8 Inviter ${uniq}`
     const username = `ga8i${uniq}`.replace(/[^a-z0-9_]/g, '').slice(0, 30)
-    const created = await inviteCtx.post('/api/friends', { headers: adminHeaders, data: { name } })
+    const created = await inviteCtx.post('/api/friends', { headers: adminHeaders, data: { name, phone: GA_FIXTURE_PHONE } })
     expect(created.status(), 'friend create').toBe(201)
     const friend = await created.json()
     expect((await inviteCtx.put(`/api/friends/${friend.id}/admin-username`, {
@@ -3887,7 +4050,7 @@ test.describe('§UC-GA-009 — the approval dialog\'s Google line', () => {
     const headers = { 'X-Admin-Token': uiAdminToken }
     const name = `GA9 Inviter ${uniq}`
     const username = `ga9i${uniq}`.replace(/[^a-z0-9_]/g, '').slice(0, 30)
-    const created = await uiCtx.post('/api/friends', { headers, data: { name } })
+    const created = await uiCtx.post('/api/friends', { headers, data: { name, phone: GA_FIXTURE_PHONE } })
     expect(created.status(), 'friend create').toBe(201)
     const friend = await created.json()
     expect((await uiCtx.put(`/api/friends/${friend.id}/admin-username`, { headers, data: { username } })).status()).toBe(200)
@@ -4107,6 +4270,9 @@ const ADMIN_GUARD_401 = 'Neautorizovaný prístup'
 /** §UC-GA-010's acceptance criterion, as a raw-text regex over the FULL body. */
 const SUB_KEY_RE = /"sub"/
 
+/** FUP-T19 item 2: where an unsalvageable allowlist is parked before it is overwritten. */
+const CORRUPT_KEY = 'admin_google_subs_corrupt'
+
 test.describe('§UC-GA-010 — the admin Google allowlist', () => {
   test('empty ⇒ {entries: []}; adding proves possession and the entry is {email, added_at} — the sub is stored but NEVER published', async () => {
     test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
@@ -4281,6 +4447,73 @@ test.describe('§UC-GA-010 — the admin Google allowlist', () => {
       // A well-formed add heals it rather than compounding it.
       expect((await api.allowlistAdd({ id_token: `TEST:${tag('ga10-heal')}:heal@example.test` })).status()).toBe(200)
       expect((await (await api.allowlistGet()).json()).entries).toHaveLength(1)
+
+      // ⚠ FUP-T19 item 2 — AND THE ORIGINAL SURVIVES THE HEAL. Reading a corrupt ACL
+      // as EMPTY is correct (it fails closed), but the next successful write used to
+      // `INSERT OR REPLACE` straight over it, destroying entries a human could have
+      // salvaged from truncated JSON. The raw value is now parked, byte for byte,
+      // under a sibling settings key before the overwrite.
+      expect(api.setting(CORRUPT_KEY)?.value, 'the unreadable value is recoverable by hand').toBe('not json at all')
+    })
+  })
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // FUP-T19 item 2 — parking the unsalvageable value
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  test('FUP-T19 — a DELETE parks too, and a SECOND corruption never clobbers the parked copy', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      // ⚠ The DELETE half matters as much as the POST: `DELETE /google-allowlist`
+      // writes UNCONDITIONALLY (it is idempotent when nothing matched), so an admin
+      // revoking an address they can no longer see would otherwise wipe the evidence.
+      const first = '[{"sub":"prvy","email":"prvy@example.test"'
+      api.writeSetting('admin_google_subs', first)
+      expect((await api.allowlistRemove({ email: 'ktokolvek@example.test' })).status()).toBe(200)
+      expect(api.setting(CORRUPT_KEY)?.value, 'a revocation parked it before overwriting').toBe(first)
+      expect(api.setting('admin_google_subs').value, 'and the live key is now a readable empty list').toBe('[]')
+
+      // ⚠ THE DECISION, stated as a test: the parked slot is a HUMAN RECOVERY slot and
+      // holds the OLDEST unsalvageable copy. A second corruption arriving while the
+      // first is still unresolved means nobody has looked yet — overwriting then would
+      // destroy the only salvageable copy, which is precisely what this feature exists
+      // to prevent. The later value is logged (bounded) and dropped, never parked over.
+      const second = '{"totally":"different corruption"'
+      api.writeSetting('admin_google_subs', second)
+      expect((await api.allowlistAdd({ id_token: `TEST:${tag('fup19-second')}:druhy@example.test` })).status()).toBe(200)
+      expect(api.setting(CORRUPT_KEY)?.value, 'the FIRST parked copy is kept').toBe(first)
+      expect((await (await api.allowlistGet()).json()).entries, 'the add still went through').toHaveLength(1)
+    })
+  })
+
+  test('FUP-T19 — parking happens ONLY when the whole stored value is discarded, never on the normal path', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      // The normal path: add, re-add, delete. Nothing is ever parked.
+      const sub = tag('fup19-normal')
+      expect((await api.allowlistAdd({ id_token: `TEST:${sub}:normal@example.test` })).status()).toBe(200)
+      expect((await api.allowlistAdd({ id_token: `TEST:${sub}:normal2@example.test` })).status()).toBe(200)
+      expect((await api.allowlistRemove({ email: 'normal2@example.test' })).status()).toBe(200)
+      expect(api.setting(CORRUPT_KEY), 'a healthy allowlist never parks anything').toBeUndefined()
+
+      // ⚠ AND THE BOUNDARY, both sides of it — in this order, because the second half
+      // fills the parked slot and the first half needs it provably empty.
+      // (a) A well-formed ARRAY with some malformed members does NOT park: the read
+      //     salvaged everything salvageable and showed it to the admin, so the write
+      //     that follows is a decision taken over what they saw — not a silent loss.
+      api.writeSetting('admin_google_subs', JSON.stringify([
+        { sub: 'dobry', email: 'dobry@example.test', added_at: '2026-08-17T10:00:00.000Z' },
+        { sub: 'bez-mailu' },
+      ]))
+      expect((await (await api.allowlistGet()).json()).entries, 'the readable half is shown').toHaveLength(1)
+      expect((await api.allowlistRemove({ email: 'nikto@example.test' })).status()).toBe(200)
+      expect(api.setting(CORRUPT_KEY), 'a partially-filtered array is not a corruption').toBeUndefined()
+
+      // (b) Valid JSON that is not an array is discarded WHOLE by `readAdminGoogleSubs`
+      //     exactly like a parse failure, so it parks.
+      api.writeSetting('admin_google_subs', '{"sub":"nie-je-pole"}')
+      expect((await api.allowlistAdd({ id_token: `TEST:${tag('fup19-obj')}:obj@example.test` })).status()).toBe(200)
+      expect(api.setting(CORRUPT_KEY)?.value, 'a non-array value is just as unreadable').toBe('{"sub":"nie-je-pole"}')
     })
   })
 

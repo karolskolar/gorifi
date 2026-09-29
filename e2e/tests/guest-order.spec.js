@@ -1,5 +1,6 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // GSO-T3: the public guest ordering surface — `GET /api/guest/:token` and
 // `POST /api/guest/:token/orders` (§UC-GSO-001..003) — plus the stock-limit
@@ -23,12 +24,14 @@ const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 // guest-link.spec.js: length + alphabet.
 const TOKEN_ALPHABET = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]+$/
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 // A friend with real credentials and a per-friend Bearer session — the identity
 // the host-side guest-link endpoints require (and the identity used here for the
@@ -171,18 +174,43 @@ test.describe('Guest link resolution (UC-GSO-001)', () => {
     expect((await gone.json()).error).toBeTruthy()
   })
 
-  test('410 when the cycle is not open (locked or planned)', async () => {
+  // ⚠ SANCTIONED RETARGET (19 §UC-GL-011 item 2, resolved conflict 1 — GL-T2). This
+  // test was „410 when the cycle is not open (locked or planned)". R9.1 retired that
+  // 410: a non-open cycle's listing is now 200 with the PRE-OPEN payload
+  // (§UC-GL-002 rule 4 / §UC-GL-003), in its STALE variant for a per-cycle link.
+  // What did NOT change is the counter-pin below: a SUBMIT on the same locked cycle
+  // is still the shipped 409 `closed` (rule 5 — the lock race is a race).
+  test('a cycle that is not open (locked or planned) lists the PRE-OPEN page (200), and a submit there is still 409 closed', async () => {
     const host = await makeHost('locked')
     const cycle = await makeCycle('locked')
-    await addProduct(cycle.id, { name: `Locked Coffee ${uniq}`, purpose: 'Espresso', price_250g: 10 })
+    const product = await addProduct(cycle.id, { name: `Locked Coffee ${uniq}`, purpose: 'Espresso', price_250g: 10 })
     const link = await shareLink(host, cycle.id)
     expect((await ctx.get(`/api/guest/${link.token}`)).status()).toBe(200)
 
     expect((await admin(`/api/cycles/${cycle.id}`, { method: 'patch', data: { status: 'locked' } })).status()).toBe(200)
-    expect((await ctx.get(`/api/guest/${link.token}`)).status(), 'locked cycle').toBe(410)
+    const locked = await ctx.get(`/api/guest/${link.token}`)
+    expect(locked.status(), 'locked cycle').toBe(200)
+    const lockedBody = await locked.json()
+    expect(lockedBody.page, 'locked ⇒ the pre-open page').toBe('preopen')
+    expect(lockedBody.stale_cycle, 'the per-cycle link names its own (closed) round').toEqual({ id: cycle.id, name: cycle.name })
+    expect(lockedBody.products, 'no orderable catalogue').toBeUndefined()
+
+    const submit = await ctx.post(`/api/guest/${link.token}/orders`, {
+      data: { guest_name: 'Marek Hostovic', guest_phone: '0901 234 567', items: [{ product_id: product.id, variant: '250g', quantity: 1 }] },
+    })
+    expect(submit.status(), 'counter-pin: a submit on the locked cycle is still the lock-race 409').toBe(409)
+    expect((await submit.json()).reason).toBe('closed')
+    // Read back: the refused submit wrote no sub-order on that cycle.
+    const view = await ctx.get(`/api/guest-links/cycle/${cycle.id}`, { headers: host.auth })
+    expect(view.status()).toBe(200)
+    const viewBody = await view.json()
+    expect(viewBody.link?.id, 'non-vacuity: the host view is this link').toBe(link.id)
+    expect(viewBody.guest_orders, 'no sub-order written').toEqual([])
 
     expect((await admin(`/api/cycles/${cycle.id}`, { method: 'patch', data: { status: 'planned' } })).status()).toBe(200)
-    expect((await ctx.get(`/api/guest/${link.token}`)).status(), 'planned cycle is not orderable either').toBe(410)
+    const planned = await ctx.get(`/api/guest/${link.token}`)
+    expect(planned.status(), 'planned cycle is not orderable either').toBe(200)
+    expect((await planned.json()).page).toBe('preopen')
   })
 
   test('404 for an unknown token — distinct from 410 so the page can say the right thing', async () => {

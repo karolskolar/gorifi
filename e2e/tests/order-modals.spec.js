@@ -1,5 +1,11 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding, gotoCycle as portalGotoCycle } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // RD-FO-4 — the four modals FriendOrder owns: Spôsob prevzatia (04 §UC-FO-010),
 // Hotovo! (§UC-FO-011), Zrušiť objednávku? (§UC-FO-012) and the leave guard
@@ -72,13 +78,15 @@ let locB = null
 
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-    timeout: TIMEOUT,
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+  timeout: TIMEOUT,
+})
 
 async function makeCycle(label, over = {}) {
   const name = `E2E RDFO4 ${label} ${uniq}`
@@ -217,10 +225,11 @@ async function stubLocations(page, locations) {
 // A cold deep-link to /cycle/:id bounces to `/` even with a valid stored session —
 // `FriendOrder.vue`'s onMounted delegates restore to `FriendPortal`.
 async function gotoCycle(page, cycle) {
-  await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
-  await page.getByRole('heading', { name: cycle.name, exact: true }).click()
-  await expect(page).toHaveURL(new RegExp(`/cycle/${cycle.id}$`))
+  // ⚠ PI-T3 · 18 §UC-PI-019 item 3 — the cycle CARDS are retired (§UC-PI-005), so
+  // `goto('/')` + a heading click is no longer a route to an order screen.
+  // `portalGotoCycle` (helpers/portal.js) is the ONE home of that navigation; it
+  // still enters cold and still proves state came back from the server.
+  await portalGotoCycle(page, cycle.id)
   await expect(page.locator('.app .cartbar')).toBeVisible()
 }
 
@@ -932,7 +941,12 @@ test.describe('UC-FO-011 — the Hotovo! success modal', () => {
   })
 
   test('⚠ the SAME subtitle on both paths (resolved conflict #4)', async ({ page }) => {
-    const SUB = 'Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia cyklu.'
+    // ⚠ RE-POINTED by PI-T11 (18 §UC-PI-017's copy table): „…až do uzamknutia cyklu."
+    // → „…až do uzamknutia objednávok." → RE-POINTED again by GP-T7 (PO decision (2)
+    // 2026-09-24) → „…až do uzavretia objednávok.". The property this test protects — ONE subtitle
+    // on both the first-submit and the update path (04 resolved conflict #4) — is
+    // unchanged; only the string it is stated in moved.
+    const SUB = 'Objednávka bola odoslaná. Môžete ju upraviť až do uzavretia objednávok.'
     const cycle = await makeCycle('H2')
     const p = await addProduct(cycle.id, { name: `H2 Kava ${uniq}`, purpose: 'Espresso', price_250g: 7 })
     await seedCart(cycle.id, [{ product_id: p.id, variant: '250g', quantity: 1 }])
@@ -950,7 +964,7 @@ test.describe('UC-FO-011 — the Hotovo! success modal', () => {
     // …back in, and update
     await dialog(page).getByRole('button', { name: 'OK' }).click()
     await expect(page).toHaveURL(/\/$/)
-    await page.getByRole('heading', { name: cycle.name, exact: true }).click()
+    await portalGotoCycle(page, cycle.id)
     await expect(page.locator('.app .cartbar')).toBeVisible()
     await plusIn(page, `H2 Kava ${uniq}`).click()
     await bar(page).getByRole('button', { name: 'Aktualizovať' }).click()
@@ -991,7 +1005,7 @@ test.describe('UC-FO-011 — the Hotovo! success modal', () => {
       await close()
       await expect(page, `${label} lands on the portal`).toHaveURL(/\/$/)
       await expect(page.getByText('Neuložené zmeny'), `${label} must not arm the leave guard`).toHaveCount(0)
-      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+      await expectLanding(page)
     }
   })
 })
@@ -1092,8 +1106,7 @@ test.describe('UC-FO-012 — the cancel confirm', () => {
     await expect(bar(page).getByRole('button', { name: 'Zrušiť' })).toBeDisabled()
 
     await setStatus(cycle.id, 'locked')
-    await page.goto('/')
-    await page.getByRole('heading', { name: cycle.name, exact: true }).click()
+    await portalGotoCycle(page, cycle.id)
     await expect(page.locator('.app .cartbar')).toBeVisible()
     await expect(bar(page).locator('.actions'), 'no actions row at all when locked').toHaveCount(0)
   })
@@ -1138,7 +1151,7 @@ test.describe('UC-FO-013 — the leave guard, all three outcomes', () => {
     await page.getByRole('button', { name: 'Späť', exact: true }).click()
     await dialog(page).getByRole('button', { name: 'Opustiť' }).click()
     await expect(page).toHaveURL(/\/$/)
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
     // The whole point of the warning: the server still holds the pre-edit cart.
     const items = (await (await ctx.get(`/api/orders/cycle/${cycle.id}/friend/${host.id}`, {
       headers: host.auth, timeout: TIMEOUT,
@@ -1166,9 +1179,17 @@ test.describe('UC-FO-013 — the leave guard, all three outcomes', () => {
   test('the ROUTER-guard arm fires too, not just the back chevron', async ({ page }) => {
     const cycle = await dirtyPage(page, 'L4')
 
-    // Browser Back goes through `onBeforeRouteLeave`, which is the arm that catches
-    // every navigation the chevron does not own.
-    await page.goBack()
+    // A history traversal goes through `onBeforeRouteLeave`, which is the arm that
+    // catches every navigation the chevron does not own.
+    //
+    // ⚠ PI-T3: `goForward()`, not `goBack()`. The guard only exists on a SAME-DOCUMENT
+    // hop, and with the cycle cards retired `helpers/portal.js gotoCycle()` reaches
+    // `/cycle/:id` through the app's own cold-load bounce — which leaves `/` as this
+    // document's FORWARD entry rather than its back one. Same router navigation, same
+    // guard, same assertions; `goBack()` would now leave the document entirely
+    // (measured: `about:blank`) and prove nothing. The DRAWER's `router.push` is the
+    // other non-chevron arm and is pinned in `portal-landing.spec.js`.
+    await page.goForward()
     await expect(dialog(page)).toContainText('Neuložené zmeny')
     await expect(page).toHaveURL(new RegExp(`/cycle/${cycle.id}$`))
     await dialog(page).getByRole('button', { name: 'Opustiť' }).click()
@@ -1243,7 +1264,9 @@ test.describe('UC-FO-010..013 — the footers fit at 320px', () => {
     await expect(page).toHaveURL(/\/$/)
 
     // 3. Zrušiť objednávku? — Nie + Áno, zrušiť.
-    await page.getByRole('heading', { name: cycle.name, exact: true }).click()
+    // ⚠ PI-T3 · 18 §UC-PI-019 item 3 — the cycle CARDS are retired (§UC-PI-005);
+    // `helpers/portal.js gotoCycle()` is the one home of portal → order navigation.
+    await portalGotoCycle(page, cycle.id)
     await expect(page.locator('.app .cartbar')).toBeVisible()
     await bar(page).getByRole('button', { name: 'Zrušiť' }).click()
     await expect(dialog(page)).toContainText('Zrušiť objednávku?')

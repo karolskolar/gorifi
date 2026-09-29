@@ -14,6 +14,16 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import BalanceBadge from '@/components/BalanceBadge.vue'
 import GuestLinkRowControls from '@/components/GuestLinkRowControls.vue'
 import PickupLocationPicker from '@/components/PickupLocationPicker.vue'
+import GuestDeliverySwitch from '@/components/GuestDeliverySwitch.vue'
+import CycleTimeline from '@/components/CycleTimeline.vue'
+import { planLineText, allPartiesHandedOver } from '../lib/distribution-plan'
+// ⚠ READ-ONLY CONSUMPTION ONLY (17 §UC-CS-007). The step model, its six labels and
+// the status→step translation live in `lib/cycle-stages.js`; this view prints them
+// and never re-derives one. In particular it passes `cycle` to `CycleTimeline` and
+// NOT the component's optional `steps` prop: a consumer that builds its own array
+// owns the `state` field, and that is exactly how stage-first ordering — the defect
+// CS-T1 §10 measured and CS-T2 pinned — would get back onto a screen.
+import { STEPS, stageIndex } from '../lib/cycle-stages.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -69,6 +79,23 @@ const expectedDateSaving = ref(false)
 // Plan note
 const planNote = ref('')
 const planNoteSaving = ref(false)
+
+// Opening / deadline (17 §UC-CS-007). `<input type="date">` emits ISO `YYYY-MM-DD`,
+// which is byte-for-byte the storage format §UC-CS-002 validates — no client parsing,
+// and `''` is the empty control, which the save sends as `null` to CLEAR the column.
+//
+// ⚠ ONE PENDING FLAG PER CONTROL, never a shared one (CLAUDE.md §Frontend: per-row
+// pending state). The two dates are independent writes and so are the two stage
+// buttons; one boolean would grey out a control whose own request is not running.
+const opensAt = ref('')
+const opensAtSaving = ref(false)
+const closesAt = ref('')
+const closesAtSaving = ref(false)
+// The stage button currently in flight — `''`, `'arrived'` or `'ready'`. A string
+// rather than two booleans because the two requests are mutually exclusive by
+// construction (both write the same column) and the value IS the identity of the
+// control: `stagePending === 'arrived'` disables that button and only that button.
+const stagePending = ref('')
 
 // Cycle name editing
 const editingCycleName = ref(false)
@@ -364,6 +391,12 @@ async function loadAll() {
     // Initialize expected date
     expectedDate.value = cycleData.expected_date || ''
     planNote.value = cycleData.plan_note || ''
+    // ⚠ THIS IS THE SNAP-BACK (CLAUDE.md §Frontend: a refused change snaps the
+    // control back). Both save handlers refetch on the FAILURE path too, and it is
+    // these two lines that then put the stored value back into the input while the
+    // server's refusal stands in `error`.
+    opensAt.value = cycleData.opens_at || ''
+    closesAt.value = cycleData.closes_at || ''
     parcelEnabled.value = !!cycleData.parcel_enabled
     parcelFee.value = cycleData.parcel_fee || 0
     // Same non-blocking contract, and it has to run AFTER `cycle.value` is set: the
@@ -373,10 +406,20 @@ async function loadAll() {
     // Non-blocking: the orders tab still renders (with the nested sub-orders that
     // came with `ordersData`) if only the money overview fails.
     await loadGuestUnpaid()
+    // Same contract again (DP-T8, 16 §UC-DP-014): the plan line is a summary of a
+    // round already under way, never a precondition for the page. It also has to run
+    // AFTER `cycle.value` is set, because only a `locked` / `completed` cycle has a
+    // plan to summarise.
+    await loadDistributionPlan()
     // Same contract, same reason (§UC-GR-008): a failed link listing must not stop
     // the orders tab rendering. Both helpers swallow their own errors into an inline
     // message, so neither can reject and land in the catch below.
     await loadGuestLinks()
+    // Same contract (19 §UC-GL-009, GL-T6): the waitlist card is cycle-independent
+    // data, never a precondition for this page. It re-runs with every `loadAll()` on
+    // purpose — the admin's complete PATCH is one of the two purge paths
+    // (§UC-GL-005), so a round just completed may have removed rows.
+    await loadGuestWaitlist()
   } catch (e) {
     error.value = e.message
   } finally {
@@ -441,6 +484,12 @@ function onPickupUpdated(order, updated) {
     order.packeta_address = null
     order.delivery_fee = 0
   }
+  // ⚠ PATCH IN PLACE, THEN RE-FETCH THE PLAN (DP-T6's rule, DP-T8's consumer). The
+  // row above is local knowledge; the header's plan line is the SERVER's grouping,
+  // and moving a party between Packeta / a pickup point / in person changes it. It
+  // is cheap, non-blocking and `loadSeq`-guarded, and it no-ops while the cycle is
+  // open — without it the line would keep naming the target the party just left.
+  loadDistributionPlan()
 }
 
 // Guest sub-orders, admin side (§UC-GSO-009..010) ----------------------------
@@ -478,6 +527,74 @@ async function loadGuestUnpaid() {
   }
 }
 
+// ── DP-T8 (16 §UC-DP-014) — the plan line and the manual „Ukončiť objednávku" ──
+//
+// ⚠ NON-BLOCKING, exactly like `loadGuestUnpaid()` above: a failed distribution
+// fetch HIDES the line and nothing else. The tab must still render — this is a
+// summary of where the bags are going, not a precondition for editing a cycle.
+//
+// ⚠ SEQUENCE GUARD (`loadSeq`): `loadAll()` runs on mount and after every cycle
+// mutation (lock, unlock, completion), so two fetches can be in flight and resolve
+// out of order. The stale one would paint an older „{handed}/{total} odovzdaných"
+// over a newer one — on the very line the admin reads to decide whether the round
+// is done.
+//
+// ⚠ NOTHING HERE IS RE-DERIVED. `plan[]` and `totals` are the server's
+// (`helpers/delivery.js` is the one home of the classification, DP-T1/DP-T2); this
+// only joins them into a sentence.
+const distributionPlan = ref([])
+const distributionTotals = ref(null)
+let distributionSeq = 0
+
+async function loadDistributionPlan() {
+  // Only a locked or completed cycle HAS a distribution plan; while it is still
+  // open the parties and their pickup points are still moving.
+  if (!['locked', 'completed'].includes(cycle.value?.status)) {
+    distributionPlan.value = []
+    distributionTotals.value = null
+    return
+  }
+  const seq = ++distributionSeq
+  try {
+    const data = await api.getCycleDistribution(cycleId.value)
+    if (seq !== distributionSeq) return
+    distributionPlan.value = Array.isArray(data.plan) ? data.plan : []
+    distributionTotals.value = data.totals || null
+  } catch (e) {
+    if (seq !== distributionSeq) return
+    // Swallowed on purpose (and never into `error`, which would put a red Alert
+    // over a working tab): no line is the honest rendering of "we do not know".
+    distributionPlan.value = []
+    distributionTotals.value = null
+  }
+}
+
+// ⚠ BOTH RULES LIVE IN `lib/distribution-plan.js`, NOT HERE. The board renders the
+// same header from the same payload (and module 17's stage controls will share it),
+// so the sentence and the gate have exactly one home — see that file for why the
+// line omits zero-count targets and why the gate is the interface's only.
+const planLine = computed(() => planLineText(distributionPlan.value, distributionTotals.value))
+const allHandedOver = computed(() => allPartiesHandedOver(distributionTotals.value))
+const completingCycle = ref(false)
+
+// ── The stage badge, its caption and the two buttons (17 §UC-CS-007) ─────────
+//
+// The label the ADMIN reads is the label the FRIEND reads, taken from the one home
+// via `stageIndex()` — so the header can never describe the round differently from
+// the timeline beside it, or from the guest's own page.
+//
+// ⚠ `stageIndex()` spans STATUS and stage together (six steps over three stage
+// values), which is why nothing here switches on `cycle.stage` to pick a label. The
+// BUTTONS do read the raw column, because their visibility is a question about the
+// enum ("is there a forward move left?"), not about the step.
+const stageStepLabel = computed(() => STEPS[stageIndex(cycle.value)].label)
+// `null` for a cycle that is not locked, for a locked one the no-backfill rule left
+// at NULL, and for junk — the two button gates below both treat it as "not started".
+const cycleStage = computed(() => cycle.value?.stage || null)
+const isLocked = computed(() => cycle.value?.status === 'locked')
+const canMarkArrived = computed(() => isLocked.value && (cycleStage.value === null || cycleStage.value === 'ordered'))
+const canMarkReady = computed(() => isLocked.value && cycleStage.value !== 'ready')
+
 // The first name of the host who invited this guest — what the nested badge says
 // ("Hosť • pozval Peťo"), so a sub-order is never mistaken for the host's own.
 function firstName(name) {
@@ -486,6 +603,30 @@ function firstName(name) {
 
 function isGuestCancelled(subOrder) {
   return (subOrder.status || 'submitted') === 'cancelled'
+}
+
+// 20 §UC-GP-001 — `packeta_address` IS the Packeta marker (never the fee: a fee of 0 is
+// legal, and a cancelled row keeps its address with a zeroed fee).
+function isGuestPacketa(subOrder) {
+  return !!subOrder.packeta_address
+}
+
+// GP-T5 (20 §UC-GP-009) — the admin switched a guest back to „cez {host}". Patched IN
+// PLACE from the response (the GSO-T1 per-row rule — never a full reload per tap); the
+// pending/confirm state is per row inside `GuestDeliverySwitch.vue`, keyed by
+// `guest_orders.id`. Then the two derived reads follow: the receivables card (the
+// amount owed drops by the fee) and the header's plan line (the bag left Packeta).
+function onGuestDeliveryUpdated(subOrder, data) {
+  const row = data?.guest_order
+  if (row) {
+    subOrder.packeta_address = row.packeta_address
+    subOrder.delivery_fee = row.delivery_fee
+  } else if (data?.cleared_parcel) {
+    subOrder.packeta_address = null
+    subOrder.delivery_fee = 0
+  }
+  loadGuestUnpaid()
+  loadDistributionPlan()
 }
 
 async function toggleGuestPaid(subOrder) {
@@ -579,7 +720,7 @@ function hostLink(order) {
 }
 
 // A link under a deactivated host 410s for every guest even while `active = 1`
-// (routes/guest.js `resolveLink`), so the marker has to answer BOTH halves —
+// (routes/guest.js `resolveEntry`, formerly `resolveLink`), so the marker has to answer BOTH halves —
 // otherwise the admin forwards a URL that is dead for a reason the row never said.
 function isHostLinkDead(link) {
   return !link || !link.active || !link.host_active
@@ -620,7 +761,7 @@ async function createHostLink(order) {
 // the GSO-T5 mistake module 14 exists to remove.
 //
 // What it does and does not do, because the confirm copy below promises both:
-//   · the OLD `/g/:token` stops taking NEW orders (`resolveLink` 404s it);
+//   · the OLD `/g/:token` stops taking NEW orders (`resolveEntry`, formerly `resolveLink`, 404s it);
 //   · every colleague order ALREADY placed keeps working — they resolve by
 //     `order_token` alone (§UC-GR-001/002), which is what made amending D3 safe;
 //   · `active` is NOT touched server-side, so a revoked link stays revoked. This is
@@ -847,6 +988,111 @@ async function cancelGuestOrder(subOrder) {
   }
 }
 
+// ── 19 §UC-GL-009 (GL-T6) — „Čakajúci hostia (N)", the guest WAITLIST ──────────
+//
+// People who asked a host's STANDING link to tell them when a round opens
+// (`POST /api/guest/:token/waitlist`, §UC-GL-004). Shown to the admin IN FULL — name,
+// phone, consent, dates — and deletable (the privacy line). ⚠ CYCLE-INDEPENDENT: the
+// data has no cycle owner (the PO asked for it „under the cycle"), so every cycle's
+// orders tab renders the SAME list; nothing here reads `cycleId`.
+//
+// ⚠ The rows are NON-MEMBER PII: every person-typed value in the template is marked
+// `data-user-copy` (FUP-T22), and the e2e scrub covers the table (GL-T6).
+// ⚠ No admin write of `notified_at` and no admin create — module 21 owns the former,
+// the public signup is the only writer of rows (helpers/guest-waitlist.js).
+const guestWaitlist = ref([])
+const guestWaitlistError = ref('')
+// `false` until a load succeeds (and again after one fails): the „(N)" is a claim
+// about the list, so a failed load claims no count, and the error branch wins over
+// „Nikto nečaká." in the template. (No in-flight state ever renders: `loadAll()`
+// awaits this behind the page's own spinner, like `loadGuestUnpaid()`.)
+const guestWaitlistLoaded = ref(false)
+// Per ROW (the `rowSeq` convention, GSO-T5): two rows may be deleted concurrently and
+// a slow one never blocks or overwrites another.
+const waitlistDeletePending = ref({})
+const waitlistRowErrors = ref({})
+// The inline confirm is per row TOO (not one shared id): a held delete's confirm must
+// stay on screen, showing its pending state, while the admin works on another row.
+const waitlistConfirmOpen = ref({})
+// ⚠ Script-side on purpose: in the template `waitlistConfirmOpen` is auto-unwrapped, so
+// `clearRowFlag(waitlistConfirmOpen, id)` there would receive the plain object, not the ref.
+function openWaitlistConfirm(id) {
+  waitlistConfirmOpen.value = { ...waitlistConfirmOpen.value, [id]: true }
+}
+function closeWaitlistConfirm(id) {
+  clearRowFlag(waitlistConfirmOpen, id)
+}
+const waitlistRowSeq = new Map()
+
+// SEQUENCE GUARD (`loadSeq`): `loadAll()` re-runs after every cycle action, so two
+// listings can be in flight and resolve out of order.
+let guestWaitlistSeq = 0
+
+async function loadGuestWaitlist() {
+  const seq = ++guestWaitlistSeq
+  try {
+    const data = await api.getGuestWaitlist()
+    if (seq !== guestWaitlistSeq) return
+    guestWaitlist.value = Array.isArray(data?.rows) ? data.rows : []
+    guestWaitlistError.value = ''
+    guestWaitlistLoaded.value = true
+  } catch (e) {
+    if (seq !== guestWaitlistSeq) return
+    guestWaitlistError.value = e.message
+    guestWaitlistLoaded.value = false
+  }
+}
+
+// Grouped by HOST in the server's order (host NOCASE → newest signup → id). Keyed by
+// `host_friend_id`, never the name: two friends may share a name.
+const guestWaitlistGroups = computed(() => {
+  const groups = []
+  const byHost = new Map()
+  for (const row of guestWaitlist.value) {
+    let g = byHost.get(row.host_friend_id)
+    if (!g) {
+      g = { hostId: row.host_friend_id, hostName: row.host_name, rows: [] }
+      byHost.set(row.host_friend_id, g)
+      groups.push(g)
+    }
+    g.rows.push(row)
+  }
+  return groups
+})
+
+// `YYYY-MM-DD HH:MM:SS` (SQLite, UTC) → „1. 9. 2026" in the admin's local day. A
+// value that does not parse renders as it came; NULL is „—" (the caller's choice).
+function formatWaitlistDate(ts) {
+  if (!ts) return '—'
+  const d = new Date(String(ts).replace(' ', 'T') + (/(?:[zZ]|[+-]\d\d:?\d\d)$/.test(String(ts)) ? '' : 'Z'))
+  if (Number.isNaN(d.getTime())) return String(ts)
+  return `${d.getDate()}. ${d.getMonth() + 1}. ${d.getFullYear()}`
+}
+
+async function deleteWaitlistRow(row) {
+  const id = row.id
+  // ⚠ The JS guard, not only `:disabled` — a dispatched click reaches the handler.
+  if (waitlistDeletePending.value[id]) return
+  const seq = (waitlistRowSeq.get(id) || 0) + 1
+  waitlistRowSeq.set(id, seq)
+  waitlistDeletePending.value = { ...waitlistDeletePending.value, [id]: true }
+  setRowMessage(waitlistRowErrors, id, '')
+  try {
+    await api.deleteGuestWaitlistRow(id)
+    if (waitlistRowSeq.get(id) !== seq) return
+    // Patched in place — no reload, so every other row keeps its own pending/confirm.
+    guestWaitlist.value = guestWaitlist.value.filter((r) => r.id !== id)
+    clearRowFlag(waitlistConfirmOpen, id)
+  } catch (e) {
+    if (waitlistRowSeq.get(id) !== seq) return
+    // Reported on THIS row and never shown as done; the confirm stays open so the
+    // refusal sits next to the thing the admin asked for.
+    setRowMessage(waitlistRowErrors, id, e.message)
+  } finally {
+    clearRowFlag(waitlistDeletePending, id)
+  }
+}
+
 onBeforeUnmount(() => {
   if (copiedHostLinkTimer) clearTimeout(copiedHostLinkTimer)
   if (copiedSubOrderTimer) clearTimeout(copiedSubOrderTimer)
@@ -862,8 +1108,26 @@ async function toggleLock() {
 }
 
 async function markCompleted() {
-  await api.updateCycle(cycleId.value, { status: 'completed' })
-  await loadAll()
+  // ⚠ THE `disabled` ATTRIBUTE IS NOT THE GUARD (DP-T7 measured it: a dispatched
+  // click reaches the handler anyway). The gate is UX, but it should not be
+  // bypassable by accident either, so it is stated here too — and the API keeps
+  // accepting the completion on purpose, which is why this refuses instead of
+  // asking the server to.
+  if (completingCycle.value || !allHandedOver.value) return
+  completingCycle.value = true
+  // ⚠ CLEAR THE BANNER BEFORE TRYING — the view's own idiom (`saveMarkup()` and the
+  // three handlers beside it), and `loadAll()` does NOT clear it on success, so a
+  // failed completion followed by a successful one would leave a red Alert standing
+  // over a cycle that is now completed. The stale-advice class, one scope up.
+  error.value = ''
+  try {
+    await api.updateCycle(cycleId.value, { status: 'completed' })
+    await loadAll()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    completingCycle.value = false
+  }
 }
 
 function startEditingCycleName() {
@@ -1076,6 +1340,69 @@ async function saveExpectedDate() {
     error.value = e.message
   } finally {
     expectedDateSaving.value = false
+  }
+}
+
+// ── The two planning dates (17 §UC-CS-007) ──────────────────────────
+//
+// `saveExpectedDate()` above is the pattern, with ONE deliberate difference: the
+// refetch happens on BOTH paths. That function leaves a refused value standing in
+// its input, because a 400 skips its `loadAll()`; §UC-CS-007 requires the opposite
+// here — „a 400 (`Neplatný dátum` / `dates_order`) lands in `error.value` and the
+// control snaps back to the stored value on the `loadAll()` refetch". `loadAll()`
+// does not clear `error`, so the refusal survives the reload that undoes it.
+//
+// `expected_date` and `plan_note` are NOT touched by either of these (PO O2,
+// resolved conflict 6): `expected_date` is the DELIVERY expectation, `closes_at` is
+// the ordering deadline, and they are published side by side.
+async function saveOpensAt() {
+  if (opensAtSaving.value) return
+  opensAtSaving.value = true
+  error.value = ''
+  try {
+    await api.updateCycle(cycleId.value, { opens_at: opensAt.value || null })
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    await loadAll()
+    opensAtSaving.value = false
+  }
+}
+
+async function saveClosesAt() {
+  if (closesAtSaving.value) return
+  closesAtSaving.value = true
+  error.value = ''
+  try {
+    await api.updateCycle(cycleId.value, { closes_at: closesAt.value || null })
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    await loadAll()
+    closesAtSaving.value = false
+  }
+}
+
+// The two forward-only stage buttons (§UC-CS-007, PO decision O3). The server
+// accepts any of the three values in any order — stepping BACK is a legitimate API
+// correction — but the UI offers only the two forward moves, so a mis-click cannot
+// walk the friend's timeline backwards.
+//
+// ⚠ THE `disabled` ATTRIBUTE IS NOT THE GUARD (DP-T7 measured a dispatched click
+// reaching the handler anyway), so the pending flag is re-read here. It is checked
+// against ANY in-flight stage write, not just this button's: both write the same
+// column, and the second request would otherwise race the first one's `loadAll()`.
+async function setStage(next) {
+  if (stagePending.value) return
+  stagePending.value = next
+  error.value = ''
+  try {
+    await api.updateCycle(cycleId.value, { stage: next })
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    await loadAll()
+    stagePending.value = ''
   }
 }
 
@@ -1404,9 +1731,48 @@ function getStatusVariant(status) {
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
               </svg>
             </h1>
-            <Badge v-if="cycle" :variant="getStatusVariant(cycle.status)" class="mt-1 text-primary-foreground bg-primary-foreground/20 border-primary-foreground/30">
-              {{ cycle.status === 'planned' ? 'Plánovaný' : cycle.status === 'open' ? 'Otvorený' : cycle.status === 'locked' ? 'Uzamknutý' : 'Dokončený' }}
-            </Badge>
+            <div class="mt-1 flex flex-wrap items-center gap-2">
+              <Badge v-if="cycle" :variant="getStatusVariant(cycle.status)" class="text-primary-foreground bg-primary-foreground/20 border-primary-foreground/30">
+                {{ cycle.status === 'planned' ? 'Plánovaný' : cycle.status === 'open' ? 'Otvorený' : cycle.status === 'locked' ? 'Uzamknutý' : 'Dokončený' }}
+              </Badge>
+              <!-- The STAGE badge (17 §UC-CS-007) — only while the cycle is locked,
+                   which is the only status on which `stage` has meaning. It says what
+                   the friend is told, word for word. -->
+              <Badge
+                v-if="isLocked"
+                variant="outline"
+                class="text-primary-foreground bg-primary-foreground/20 border-primary-foreground/30"
+                data-testid="cycle-stage-badge"
+              >{{ stageStepLabel }}</Badge>
+            </div>
+            <!-- The plan without opening the board (16 §UC-DP-014). Absent while the
+                 cycle is open, absent when the fetch failed, absent when there is
+                 nothing to distribute — never a half-line.
+                 ⚠ 17 §UC-CS-007 SHARES this header with that line: the stage badge
+                 and the timeline sit BESIDE it. Nothing below re-derives its numbers,
+                 which come from the server's `plan[]` / `totals` through
+                 `lib/distribution-plan.js`. -->
+            <p
+              v-if="planLine"
+              class="mt-1 text-sm text-primary-foreground/80"
+              data-testid="cycle-plan-line"
+            >{{ planLine }}</p>
+            <!-- The read-only compact timeline, on EVERY status (17 §UC-CS-007). The
+                 shadcn chrome is the light `bg-background` plate: the ported component
+                 draws ink-on-white markers, and this header is `bg-primary`.
+                 ⚠ `:cycle`, never `:steps` — see the import note at the top. The
+                 component calls `timelineSteps(cycle)` itself, so this surface cannot
+                 own the `state` field and cannot reorder the six steps.
+                 ⚠ The dot strip's connectors are `flex: 1`, so the plate needs a
+                 width; with `w-fit` the six dots would touch. -->
+            <div
+              v-if="cycle"
+              class="mt-2 w-64 max-w-full rounded-md bg-background px-3 py-2 text-foreground"
+              data-testid="cycle-stage-timeline"
+            >
+              <CycleTimeline :cycle="cycle" variant="compact" />
+              <p class="mt-1 text-xs text-muted-foreground" data-testid="cycle-stage-caption">{{ stageStepLabel }}</p>
+            </div>
           </div>
         </div>
         <div class="flex flex-wrap gap-2">
@@ -1427,14 +1793,42 @@ function getStatusVariant(status) {
           >
             {{ cycle?.status === 'locked' ? 'Odomknúť' : 'Uzamknúť' }}
           </Button>
+          <!-- Forward-only stage moves (17 §UC-CS-007, PO O3). „Káva dorazila" is
+               offered while the round is still at `ordered` (or at the NULL every
+               pre-module locked round carries); „Zabalené, rozvážame" until `ready`,
+               after which the badge alone remains. Skipping straight to `ready` is
+               allowed — the hand-over board usually gets there first (§UC-CS-003),
+               and these buttons exist for the admin who distributes without it. -->
+          <Button
+            v-if="canMarkArrived"
+            variant="secondary"
+            size="sm"
+            data-testid="cycle-stage-arrived"
+            :disabled="stagePending === 'arrived'"
+            @click="setStage('arrived')"
+          >
+            Káva dorazila
+          </Button>
+          <Button
+            v-if="canMarkReady"
+            variant="secondary"
+            size="sm"
+            data-testid="cycle-stage-ready"
+            :disabled="stagePending === 'ready'"
+            @click="setStage('ready')"
+          >
+            Zabalené, rozvážame
+          </Button>
           <Button
             v-if="cycle?.status === 'locked'"
             variant="secondary"
             size="sm"
+            :disabled="!allHandedOver || completingCycle"
+            :title="allHandedOver ? undefined : 'Až keď je všetko odovzdané'"
             @click="markCompleted"
             class="bg-green-600 hover:bg-green-700 text-white"
           >
-            Označiť ako dokončený
+            Ukončiť objednávku
           </Button>
           <Button
             variant="secondary"
@@ -1500,6 +1894,52 @@ function getStatusVariant(status) {
                     size="sm"
                   >
                     {{ expectedDateSaving ? 'Ukladám...' : 'Uložiť' }}
+                  </Button>
+                </div>
+              </div>
+              <!-- Opening / deadline (17 §UC-CS-007). Two INDEPENDENT writes beside
+                   „Očakávaný dátum objednávky", which stays exactly as it is: PO O2
+                   made `expected_date` the DELIVERY expectation and `closes_at` the
+                   ordering deadline, and both are published side by side.
+                   `type="date"` emits ISO `YYYY-MM-DD` — the storage format, so no
+                   client parsing — and an empty control clears the column. -->
+              <div class="space-y-1">
+                <Label class="text-sm font-medium">Otvorenie objednávok:</Label>
+                <div class="flex items-center gap-2">
+                  <Input
+                    v-model="opensAt"
+                    type="date"
+                    data-testid="cycle-opens-at"
+                    class="flex-1"
+                    :disabled="opensAtSaving"
+                  />
+                  <Button
+                    @click="saveOpensAt"
+                    :disabled="opensAtSaving"
+                    size="sm"
+                    data-testid="cycle-opens-at-save"
+                  >
+                    {{ opensAtSaving ? 'Ukladám...' : 'Uložiť' }}
+                  </Button>
+                </div>
+              </div>
+              <div class="space-y-1">
+                <Label class="text-sm font-medium">Uzávierka objednávok:</Label>
+                <div class="flex items-center gap-2">
+                  <Input
+                    v-model="closesAt"
+                    type="date"
+                    data-testid="cycle-closes-at"
+                    class="flex-1"
+                    :disabled="closesAtSaving"
+                  />
+                  <Button
+                    @click="saveClosesAt"
+                    :disabled="closesAtSaving"
+                    size="sm"
+                    data-testid="cycle-closes-at-save"
+                  >
+                    {{ closesAtSaving ? 'Ukladám...' : 'Uložiť' }}
                   </Button>
                 </div>
               </div>
@@ -1892,9 +2332,39 @@ function getStatusVariant(status) {
                       <div class="text-xs text-muted-foreground">
                         {{ row.guest_phone }}<span v-if="row.guest_email"> · {{ row.guest_email }}</span>
                       </div>
-                      <div class="text-xs font-mono text-muted-foreground">{{ row.reference }}</div>
+                      <!-- 20 §UC-GP-009 — a Packeta guest: the red badge + the point
+                           (the phone is the line above). `packeta` is the server's
+                           marker (`packeta_address IS NOT NULL`). -->
+                      <div
+                        v-if="row.packeta"
+                        class="mt-0.5 flex flex-wrap items-center gap-2"
+                        :data-testid="`guest-unpaid-packeta-${row.id}`"
+                      >
+                        <Badge variant="outline" class="text-xs border-red-400 text-red-600 bg-red-50">Packeta</Badge>
+                        <span class="text-xs text-muted-foreground" style="overflow-wrap:anywhere">📦 {{ row.packeta_address }}</span>
+                      </div>
+                      <!-- 15 §UC-PL-008 — the VS first, then the human reference: the
+                           admin reading a statement line "VS 9000123" finds the row by the
+                           symbol, and still has the name-bearing reference beside it for
+                           the transfers that carry no VS at all. Server-derived
+                           (`helpers/payment.js`); nothing here composes one.
+                           ⚠ GUARDED, like the two row sites below: the helper fails closed
+                           with an EMPTY symbol for an out-of-range id, and an unguarded
+                           prefix would then render „VS  · " — a bare label and a dangling
+                           separator in front of the reference. One convention for this
+                           value across all four sites this row added. -->
+                      <div class="text-xs font-mono text-muted-foreground"><span v-if="row.variable_symbol">VS {{ row.variable_symbol }} · </span>{{ row.reference }}</div>
                     </div>
-                    <div class="font-semibold">{{ formatPrice(row.amount) }}</div>
+                    <div class="text-right">
+                      <div class="font-semibold" :data-testid="`guest-unpaid-amount-${row.id}`">{{ formatPrice(row.amount) }}</div>
+                      <!-- UC-GP-004 — the live amount is products + the fee; the same
+                           breakdown the orders tab prints. -->
+                      <div
+                        v-if="row.delivery_fee"
+                        class="text-xs text-muted-foreground"
+                        :data-testid="`guest-unpaid-breakdown-${row.id}`"
+                      >({{ formatPrice(row.total) }} + {{ formatPrice(row.delivery_fee) }} doručenie)</div>
+                    </div>
                   </div>
                 </div>
               </template>
@@ -1925,9 +2395,43 @@ function getStatusVariant(status) {
                       <div class="text-xs text-muted-foreground">
                         {{ row.guest_phone }}<span v-if="row.guest_email"> · {{ row.guest_email }}</span>
                       </div>
-                      <div class="text-xs font-mono text-muted-foreground">{{ row.reference }}</div>
+                      <!-- 20 §UC-GP-009 — a Packeta guest: the red badge + the point
+                           (the phone is the line above). `packeta` is the server's
+                           marker (`packeta_address IS NOT NULL`). -->
+                      <div
+                        v-if="row.packeta"
+                        class="mt-0.5 flex flex-wrap items-center gap-2"
+                        :data-testid="`guest-refund-packeta-${row.id}`"
+                      >
+                        <Badge variant="outline" class="text-xs border-red-400 text-red-600 bg-red-50">Packeta</Badge>
+                        <span class="text-xs text-muted-foreground" style="overflow-wrap:anywhere">📦 {{ row.packeta_address }}</span>
+                      </div>
+                      <!-- 15 §UC-PL-008 — the VS first, then the human reference: the
+                           admin reading a statement line "VS 9000123" finds the row by the
+                           symbol, and still has the name-bearing reference beside it for
+                           the transfers that carry no VS at all. Server-derived
+                           (`helpers/payment.js`); nothing here composes one.
+                           ⚠ GUARDED, like the two row sites below: the helper fails closed
+                           with an EMPTY symbol for an out-of-range id, and an unguarded
+                           prefix would then render „VS  · " — a bare label and a dangling
+                           separator in front of the reference. One convention for this
+                           value across all four sites this row added. -->
+                      <div class="text-xs font-mono text-muted-foreground"><span v-if="row.variable_symbol">VS {{ row.variable_symbol }} · </span>{{ row.reference }}</div>
                     </div>
-                    <div class="font-semibold">{{ formatPrice(row.amount) }}</div>
+                    <div class="text-right">
+                      <div class="font-semibold" :data-testid="`guest-refund-amount-${row.id}`">{{ formatPrice(row.amount) }}</div>
+                      <!-- UC-GP-006, AMENDED (PO 2026-09-19 + learnings 12 §6/§31): the
+                           refund amount ALREADY includes the fee the guest paid while the
+                           order was still Packeta — `refund_fee` is exactly that part
+                           (server-computed; 0 once the admin's switch settled it).
+                           ~~„+ poplatok za doručenie Packetou (suma podľa objednávky)"~~ —
+                           adding it by hand would refund it twice. PO DRAFT copy. -->
+                      <div
+                        v-if="row.refund_fee > 0"
+                        class="text-xs text-muted-foreground"
+                        :data-testid="`guest-refund-packeta-note-${row.id}`"
+                      >vrátane {{ formatPrice(row.refund_fee) }} uhradeného poplatku za doručenie Packetou</div>
+                    </div>
                   </div>
                 </div>
               </template>
@@ -2103,6 +2607,22 @@ function getStatusVariant(status) {
                       <div v-if="isOrdered(order) && order.delivery_fee" class="text-xs text-muted-foreground">
                         ({{ formatPrice(order.total) }} + {{ formatPrice(order.delivery_fee) }} doručenie)
                       </div>
+                      <!-- 15 §UC-PL-008 — beside the money, which is what the admin is
+                           reconciling. A placeholder row (a friend who has not ordered, or
+                           a host whose only stake is their colleague's bags) carries
+                           `variable_symbol: null` and renders nothing: there is no debt to
+                           quote.
+                           ⚠ `isOrdered` — THE tab's one predicate — and not merely the
+                           presence of a symbol: a DRAFT has an `orders.id`, so the payload
+                           carries its VS, but a saved cart is not money owed and this
+                           screen shows it nothing but a „-“ everywhere else (the rule
+                           above `isOrdered`). Quoting a symbol for one would invite the
+                           admin to chase a payment nobody was asked for. -->
+                      <div
+                        v-if="isOrdered(order) && order.variable_symbol"
+                        class="text-xs font-mono text-muted-foreground"
+                        :data-testid="`order-vs-${order.id}`"
+                      >VS {{ order.variable_symbol }}</div>
                     </TableCell>
                     <TableCell class="text-right">
                       <BalanceBadge :balance="order.friend_balance || 0" />
@@ -2265,6 +2785,24 @@ function getStatusVariant(status) {
                             <span class="font-medium text-sm">{{ sub.guest_name }}</span>
                             <span class="text-xs text-muted-foreground">{{ sub.guest_phone }}</span>
                             <span v-if="sub.guest_email" class="text-xs text-muted-foreground">{{ sub.guest_email }}</span>
+                            <!-- 20 §UC-GP-009 — a Packeta guest: the shipped friend
+                                 Packeta badge colours, and the point. Kept on a
+                                 CANCELLED row too (the record — the address survives
+                                 the cancel, exactly like the host card). -->
+                            <Badge
+                              v-if="isGuestPacketa(sub)"
+                              variant="outline"
+                              class="text-xs border-red-400 text-red-600 bg-red-50"
+                              :data-testid="`guest-packeta-badge-${sub.id}`"
+                            >
+                              Packeta
+                            </Badge>
+                            <span
+                              v-if="isGuestPacketa(sub)"
+                              class="text-xs text-muted-foreground"
+                              style="overflow-wrap:anywhere"
+                              :data-testid="`guest-packeta-address-${sub.id}`"
+                            >📦 {{ sub.packeta_address }}</span>
                           </div>
                           <div v-if="sub.items && sub.items.length > 0" class="mt-0.5 text-xs text-muted-foreground">
                             {{ guestItemCountLabel(sub) }}
@@ -2297,6 +2835,16 @@ function getStatusVariant(status) {
                               :data-testid="`guest-cancel-${sub.id}`"
                               @click="guestCancelConfirmId = sub.id"
                             >Zrušiť</button>
+                            <!-- GP-T5 — the ONE correction control (shared with GP-T6's
+                                 Distribution row). LIVE Packeta rows only: a cancelled
+                                 row 409s server-side and its fee is already 0. -->
+                            <GuestDeliverySwitch
+                              v-if="isGuestPacketa(sub) && !isGuestCancelled(sub)"
+                              :guest-order-id="sub.id"
+                              :host-name="firstName(order.friend_name)"
+                              :delivery-fee="sub.delivery_fee || 0"
+                              @updated="(data) => onGuestDeliveryUpdated(sub, data)"
+                            />
                           </div>
 
                           <div
@@ -2365,7 +2913,27 @@ function getStatusVariant(status) {
                         </span>
                       </div>
                     </TableCell>
-                    <TableCell class="text-right text-sm">{{ formatPrice(sub.total) }}</TableCell>
+                    <TableCell class="text-right text-sm">
+                      <!-- 20 §UC-GP-004 — the amount to pay = products + the fee, with
+                           the friend rows' own breakdown sub-line. `total` stays
+                           product-only on the row. -->
+                      <span :data-testid="`guest-amount-${sub.id}`">{{ formatPrice((sub.total || 0) + (sub.delivery_fee || 0)) }}</span>
+                      <div
+                        v-if="sub.delivery_fee"
+                        class="text-xs text-muted-foreground"
+                        :data-testid="`guest-amount-breakdown-${sub.id}`"
+                      >
+                        ({{ formatPrice(sub.total) }} + {{ formatPrice(sub.delivery_fee) }} doručenie)
+                      </div>
+                      <!-- The guest scheme (`9` + the padded sub-order id) — a different
+                           id space from the host's order above it, which is exactly why
+                           the two are prefixed apart (15 §UC-PL-001). -->
+                      <div
+                        v-if="sub.variable_symbol"
+                        class="text-xs font-mono text-muted-foreground"
+                        :data-testid="`guest-vs-${sub.id}`"
+                      >VS {{ sub.variable_symbol }}</div>
+                    </TableCell>
                     <TableCell class="text-center">
                       <button
                         @click="toggleGuestPaid(sub)"
@@ -2576,6 +3144,114 @@ function getStatusVariant(status) {
                       @close-confirm="guestLinkRegenConfirmId = null"
                     />
                   </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <!-- ══ Čakajúci hostia (19 §UC-GL-009, GL-T6) ═════════════════════════════
+               The guest WAITLIST: people who asked a host's standing link to tell them
+               when a round opens. ⚠ CYCLE-INDEPENDENT — the same list on every cycle's
+               orders tab (the data has no cycle owner). ⚠ A SIBLING BELOW the order
+               tables' v-if / v-else-if / v-else chain, like the fold above.
+               ⚠ Admin shadcn skin only — no `neo/`, no theme class.
+               ⚠ NON-MEMBER PII, shown in full to the admin by design (the privacy line):
+               every person-typed value carries `data-user-copy` (FUP-T22).
+               Copy is DRAFT pending the PO's staging sign-off (19 §OPEN). -->
+          <Card class="mt-4" data-testid="guest-waitlist-card">
+            <CardContent class="p-4">
+              <h3 class="text-sm font-medium mb-1" data-testid="guest-waitlist-title">Čakajúci hostia<template v-if="guestWaitlistLoaded"> ({{ guestWaitlist.length }})</template></h3>
+              <p class="text-xs text-muted-foreground mb-3 max-w-3xl">
+                Ľudia, ktorí sa cez stály odkaz priateľa zapísali, aby dostali správu, keď sa
+                objednávka otvorí.
+              </p>
+
+              <div
+                v-if="guestWaitlistError"
+                class="text-sm text-destructive"
+                data-testid="guest-waitlist-error"
+              >
+                Zoznam čakajúcich hostí sa nepodarilo načítať: {{ guestWaitlistError }}
+              </div>
+              <div
+                v-else-if="guestWaitlist.length === 0"
+                class="text-sm text-muted-foreground"
+                data-testid="guest-waitlist-empty"
+              >Nikto nečaká.</div>
+              <div v-else class="space-y-4">
+                <div
+                  v-for="group in guestWaitlistGroups"
+                  :key="`wl-${group.hostId}`"
+                  :data-testid="`guest-waitlist-group-${group.hostId}`"
+                >
+                  <div class="text-sm font-semibold mb-1">
+                    <span :data-testid="`guest-waitlist-host-${group.hostId}`" data-user-copy>{{ group.hostName }}</span>
+                  </div>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Meno</TableHead>
+                        <TableHead>Mobil</TableHead>
+                        <TableHead>WhatsApp</TableHead>
+                        <TableHead>Zapísané</TableHead>
+                        <TableHead>Upozornené</TableHead>
+                        <TableHead class="text-right">
+                          <span class="sr-only">Akcie</span>
+                        </TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      <TableRow
+                        v-for="row in group.rows"
+                        :key="`wl-row-${row.id}`"
+                        :data-testid="`guest-waitlist-row-${row.id}`"
+                      >
+                        <TableCell class="font-medium break-words"><span data-user-copy>{{ row.name }}</span></TableCell>
+                        <!-- E.164 when it normalised (§UC-GL-009 acceptance), else the raw
+                             phone as typed — the admin still needs a number to call. -->
+                        <TableCell class="whitespace-nowrap"><span data-user-copy>{{ row.phone_e164 || row.phone }}</span></TableCell>
+                        <TableCell>{{ row.whatsapp_opt_in ? 'áno' : 'nie' }}</TableCell>
+                        <TableCell class="whitespace-nowrap">{{ formatWaitlistDate(row.created_at) }}</TableCell>
+                        <TableCell class="whitespace-nowrap">{{ formatWaitlistDate(row.notified_at) }}</TableCell>
+                        <TableCell class="text-right">
+                          <div class="flex flex-wrap items-center justify-end gap-2">
+                            <button
+                              v-if="!waitlistConfirmOpen[row.id]"
+                              type="button"
+                              class="text-xs text-destructive underline underline-offset-2 hover:no-underline"
+                              :data-testid="`guest-waitlist-delete-${row.id}`"
+                              @click="openWaitlistConfirm(row.id)"
+                            >Odstrániť</button>
+                            <span
+                              v-else
+                              class="text-xs inline-flex flex-wrap items-center gap-1.5"
+                              :data-testid="`guest-waitlist-confirm-${row.id}`"
+                            >
+                              <span class="text-muted-foreground">Odstrániť tento záznam?</span>
+                              <button
+                                type="button"
+                                class="text-destructive underline underline-offset-2 hover:no-underline disabled:opacity-50"
+                                :disabled="!!waitlistDeletePending[row.id]"
+                                :data-testid="`guest-waitlist-yes-${row.id}`"
+                                @click="deleteWaitlistRow(row)"
+                              >{{ waitlistDeletePending[row.id] ? 'Odstraňujem...' : 'Áno, odstrániť' }}</button>
+                              <button
+                                type="button"
+                                class="text-muted-foreground underline underline-offset-2 hover:no-underline"
+                                :data-testid="`guest-waitlist-no-${row.id}`"
+                                @click="closeWaitlistConfirm(row.id)"
+                              >Nie</button>
+                            </span>
+                            <span
+                              v-if="waitlistRowErrors[row.id]"
+                              class="text-xs text-destructive"
+                              :data-testid="`guest-waitlist-row-error-${row.id}`"
+                            >{{ waitlistRowErrors[row.id] }}</span>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    </TableBody>
+                  </Table>
                 </div>
               </div>
             </CardContent>

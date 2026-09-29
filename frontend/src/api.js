@@ -92,6 +92,17 @@ async function request(endpoint, options = {}) {
     // The workbench create-collision 409 names the existing row so the UI can
     // offer assign instead (12 §UC-PC-006).
     if (error.catalog_id) err.catalogId = error.catalog_id
+    // 16 §UC-DP-006/012 — the bulk hand-over's all-or-nothing 409 NAMES every
+    // offender in THREE lists, and the board highlights exactly those rows. The
+    // message alone cannot say which bag refused, so the lists have to survive the
+    // throw. ⚠ Carried under their wire names' camelCase, like `catalogId` above;
+    // additive, and nothing else reads these fields today.
+    if (error.reason) err.reason = error.reason
+    if (Array.isArray(error.order_ids)) err.orderIds = error.order_ids
+    if (Array.isArray(error.guest_order_ids)) err.guestOrderIds = error.guest_order_ids
+    if (Array.isArray(error.cancelled_guest_order_ids)) {
+      err.cancelledGuestOrderIds = error.cancelled_guest_order_ids
+    }
     throw err
   }
 
@@ -107,7 +118,8 @@ async function request(endpoint, options = {}) {
 // X-Friends-Password and no X-Admin-Token — a token left in localStorage by a
 // previous admin session must not change what a guest sees or can do.
 // The HTTP status is attached to the thrown error because the guest page has to
-// tell 404 (no such link) from 410 (closed) from 409 (locked while shopping).
+// tell 404 (no such link) from 410 (~~closed~~ deactivated — a closed cycle is a 200
+// `page:'preopen'` since 19 §UC-GL-002) from 409 (locked while shopping).
 // ONE HOME for the guest sub-order endpoint (14 §UC-GR-001/003). Three call sites
 // (status GET, edit PUT, invite-request POST) reach the same order two ways, so the
 // choice is made here rather than three times:
@@ -201,6 +213,25 @@ export const api = {
   // Print-ready rows for the A4 8-up label sheet. A sibling of the distribution
   // read, not a flag on it: this one carries contact details and NO money.
   getCycleLabels: (id) => request(`/cycles/${id}/labels`),
+  // 16 §UC-DP-006/013 — „Odovzdať zabalené (n)": a whole group in ONE all-or-nothing
+  // transaction. BOTH arrays are required (an empty one is fine, but at least one id
+  // overall), every element a positive integer, ≤ 500 each. A guest whose host is in
+  // the same batch is deduplicated server-side — send both ids without thinking.
+  // Answers `{ handed_over, already_handed, guests_inherited, queued_notifications,
+  // cycle_stage, handed_over_at }` — `handed_over_at` is the stamp the bags handed
+  // over BY THIS CALL took (null when it stamped none). ⚠ A colleague who ordered
+  // after their host's bag went out inherits that BAG's original stamp instead, so
+  // re-fetch rather than painting this one onto every row. 409 `reason:
+  // 'not_packed'` / `'cancelled'` NAMES
+  // the offenders in `order_ids` / `guest_order_ids` / `cancelled_guest_order_ids`
+  // and writes NOTHING, so the board highlights those rows and re-fetches.
+  // ⚠ Ledger-neutral, like the per-bag routes. ⚠ There is NO bulk reversal (Phase 2)
+  // — take a hand-over back one bag at a time with `setOrderHandedOver`.
+  handOverDistributionBatch: (cycleId, orderIds = [], guestOrderIds = []) =>
+    request(`/cycles/${cycleId}/distribution/hand-over`, {
+      method: 'POST',
+      body: { order_ids: orderIds, guest_order_ids: guestOrderIds },
+    }),
 
   // Cycle public endpoints (for friend ordering - legacy)
   getCyclePublic: (id) => request(`/cycles/${id}/public`),
@@ -253,6 +284,16 @@ export const api = {
   setupCredentials: (friendId, username, password) => request(`/friends/${friendId}/setup-credentials`, {
     method: 'POST',
     body: { username, password }
+  }),
+  // GA-T11 (10 §UC-GA-004's security model, §UC-GA-007's surface) — the FIRST password
+  // for a friend who has none. A separate endpoint from both neighbours on purpose:
+  // `change-password` 400s without an existing password, and `setup-credentials` serves
+  // the transition-mode flow and therefore cannot carry this route's modern-mode guard.
+  // ⚠ `username` travels ONLY when the caller has one to offer — the server honours it
+  // while `friends.username` is NULL and ignores it otherwise (never a rename).
+  setFirstPassword: (friendId, password, username = null) => request(`/friends/${friendId}/set-password`, {
+    method: 'POST',
+    body: username ? { username, password } : { password }
   }),
   changeFriendPassword: (friendId, currentPassword, newPassword) => request(`/friends/${friendId}/change-password`, {
     method: 'PUT',
@@ -309,6 +350,12 @@ export const api = {
   // path from module 10's friend-owned `/friends/:id/google-link`; never merge them.
   // No body: the route names its two columns itself and ignores anything sent.
   adminUnlinkFriendGoogle: (id) => adminRequest(`/friends/${id}/google`, { method: 'DELETE' }),
+  // 19 PO 2026-09-19 — the ADMIN half of a host's standing guest link (read mints
+  // lazily, like the host's own; regenerate rotates only the standing token). Same
+  // payload shapes as `getStandingGuestLink` / `regenerateStandingGuestLink`.
+  adminGetFriendStandingLink: (id) => adminRequest(`/friends/${id}/guest-link/standing`),
+  adminRegenerateFriendStandingLink: (id) =>
+    adminRequest(`/friends/${id}/guest-link/standing/regenerate`, { method: 'POST' }),
 
   // 10 §UC-GA-004 — the FRIEND-OWNED half, called from the §UC-GA-006 post-login
   // prompt (and, from GA-T7, the profile modal). ⚠ Not `adminRequest`: both routes are
@@ -333,6 +380,14 @@ export const api = {
   // unconfigured deployment too. ("Teraz nie" has NO counterpart here on purpose:
   // §UC-GA-006 makes it client-side only.)
   dismissGooglePrompt: (friendId) => request(`/friends/${friendId}/google-prompt-dismissed`, {
+    method: 'POST'
+  }),
+  // 18 §UC-PI-013 — „Už mi to neukazovať" on the first-login explainer gate. No body;
+  // the server stamps `friends.explainer_seen_at` with `COALESCE`, so calling it twice
+  // is a no-op rather than a fresh timestamp. Every caller is FIRE-AND-FORGET: the
+  // friend is on their way to the shop and a failed stamp costs them one extra
+  // explainer at their next login, which is not worth blocking a login over.
+  markExplainerSeen: (friendId) => request(`/friends/${friendId}/explainer-seen`, {
     method: 'POST'
   }),
 
@@ -360,6 +415,16 @@ export const api = {
   // cleared_parcel, parcel_fee_removed }`.
   setPartyPickup: (cycleId, friendId, data) =>
     request(`/orders/cycle/${cycleId}/friend/${friendId}/pickup`, { method: 'PATCH', body: data }),
+  // 16 §UC-DP-004/013 — STAGE 3: „the bag left my hands". ⚠ ALWAYS an EXPLICIT
+  // boolean, never a toggle like `togglePacked` above: a hand-over queues messages,
+  // so the intent is stated and a double click converges instead of flipping back.
+  // Answers `{ order: { …, stage }, guests: [{ id, handed_over_at, stage }],
+  // queued_notifications, dequeued_notifications, cycle_stage }` — enough for the
+  // board to patch its rows in place. 409 `reason: 'not_packed'` when the bag is not
+  // packed yet; the reversal is always allowed.
+  // ⚠ Ledger-neutral: unlike `togglePacked`, this writes NO balance transaction.
+  setOrderHandedOver: (id, handedOver) =>
+    request(`/orders/${id}/handed-over`, { method: 'PATCH', body: { handed_over: handedOver } }),
   toggleItemPacked: (itemId) => request(`/order-items/${itemId}/packed`, { method: 'PATCH' }),
   // GSO-T7: the same per-item Distribution checkbox for a guest bag. Separate
   // endpoint because the item lives in `guest_order_items`; the response carries the
@@ -496,11 +561,26 @@ export const api = {
       method: 'POST',
       body: data
     }),
+  // 19 §UC-GL-004 — „Dajte mi vedieť" on the pre-open page. `{ name, phone,
+  // whatsapp_opt_in }`; no auth headers (the URL token is the credential). Answers
+  // `{ success: true }` for a new signup AND a repeat one alike (no oracle); 409
+  // `reason:'open'` when a round is open (order instead). GL-T5 builds the form.
+  joinGuestWaitlist: (token, data) => guestRequest(`/guest/${encodeURIComponent(token)}/waitlist`, {
+    method: 'POST',
+    body: data
+  }),
 
   // Guest share links (host = the authenticated friend; Bearer token required)
   getGuestLink: (cycleId) => request(`/guest-links/cycle/${cycleId}`),
   createGuestLink: (cycleId) => request(`/guest-links/cycle/${cycleId}`, { method: 'POST' }),
   setGuestLinkActive: (id, active) => request(`/guest-links/${id}`, { method: 'PATCH', body: { active } }),
+  // 19 §UC-GL-001 — the host's STANDING link (one cycle-independent `/g/:token`).
+  // The GET mints it on first call (`standing.created` is true only then) and answers
+  // `{ standing: { token, url_path, created }, waiting_count, current }`; the POST
+  // rotates it and answers `{ standing: { token, url_path }, regenerated, waiting_count }`.
+  // `waiting_count` is a COUNT only — the payload carries no waitlist names or phones.
+  getStandingGuestLink: () => request('/guest-links/standing'),
+  regenerateStandingGuestLink: () => request('/guest-links/standing/regenerate', { method: 'POST' }),
 
   // Guest sub-orders, host side. `delivered` is the HOST's flag (the hand-over
   // checklist); `paid` is the ADMIN's and the host only ever reads it, so there
@@ -521,6 +601,16 @@ export const api = {
   // Who still owes for this cycle — name, amount, payment reference, host, contact
   // — plus the refund queue (paid but cancelled).
   getGuestUnpaid: (cycleId) => adminRequest(`/guest-orders/cycle/${cycleId}/unpaid`),
+
+  // 16 §UC-DP-005/013 — STAGE 3 for ONE guest bag. ADMIN-only, exactly as `paid` is
+  // and unlike `setGuestOrderDelivered` above: `handed_over_at` is the admin letting
+  // the bag go, `delivered` is the host confirming the colleague took it. Two
+  // columns, two events, opposite guards on the same mixed router.
+  // ⚠ It never touches the host's own order — a per-bag correction is a correction
+  // of one bag. Used for a host with NO own order (their party IS their guest bags),
+  // for a module-20 Packeta guest, and for one withheld bag under a handed-over host.
+  setGuestOrderHandedOver: (id, handedOver) =>
+    adminRequest(`/guest-orders/${id}/handed-over`, { method: 'PATCH', body: { handed_over: handedOver } }),
 
   // Guest share links, ADMIN side (14 §UC-GR-004). The `/guest-links` router is
   // MIXED-auth: the three host routes above ride the friend Bearer token, these
@@ -555,6 +645,26 @@ export const api = {
   // has no paid blockade, and a paid + cancelled sub-order lands in the refund queue
   // above on purpose (D4). Soft cancel server-side; the item rows are kept.
   cancelGuestOrderAdmin: (id) => adminRequest(`/guest-orders/${id}/cancel`, { method: 'POST' }),
+  // 20 §UC-GP-009 (GP-T5) — the admin corrects a guest's delivery back to „cez {host}".
+  // ADMIN-only; the body is EXACTLY `{ method: 'via_host' }` (v1 cannot set a Packeta
+  // point for a guest — PO). Ledger-neutral; answers `{ guest_order, totals,
+  // cleared_parcel, parcel_fee_removed }`.
+  switchGuestDelivery: (id) =>
+    adminRequest(`/guest-orders/${id}/delivery`, { method: 'PATCH', body: { method: 'via_host' } }),
+
+  // 19 §UC-GL-009 — the guest waitlist, ADMIN side (the whole `/guest-waitlist` mount
+  // is requireAdmin). `getGuestWaitlist({ host_friend_id })` → `{ rows: [...] }` in
+  // full (names + phones — the admin's view only; the host sees a COUNT). There is no
+  // admin create and no admin write of `notified_at` (module 21 owns it).
+  getGuestWaitlist: (params = {}) => {
+    const query = new URLSearchParams()
+    if (Number.isInteger(params?.host_friend_id) && params.host_friend_id > 0) {
+      query.set('host_friend_id', String(params.host_friend_id))
+    }
+    const qs = query.toString()
+    return adminRequest(`/guest-waitlist${qs ? `?${qs}` : ''}`)
+  },
+  deleteGuestWaitlistRow: (id) => adminRequest(`/guest-waitlist/${id}`, { method: 'DELETE' }),
 
   // Coffee product catalog (admin) — module 12. The whole /coffee-products
   // mount is requireAdmin server-side; all calls ride X-Admin-Token.

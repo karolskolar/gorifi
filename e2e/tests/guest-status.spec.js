@@ -1,5 +1,6 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // GSO-T4: the guest's personal status/edit URL. This file exercises the LEGACY
 // PAIR form — `GET/PUT /api/guest/:token/orders/:orderToken` (§UC-GSO-004) and the
@@ -22,8 +23,8 @@ import { ADMIN_PASSWORD } from '../fixtures.js'
 //   - empty cart ⇒ `cancelled`, total 0, and the stock it held is RELEASED.
 //   - a locked cycle makes the page READ-ONLY: GET still 200s (the guest has to
 //     be able to see what they ordered and pay for it), PUT 409s. That
-//     asymmetry is deliberate — the product listing 410s on a locked cycle, the
-//     status page must not.
+//     asymmetry is deliberate — the product listing ~~410s~~ closes on a locked
+//     cycle (200 `page:'preopen'` since 19 §UC-GL-002), the status page must not.
 //
 // NOTE ON RATE LIMITS: these endpoints sit behind the shared `abuseLimiter`.
 // Run the full suite with a generous budget — see e2e/README.md.
@@ -34,12 +35,14 @@ const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
 const TOKEN_ALPHABET = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]+$/
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 // A friend with a real per-friend Bearer session — the host identity the
 // guest-link endpoints require. Mirrors guest-order.spec.js.
@@ -590,9 +593,14 @@ test.describe('Guest status URL — read-only after the cycle locks', () => {
 
     await setCycleStatus(cycle.id, 'locked')
 
-    // The product LISTING is 410 on a locked cycle (GSO-T3) — the status page
-    // must NOT inherit that, or the guest loses sight of what they owe.
-    expect((await ctx.get(`/api/guest/${link.token}`)).status(), 'listing closes').toBe(410)
+    // The product LISTING closes on a locked cycle — the status page must NOT
+    // inherit that, or the guest loses sight of what they owe.
+    // SANCTIONED RETARGET (GL-T2, 19 §UC-GL-002 rule 4 / D7): the closed listing was 410; it is now 200 `page:'preopen'`.
+    const listing = await ctx.get(`/api/guest/${link.token}`)
+    expect(listing.status(), 'listing closes — into the pre-open page').toBe(200)
+    const listingBody = await listing.json()
+    expect(listingBody.page, 'listing closes').toBe('preopen')
+    expect(listingBody.products, 'no orderable catalogue on the closed listing').toBeUndefined()
 
     const res = await getStatus(link.token, created.order.order_token)
     expect(res.status(), 'the status page stays readable after the lock').toBe(200)

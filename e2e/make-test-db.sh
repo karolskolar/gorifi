@@ -17,12 +17,18 @@
 # every run starts from byte-identical, realistic state.
 #
 # ⚠ PO decision on scrubbing (2026-08-31): NAMES ARE KEPT — they make the screens
-# read like the real thing, which is the point. Phones and e-mails are randomised.
-# Everything that is a CREDENTIAL is regenerated, and that list is longer than it
-# looks; see SCRUB below for why each one is on it.
+# read like the real thing, which is the point. Everything else identifying is
+# regenerated, and that list is longer than it looks: the WHAT and the WHY live in
+# `e2e/scrub-template.sql`, and every column it touches is checked by
+# `e2e/verify-scrub.sql` before a single byte is downloaded. Those two files are one
+# unit — add a column to the scrub, add a line to the verification.
 #
 # Usage:  ./e2e/make-test-db.sh [output-path]
 #         default output: e2e/fixtures/prod-template.sqlite  (git-ignored)
+#
+# The RUN RECIPE is `e2e/README.md` → "Run against a local prod-like backend". This
+# script does not print a second copy of it, on purpose (GR-T9): two copies of the
+# recipe disagreeing is the defect this whole row exists to fix.
 
 set -euo pipefail
 
@@ -37,7 +43,23 @@ ADMIN_PASSWORD="${ADMIN_PASSWORD:-e2e-admin-pass-9271}"
 FRIENDS_PASSWORD="${FRIENDS_PASSWORD:-e2e-friends-pass}"
 
 mkdir -p "$(dirname "$OUT")"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 REMOTE_TMP="/tmp/gorifi-e2e-template-$$.sqlite"
+
+# ⚠ $REMOTE_TMP is a FULL UNSCRUBBED PRODUCTION SNAPSHOT for the seconds between the
+# `.backup` and the scrub. Before this trap, any failure in between — `.backup` itself,
+# the integrity check, the scrub ssh — aborted under `set -e` BEFORE the cleanup line and
+# left that file sitting in the server's /tmp, world-readable by anything that can read
+# /tmp, indefinitely. Cleanup is now on EXIT so it runs on every path, and it is the ONLY
+# home for that `rm` (the success and failure paths no longer repeat it).
+# Installed immediately after the assignment, so $REMOTE_TMP is always in scope when it
+# fires; the guard is belt-and-braces for a future edit that moves this block.
+cleanup_remote_tmp() {
+  [ -n "${REMOTE_TMP:-}" ] || return 0
+  ssh "$SERVER" "rm -f '$REMOTE_TMP'" >/dev/null 2>&1 \
+    || echo "!! could not remove $SERVER:$REMOTE_TMP — an UNSCRUBBED snapshot may remain there" >&2
+}
+trap cleanup_remote_tmp EXIT
 
 echo "==> Snapshotting production (online, WAL-safe)"
 # `.backup` and not `cp`: the app is writing, and a plain copy of a live WAL database
@@ -46,118 +68,71 @@ ssh "$SERVER" "runuser -u $APP_USER -- sqlite3 '$REMOTE_DB' \".backup '$REMOTE_T
   && runuser -u $APP_USER -- sqlite3 '$REMOTE_TMP' 'PRAGMA integrity_check;' | head -1"
 
 echo "==> Scrubbing on the SERVER (so unscrubbed data never leaves it)"
-# ⚠ QUOTED delimiter, and that is not a style choice. With a bare `<<SQL` bash
-# expands the body — and the SQL comments below contain BACKTICKS (`/g/:token`,
-# `item-packed.spec.js`, `node e2e/seed.mjs`). On the first run that literally
-# executed `node e2e/seed.mjs` from inside a comment and fed its stdout to sqlite3,
-# which failed with "Parse error near line 59: near \"admin\"" — a message that
-# points nowhere near the cause. No variables are interpolated into this SQL, so
-# quoting costs nothing.
-ssh "$SERVER" "runuser -u $APP_USER -- sqlite3 '$REMOTE_TMP'" <<'SQL'   # ⚠ quoted — see above
-BEGIN IMMEDIATE;
-
--- ── CONTACT DATA (PO: randomise) ──────────────────────────────────────────────
--- Deterministic from the row id, so a given friend keeps ONE number across rebuilds
--- and a screenshot from last week still lines up.
-UPDATE friends SET
-  phone = '09' || substr('00000000' || (10000000 + id * 7919) % 100000000, -8),
-  email = CASE WHEN email IS NULL OR email = '' THEN email
-               ELSE 'friend' || id || '@example.test' END,
-  -- A Packeta address is contact data too (it can be a home address). Not named by
-  -- the PO, scrubbed under the same intent; the SHAPE is kept so the profile modal
-  -- and the delivery badge still have something realistic to render.
-  packeta_address = CASE WHEN packeta_address IS NULL OR packeta_address = '' THEN packeta_address
-                         ELSE 'Z-Box Testovacia ' || id || ', 010 01 Mesto' END;
-
-UPDATE invitations SET
-  phone = '09' || substr('00000000' || (20000000 + id * 6421) % 100000000, -8),
-  email = CASE WHEN email IS NULL OR email = '' THEN email
-               ELSE 'invite' || id || '@example.test' END;
-
-UPDATE guest_orders SET
-  guest_phone = '09' || substr('00000000' || (30000000 + id * 5807) % 100000000, -8),
-  guest_email = CASE WHEN guest_email IS NULL OR guest_email = '' THEN guest_email
-                     ELSE 'guest' || id || '@example.test' END;
-
-UPDATE orders SET
-  packeta_address = CASE WHEN packeta_address IS NULL OR packeta_address = '' THEN packeta_address
-                         ELSE 'Z-Box Testovacia ' || id || ', 010 01 Mesto' END;
-
--- ── CREDENTIALS ───────────────────────────────────────────────────────────────
--- ⚠ EVERY ONE OF THESE IS LIVE AGAINST THE PRODUCTION SITE. This is the half that
--- matters most and the easiest to forget: without it, a template file sitting in a
--- developer's /tmp is a set of working keys to podpultovka.biz.
---   friends.invite_code      — anyone holding it can register as a friend
---   guest_order_links.token  — /g/:token, the ordering surface; no password at all
---   guest_orders.order_token — /g/o/:orderToken, and since GR-T1 it is the WHOLE
---                              credential: it resolves regardless of the link half
---   login_tokens.token       — magic-link login
---   onboarding_links.token   — onboarding
---   friend_sessions          — live Bearer sessions
---   friends.password_hash / google_sub — a real person's login
--- Regenerated, not blanked, where a NOT NULL / UNIQUE constraint or a route's shape
--- depends on the column existing.
-UPDATE friends SET
-  invite_code   = 'T' || substr('0000000' || id, -7),
-  password_hash = NULL,
-  google_sub    = NULL;
-
-UPDATE guest_order_links  SET token       = 'LNK' || substr('00000000000' || id, -11);
-UPDATE guest_orders       SET order_token = 'ORD' || substr('00000000000' || id, -11);
-
-DELETE FROM friend_sessions;
-DELETE FROM login_tokens;
-DELETE FROM onboarding_links;
-
--- ── SETTINGS: make the suite able to log in ───────────────────────────────────
--- ⚠ The password columns hold bcrypt hashes, which SQL cannot produce — so they are
--- DELETED here and re-created by `node e2e/seed.mjs`, which hashes the fixture
--- values properly. Leaving the production hashes in place would mean the suite
--- cannot authenticate at all (and would keep the real admin password around).
-DELETE FROM settings WHERE key IN ('admin_password', 'admin_token', 'friends_password', 'admin_google_subs');
--- The suite's own recipe is legacy mode (seed.mjs sets it); prod may be 'modern',
--- which would make every shared-password spec fail for a reason that is not a bug.
-UPDATE settings SET value = 'legacy' WHERE key = 'auth_mode';
-
-COMMIT;
-VACUUM;
-SQL
+# ⚠ The SQL lives in `e2e/scrub-template.sql`, NOT in a heredoc here. One copy, so
+# the local re-scrub path in the README runs the same bytes this does — and it also
+# retires the heredoc trap the first version hit (a bare `<<SQL` made bash EXPAND the
+# comment body, which is full of backticks, and one run literally executed
+# `node e2e/seed.mjs` from inside a comment and fed its stdout to sqlite3).
+ssh "$SERVER" "runuser -u $APP_USER -- sqlite3 '$REMOTE_TMP'" < "$HERE/scrub-template.sql"
 
 echo "==> Verifying the scrub ON THE SERVER (fail closed before anything is downloaded)"
-LEAKS=$(ssh "$SERVER" "runuser -u $APP_USER -- sqlite3 '$REMOTE_TMP' \"
-  SELECT
-    (SELECT COUNT(*) FROM friends WHERE password_hash IS NOT NULL OR google_sub IS NOT NULL)
-  + (SELECT COUNT(*) FROM friends WHERE invite_code NOT LIKE 'T%')
-  + (SELECT COUNT(*) FROM guest_order_links WHERE token NOT LIKE 'LNK%')
-  + (SELECT COUNT(*) FROM guest_orders WHERE order_token NOT LIKE 'ORD%')
-  + (SELECT COUNT(*) FROM friend_sessions) + (SELECT COUNT(*) FROM login_tokens)
-  + (SELECT COUNT(*) FROM onboarding_links)
-  + (SELECT COUNT(*) FROM settings WHERE key IN ('admin_password','admin_token','friends_password'))
-  + (SELECT COUNT(*) FROM friends WHERE email IS NOT NULL AND email <> '' AND email NOT LIKE '%@example.test')
-  + (SELECT COUNT(*) FROM guest_orders WHERE guest_email IS NOT NULL AND guest_email <> '' AND guest_email NOT LIKE '%@example.test');
-\"")
+# ⚠ One line per column the scrub touches — see the header of verify-scrub.sql for
+# why that contract is the whole safety margin. ANY non-zero count aborts.
+LEAKS=$(ssh "$SERVER" "runuser -u $APP_USER -- sqlite3 '$REMOTE_TMP'" < "$HERE/verify-scrub.sql")
 
-if [ "${LEAKS:-1}" != "0" ]; then
-  echo "!! SCRUB INCOMPLETE ($LEAKS rows still carry production credentials or contact data)." >&2
-  echo "!! Nothing downloaded. The template is only useful if this is 0." >&2
-  ssh "$SERVER" "rm -f '$REMOTE_TMP'"
+# ⚠ THIS GATE IS FAIL-CLOSED ON THE SHAPE OF THE OUTPUT, NOT ONLY ON THE NUMBERS — and
+# that distinction is the same species as the leak this row was raised for. Checking only
+# "no line has a non-zero second field" passes VACUOUSLY when the verification is
+# malformed: a lost `.mode`/`.separator` dot-command, a changed separator or a truncated
+# run yields lines that match nothing, an empty offender list, and a download under a
+# "verified" banner. So: every line must be exactly `name|integer`, and there must be as
+# many lines as verify-scrub.sql has checks.
+#
+# EXPECTED is DERIVED, not hardcoded: each check in verify-scrub.sql is one line starting
+# with `SELECT '<name>'` (the `UNION ALL`s sit on their own lines). That file's header
+# states the convention; keep it, or this count silently drifts.
+EXPECTED=$(grep -cE "^[[:space:]]*SELECT '" "$HERE/verify-scrub.sql")
+ACTUAL=$(printf '%s\n' "$LEAKS" | grep -c . || true)
+# One pass classifies both failure modes, so a malformed line can never be read as a zero.
+BAD=$(printf '%s\n' "$LEAKS" | awk -F'|' '
+  NF != 2 || $1 == "" || $2 !~ /^[0-9]+$/ { print "MALFORMED  " $0; next }
+  $2 + 0 != 0                             { print $1 "  " $2 }
+')
+
+# ⚠ `if/fi`, not `[ … ] && echo …`: under `set -e` a false left operand makes the whole
+# AND-list fail, which exits the script right there — so a count mismatch would abort
+# before the offender list ever printed. The reporting path has to survive its own guard.
+if [ "$ACTUAL" != "$EXPECTED" ] || [ -n "$BAD" ]; then
+  echo "!! SCRUB VERIFICATION FAILED — nothing downloaded." >&2
+  if [ "$ACTUAL" != "$EXPECTED" ]; then
+    echo "!! expected $EXPECTED check lines from verify-scrub.sql, got $ACTUAL — the" \
+         "verification itself is wrong or truncated; treat this as a leak, not a glitch." >&2
+  fi
+  if [ -n "$BAD" ]; then
+    printf '%s\n' "$BAD" | sed 's/^/!!   /' >&2
+  fi
   exit 1
 fi
-echo "    scrub verified: 0 leaking rows"
+echo "    scrub verified, all $EXPECTED checks 0:"
+printf '%s\n' "$LEAKS" | sed 's/^/      /'
 
 echo "==> Downloading"
 scp -q "$SERVER:$REMOTE_TMP" "$OUT"
-ssh "$SERVER" "rm -f '$REMOTE_TMP'"
+# No `rm` here: the EXIT trap owns the remote temp file on every path, success included.
 
-echo "==> Seeding the suite's own fixtures on top (bcrypt hashes, E2E cycle + friend)"
-echo "    run:  DB_PATH=<a COPY of the template> node backend/src/index.js"
-echo "          cd e2e && BASE_URL=http://localhost:3997 node seed.mjs"
+echo "==> Done"
 echo ""
 echo "Template written: $OUT"
-ssh "$SERVER" "true" 2>/dev/null || true
-sqlite3 "$OUT" "SELECT 'friends', COUNT(*) FROM friends UNION ALL SELECT 'cycles', COUNT(*) FROM order_cycles UNION ALL SELECT 'orders', COUNT(*) FROM orders UNION ALL SELECT 'guest_orders', COUNT(*) FROM guest_orders UNION ALL SELECT 'transactions', COUNT(*) FROM transactions;" 2>/dev/null || true
+if command -v sqlite3 >/dev/null 2>&1; then
+  sqlite3 "$OUT" "SELECT 'friends', COUNT(*) FROM friends UNION ALL SELECT 'cycles', COUNT(*) FROM order_cycles UNION ALL SELECT 'orders', COUNT(*) FROM orders UNION ALL SELECT 'guest_orders', COUNT(*) FROM guest_orders UNION ALL SELECT 'transactions', COUNT(*) FROM transactions;"
+else
+  echo "  (no local sqlite3 — skipping the row-count summary)"
+fi
 echo ""
-echo "⚠ TEMPLATE, not a working file. Copy it per run:"
-echo "    cp $OUT /tmp/gorifi-run.sqlite && DB_PATH=/tmp/gorifi-run.sqlite ..."
-echo "  Running the suite against the template itself reintroduces exactly the"
-echo "  fixture accumulation this script exists to end."
+echo "⚠ TEMPLATE, not a working file — and it still needs \`node e2e/seed.mjs\` on top"
+echo "  (it deliberately has no E2E Test Cycle / E2ETester and no bcrypt password rows)."
+echo "  Do NOT start a server on this file. Follow the recipe, which copies it per run,"
+echo "  in the order that matters (stop the server by the PID owning the port → confirm"
+echo "  the port is free → copy → start → seed):"
+echo ""
+echo "      e2e/README.md  →  \"Run against a local prod-like backend\""

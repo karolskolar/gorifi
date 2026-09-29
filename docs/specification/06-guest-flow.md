@@ -4,7 +4,7 @@
 > `/g/:token` (g-order) with its hero, product grid, cart footer and checkout modal; the
 > post-submit confirmation (g-confirm); the personal status/edit page
 > `/g/:token/o/:orderToken` (g-status, four states: editable / paid-frozen / read-only
-> locked / cancelled, plus its edit mode); the dead-link screen (g-dead, three variants);
+> locked / cancelled, plus its edit mode); the dead-link screen (g-dead, ~~three~~ **two** variants — the `closed` one SUPERSEDED by 19 §UC-GL-002, GL-T7);
 > the invite-CTA restyle; and the restyle of the shared **Platba** payment modal. This is
 > a **re-skin plus the UX changes listed here** — no API, schema or business-logic change;
 > every GSO invariant in repo `CLAUDE.md` (GSO-T3/T4/T6/T10) holds verbatim.
@@ -45,8 +45,12 @@
 1. **Locked-state banner copy.** README §Screens item 9 gives a long variant ("…Prípadnú
    zmenu skúste vyriešiť s organizátorom objednávky alebo objednávku môžete zrušiť.");
    `guest.jsx` (what the prototype actually renders) has the short
-   "Objednávanie v tomto cykle je uzavreté, objednávku už nie je možné upraviť." —
-   which is also the shipped copy. Resolution: **guest.jsx wins.** The README variant is
+   ~~"Objednávanie v tomto cykle je uzavreté, objednávku už nie je možné upraviť."~~ —
+   which is also the shipped copy. **⚠ SUPERSEDED by 17 §UC-CS-008 (CS-T4, 2026-09-20):
+   the sentence now reads "Objednávky sú uzavreté, objednávku už nie je možné upraviť."**
+   Only the VOCABULARY moved — „cyklus" is an admin word (00-overview glossary, 17
+   resolved conflict 2) — so conflict #1's resolution below (short over long, guest.jsx
+   over the README) still stands unchanged. Resolution: **guest.jsx wins.** The README variant is
    additionally wrong on behavior: after the lock the server 409s a cancel (`PUT` on a
    non-open cycle, GSO-T4), so "objednávku môžete zrušiť" would promise an action the
    backend refuses.
@@ -190,7 +194,8 @@ GSO-T4: extend, never fork) renders the prototype's cat-tabs and product cards.
 - Bakery grouping by `source_bakery_product_id`, `variant_label` rows, composition
   behind `<details>` ("Zloženie") — all unchanged.
 - Empty state: `banner slim` with the existing text
-  "V tomto cykle zatiaľ nie sú žiadne produkty." (`emptyMessage` prop kept).
+  ~~"V tomto cykle zatiaľ nie sú žiadne produkty."~~ **„V ponuke zatiaľ nie sú žiadne produkty."
+  (GL-T7, 18 §UC-PI-017's vocabulary rule — PO draft)** (`emptyMessage` prop kept).
 - **Pinned test hooks preserved verbatim:** `product-{id}` on each card;
   `inc-{variant}` / `dec-{variant}` / `qty-{variant}` on coffee steppers;
   `inc-unit-{id}` / `dec-unit-{id}` / `qty-unit-{id}` on bakery rows
@@ -210,6 +215,10 @@ GSO-T4: extend, never fork) renders the prototype's cat-tabs and product cards.
 ---
 
 ## UC-GX-003 g-order — sticky cartbar + checkout modal (Guest)
+
+> ⚠ **Amended by module 20 (`20-guest-packeta.md` §UC-GP-003, shipped GP-T3):** when the round sends
+> parcels the checkout gains the delivery choice (`GuestDeliveryChoice.vue`), the e-mail label flips to
+> required for Packeta, and the hero carries „Packeta +{fee}“. The cartbar stays product-only (PO).
 
 **Goal:** the cart footer and the "Dokončiť objednávku" checkout, per prototype
 `GOrder` and `screenshots/10-shot.png`.
@@ -286,6 +295,9 @@ title, 3px-ink inputs, mono sum in the subtitle); the e2e submit flow
 
 ## UC-GX-004 g-confirm — confirmation screen (Guest)
 
+> ⚠ **Amended by module 20 (§UC-GP-003/004, shipped GP-T3):** a Packeta order shows the fee line
+> (`confirm-delivery-fee`), the fee-inclusive sum (`payment.amount`) and the point.
+
 **Goal:** the post-submit confirmation per prototype `GConfirm` and
 `screenshots/11-shot.png`. Same route (in-page state on `GuestOrder.vue`), brand-header
 subtitle **"Objednávka odoslaná"**.
@@ -346,10 +358,18 @@ highlighted "ODOSLANÁ", sum card typography); copy-row flip per UC-DS-011
 `RevolutBtn` (ui.jsx) and `screenshots/12-shot.png`.
 
 **Shared-consumer contract (pinned):** `PaymentModal.vue` is consumed by
-`GuestOrder.vue`, `GuestOrderStatus.vue` AND `FriendOrder.vue` (module 04). Its props
+`GuestOrder.vue`, `GuestOrderStatus.vue` AND `FriendOrder.vue` (module 04) — and, from
+15 §UC-PL-007 item 4, `FriendBalanceCard.vue`. ~~Its props
 API is **frozen**: `open` (Boolean), `amount` (Number), `reference` (String), `iban`
-(String), `revolutUsername` (String); emits `close`. No admin view consumes it (repo
-grep 2026-08-07). Because `NeoModal` teleports to `<body>` and tokens ride on
+(String), `revolutUsername` (String); emits `close`.~~ **SUPERSEDED — 15 §UC-PL-004/D4
+(PL-T3):** the API is **additive**, not frozen. `variableSymbol` (String, `''`) and
+`creditorName` (String, `''`) joined it; every prop above, the `close` emit, the `v-if`
+mount and the `'-'` amount guard are unchanged, and a caller that passes neither new
+prop gets byte-identically what this section describes. What the word "frozen" was
+protecting still holds: a prop that REPLACES or reshapes an existing one breaks four
+screens at once. No admin view consumes it (repo
+grep 2026-08-07; swept from `router.js` by `payment-links.spec.js` since PL-T3).
+Because `NeoModal` teleports to `<body>` and tokens ride on
 `.modal-layer` (UC-DS-010), the restyled modal renders correctly from any friend or
 guest screen regardless of the caller's own migration state — module 04 inherits this
 restyle without changes on its side.
@@ -398,6 +418,9 @@ Pay-by-Square payload as before the restyle; `guest-status.spec.js:653–665` (o
 
 ## UC-GX-006 g-status — read view, four states (Guest)
 
+> ⚠ **Amended by module 20 (§UC-GP-007, shipped GP-T4):** the „Doručí Packeta“ pill REPLACES the
+> delivered pill, the fee line + fee-inclusive total, and the point card (kept on a cancelled order).
+
 **Goal:** `/g/:token/o/:orderToken` (`GuestOrderStatus.vue`) per prototype `GStatus`,
 `screenshots/14-shot.png` (paid) and `15-shot.png` (cancelled). Brand-header subtitle
 **"Vaša objednávka"**. Column max-width **520 px**, padding 16/28, gap 14.
@@ -445,8 +468,10 @@ admin / host). The `items_editable === undefined` fallback for older payloads st
    - *read-only / locked* (`!editable && !isCancelled`): `btn ok block` **Zaplatiť**
      when `!isPaid && hasPaymentDetails`; then `div.banner.warn.slim` (+`.dot`),
      `data-testid="status-readonly"`, wording by the shipped `readOnlyReason`
-     computed: cycle not open → **"Objednávanie v tomto cykle je uzavreté, objednávku
-     už nie je možné upraviť."** (= prototype, conflict #1); link/host dead →
+     computed: cycle not open → ~~**"Objednávanie v tomto cykle je uzavreté, objednávku
+     už nie je možné upraviť."**~~ **"Objednávky sú uzavreté, objednávku už nie je možné
+     upraviť."** (⚠ retargeted by 17 §UC-CS-008 / CS-T4, 2026-09-20 — the vocabulary
+     rule; conflict #1's short-over-long resolution is untouched); link/host dead →
      **"Odkaz na túto spoločnú objednávku už nie je aktívny, objednávku už nie je
      možné upraviť."** (shipped copy kept — the prototype has no dead-link-while-
      holding-a-status-URL variant, and the read-side resolver is deliberately
@@ -483,6 +508,10 @@ with the UC-GX-011 updates only.
 ---
 
 ## UC-GX-007 g-status — edit mode (Guest)
+
+> ⚠ **Amended by module 20 (§UC-GP-005/007, shipped GP-T2/T4):** edit mode gains the delivery card,
+> the write-once „E-mail *“ input (D3) and the parcels-gone banner; every non-cancel save carries
+> `use_parcel_delivery`. The cancel payload is still exactly `{ items: [] }`.
 
 **Goal:** the in-place edit flow per prototype `GStatus` editing branch. Brand-header
 subtitle switches to **"Úprava objednávky"**; column widens to the grid layout
@@ -594,7 +623,7 @@ regex update in UC-GX-011.
 
 ---
 
-## UC-GX-010 g-dead — dead link (3 variants) and the status-404 card (Guest)
+## UC-GX-010 g-dead — dead link (~~3~~ **2** variants — `closed` SUPERSEDED by 19 §UC-GL-002) and the status-404 card (Guest)
 
 **Goal:** the dead-end screens per prototype `GDead` and `screenshots/16-shot.png`.
 
@@ -614,7 +643,7 @@ response is authoritative — GSO-T3 contract; prototype copy replaces the raw s
 |---|---|---|
 | **404** (unknown token) | Odkaz neexistuje | Tento odkaz sme nenašli. Skontrolujte, či je skopírovaný celý. |
 | **410, `reason:'inactive'`** (link deactivated OR host deactivated) | Odkaz už nie je aktívny | Kolega, ktorý objednávku organizuje, tento odkaz deaktivoval. |
-| **410, `reason:'closed'`** (cycle no longer open) | Objednávanie je uzavreté | Cyklus sa medzičasom uzamkol — objednávky už neprijímame. |
+| ~~**410, `reason:'closed'`** (cycle no longer open)~~ | ~~Objednávanie je uzavreté~~ | ~~Cyklus sa medzičasom uzamkol — objednávky už neprijímame.~~ **SUPERSEDED by 19 §UC-GL-002 (GL-T2): the listing never answers 410 `closed`; a non-open cycle renders the pre-open page (`preopen-hero`, 19 §UC-GL-006) and this variant's branch + copy are removed from `GuestOrder.vue`.** |
 | anything else (network, 5xx) | Objednávka nie je dostupná (shipped fallback, kept) | server `e.message` |
 
 Common closing line on all variants: **"Ak ste odkaz dostali od kolegu, požiadajte ho
@@ -624,7 +653,8 @@ o nový."**
   that statement is about the **status page**, whose payload only clears `editable` —
   and the status page correspondingly never routes here; it shows the read-only banner
   (UC-GX-006) instead. On `/g/:token` the discrimination above is safe because the
-  server names the reason explicitly (404 / 410-`inactive` / 410-`closed`).
+  server names the reason explicitly (404 / 410-`inactive` / ~~410-`closed`~~ — retired by 19
+  §UC-GL-002).
 
 **Status-page 404 (`data-testid="guest-status-unavailable"`, the pair does not
 resolve — GSO-T4's 404-only read resolver, incl. a cross-link `orderToken`):** same
@@ -635,8 +665,9 @@ objednávku organizuje."** The prototype does not design this screen — recorde
 composition decision (reuse g-dead's visual), not new behavior.
 
 **Acceptance criteria:** 378 px side-by-side with `16-shot.png` (card floats centered
-in the halftone background, rotated danger badge with padlock); the three variants
-selectable in the live prototype match; dead-link e2e (`guest-order.spec.js` 404/410
+in the halftone background, rotated danger badge with padlock); the ~~three~~ variants
+selectable in the live prototype match (**the prototype's `closed` variant is SUPERSEDED by 19
+§UC-GL-002 — that state is the pre-open page, `preopen-hero`; only `notfound` + `inactive` remain**); dead-link e2e (`guest-order.spec.js` 404/410
 paths asserting `guest-unavailable`) stays green — titles are unchanged from shipped,
 only descriptions change and no spec pins those.
 

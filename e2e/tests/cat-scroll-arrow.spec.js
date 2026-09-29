@@ -1,5 +1,11 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding, gotoCycle as portalGotoCycle } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // The `.cat-tabs` horizontal-scroll affordance (`components/CatScrollArrow.vue`).
 //
@@ -65,13 +71,15 @@ let few = null
 let manyLink = null
 let fewLink = null
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-    timeout: TIMEOUT,
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+  timeout: TIMEOUT,
+})
 
 async function makeCycle(label) {
   const name = `E2E CATARROW ${label} ${uniq}`
@@ -165,10 +173,11 @@ async function signIn(page) {
 async function gotoCycle(page, cycle, width = 378) {
   await page.setViewportSize({ width, height: 844 })
   await signIn(page)
-  await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
-  await page.getByRole('heading', { name: cycle.name, exact: true }).click()
-  await expect(page).toHaveURL(new RegExp(`/cycle/${cycle.id}$`))
+  // ⚠ PI-T3 · 18 §UC-PI-019 item 3 — the cycle CARDS are retired (§UC-PI-005), so
+  // `goto('/')` + a heading click is no longer a route to an order screen.
+  // `portalGotoCycle` (helpers/portal.js) is the ONE home of that navigation; it
+  // still enters cold and still proves state came back from the server.
+  await portalGotoCycle(page, cycle.id)
   await expect(page.locator('.app .appbar')).toBeVisible()
   await fontsReady(page)
 }

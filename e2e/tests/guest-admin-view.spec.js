@@ -1,6 +1,7 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { DatabaseSync } from 'node:sqlite'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // GSO-T6: the ADMIN side of guest sub-orders (§UC-GSO-009..010).
 //
@@ -125,12 +126,14 @@ function txRowsFor(watermark, friendId, orderId) {
   )
 }
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 // The backend keeps exactly ONE live admin session (a single `admin_token` row in
 // `settings`, overwritten on every `/api/admin/login` — see `admin.js`), not a
@@ -1182,8 +1185,38 @@ test.describe('Admin cycle detail UI — "Podľa produktu" counts guest bags (UC
     const friendRow = page.getByRole('row').filter({ hasText: pv.host.name }).first()
     await expect(friendRow).toBeVisible()
     // ONE 250g bag and 10.00 EUR — not the 30.00 EUR the product sheet totals.
-    await expect(friendRow, "the guest's two bags are not on the host's bill").toContainText('10.00 EUR')
-    await expect(friendRow).not.toContainText('30.00 EUR')
+    //
+    // ⚠ SCOPED TO THE MONEY CELL, and that is load-bearing, not tidiness (DP-T2,
+    // 2026-09-20). `nth(2)` is the „Suma" cell — the row is chevron, meno, suma,
+    // zostatok, … — i.e. the same cell-scoped idiom the product sheet uses three
+    // tests above (`line.getByRole('cell').nth(3)`).
+    //
+    // Row-wide, this pair was a ONE-IN-TEN FLAKE.
+    //
+    // ⚠ THE MECHANISM IS NOT `innerText`, and checking it that way will mislead you:
+    // Chromium's real `innerText` inserts a TAB between table cells, which would
+    // normalise to a space and NOT reproduce this at all. It is (a) `toContainText`
+    // resolving from **`textContent`** — that is the default; `useInnerText` is the
+    // opt-out — and (b) Vue's whitespace condensing removing the text node between
+    // `</td><td>`. Together: adjacent cells concatenate with NOTHING between them.
+    //
+    // Add `helpers/payment.js friendOrderVariableSymbol()` rendering a BARE
+    // `orders.id` (no prefix, no padding — unlike the 9-/8-prefixed guest and
+    // balance symbols), and a host whose order id ends in 3 whose balance renders
+    // „0.00 EUR" produced „VS 243" + „0.00 EUR" = „VS 2430.00 EUR", so
+    // `not.toContainText('30.00 EUR')`
+    // matched a number STRADDLING TWO CELLS while this row owed 10.00 EUR and no row
+    // anywhere owed 30. Proven by moving ONLY `sqlite_sequence` for `orders` on a
+    // fresh database with this file running alone: id 238 green, id 243 red, same
+    // fixture, same money. Any spec that creates orders first shifts the residue.
+    // The `10.00 EUR` line was fragile the same way and moves with it.
+    //
+    // `toContainText` rather than the product sheet's `toHaveText`: this cell holds
+    // the amount AND the „VS <id>" line under it. The VS is LAST inside the cell, so
+    // nothing concatenates onto it here.
+    const moneyCell = friendRow.getByRole('cell').nth(2)
+    await expect(moneyCell, "the guest's two bags are not on the host's bill").toContainText('10.00 EUR')
+    await expect(moneyCell).not.toContainText('30.00 EUR')
 
     // The guest's name appears ONLY inside their nested sub-order row.
     const guestCells = page.getByRole('cell').filter({ hasText: /Hosto Kolega/ })

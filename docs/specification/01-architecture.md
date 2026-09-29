@@ -122,11 +122,57 @@ spec, so this documents the **existing** system, not a greenfield design.
   distance or trigram similarity over `normalized_name` — the candidate set is ~tens of
   products); no fuzzy-string package.
 
+- **Roadmap October 2026 additions (modules 15–21).** All via the `try/catch ALTER`
+  pattern; new tables via `CREATE TABLE IF NOT EXISTS` in `schema.js`; a column on a table
+  already in prod needs CREATE **and** ALTER.
+  - `settings`: `payment_creditor_name` (module 15). `payment_revolut_username` stays.
+  - `orders.handed_over_at DATETIME`, `guest_orders.handed_over_at DATETIME` (module 16) —
+    admin-only, **ledger-neutral**, settable only when packed (409 `not_packed`),
+    clearable. A host hand-over stamps every non-cancelled **`via_host`** guest sub-order of
+    that host in the same transaction — a guest with its own `packeta_address` (module 20) is
+    its own bag and is never stamped by the host (16/20 seam). `helpers/delivery.js` derives the party's type/target read-only;
+    `helpers/pickup.js` stays the only writer of the pickup/Packeta columns.
+  - `order_cycles.opens_at TEXT`, `closes_at TEXT`, `stage TEXT CHECK (stage IN
+    ('ordered','arrived','ready'))` nullable (module 17); `stage` is meaningful only while
+    `status='locked'`, defaults to `ordered` **on lock FROM `open` only** (FUP-T26,
+    2026-09-20 — the default does NOT fire from `completed` or `planned`; see
+    `17-cycle-stages.md` §UC-CS-002), moves to `ready` on the first hand-over, never
+    auto-completes the cycle.
+  - `friends.explainer_seen_at DATETIME`, `friends.whatsapp_opt_in INTEGER DEFAULT 1`
+    (existing friends default on; new registrations off until ticked), `friends.phone_e164
+    TEXT`, `friends.guest_link_token TEXT UNIQUE` (modules 18/19/21). `phone` stays as
+    entered; `phone_e164` is derived at write time (+421 default) and is the only column
+    the sender reads.
+  - `guest_orders.delivery_fee REAL DEFAULT 0`, `guest_orders.packeta_address TEXT`
+    (module 20) — mirror of the friend columns; `total` stays product-only; cancel zeroes
+    the fee; no `transactions` row ever (guests have no ledger).
+  - `guest_waitlist(id, host_friend_id, cycle_id NULL, name, phone, phone_e164,
+    whatsapp_opt_in, created_at, notified_at)` (module 19) — public write through the
+    `guestWrite` bucket with the guest bounds; idempotent per (host, phone_e164).
+  - `notifications(id, channel CHECK IN ('whatsapp','email'), template_key, segment_key,
+    recipient_kind CHECK IN ('friend','guest','waitlist'), recipient_id, phone_e164,
+    body, status CHECK IN ('queued','released','sent','failed','skipped'), cycle_id,
+    order_id NULL, guest_order_id NULL, created_at, released_at, sent_at, error)` (module
+    21) — the outbox. Rows are **queued** by hand-over (module 16 hook) or the composer,
+    **released** by one admin „Poslať“ per group, **sent** by the `gorifi-wa` process. The
+    API never sends.
+
 ## Permissions & roles
 
 - **Public:** health, friend login/auth-mode, cycle `/public` + `/auth`, product listing, pickup locations, payment-settings, invite-code lookup, onboarding self-signup.
 - **Friend (token, object-level ownership):** own balance/profile/subscriptions/transactions/orders/vouchers.
 - **Admin (`requireAdmin`):** everything else — cycles, products, friends, transactions, analytics, settings, invitations, onboarding-links, roasteries, bakery products; from module 12 also the catalog (CRUD, merge, migration, cross-cycle stats). Friend-token surfaces grow the passport/review/brew-method routes only if module 13 is un-deferred (drafted 2026-08-22, then deferred wholesale).
+
+- **Roadmap October 2026:** hand-over PATCH/bulk, distribution board read, cycle stage
+  PATCH, notifications (compose/release/read), WhatsApp settings + pairing, waitlist read
+  are **admin** (`requireAdmin` + `ADMIN_ENDPOINTS`). Standing-link creation/regeneration
+  and the „kto čaká“ count are **host** (`requireHost`) — **plus admin read + regenerate of a
+  host's standing link (PO 2026-09-19; GL-T1: `GET/POST /api/friends/:id/guest-link/standing[/regenerate]`,
+  `requireAdmin` + `ADMIN_ENDPOINTS`, the same helper as the host pair).** Pre-open page read and the
+  waitlist write are **public** guest routes in `routes/guest.js` (token = credential,
+  `guestRead`/`guestWrite` buckets, uniform 404, hostile-input bounds) and never join
+  `ADMIN_ENDPOINTS`. Payment links, timeline and the explainer are read-only friend/guest
+  surfaces with no new write.
 
 ## Frontend structure
 
@@ -176,8 +222,12 @@ Prototype copy is final — transcribe it verbatim, don't rewrite it.
 ## Shared services, background jobs, integrations
 
 - No background jobs or schedulers.
-- Integrations: Pay by Square QR via `bysquare` + `qrcode` (inside `PaymentModal.vue`),
-  Revolut payment link, Packeta as a manually-entered address (no API).
+- Integrations: Pay by Square QR via `bysquare` + `qrcode`, Revolut payment link, PayMe.sk
+  deep link, Packeta as a manually-entered address (no API). ⚠ AMENDED by PL-T3/PL-T4
+  (15 §UC-PL-004): the QR/link PAYLOAD and the URL composition live in
+  `frontend/src/lib/payment-links.js` — ~~inside `PaymentModal.vue`~~ — because there are
+  FOUR mount sites and a second encode site (`FriendOrder.vue`'s success modal). Only the
+  two library calls stay in the components, where their error handling is UI.
 - **Outbound e-mail — Mailgun (IA-T6, 07 §UC-IA-009). The backend's first and only
   outbound network call.** `backend/src/helpers/mailer.js` is the one home: Node's global
   `fetch` to `${MAILGUN_BASE_URL}/v3/${MAILGUN_DOMAIN}/messages` (EU region,
@@ -202,6 +252,33 @@ Prototype copy is final — transcribe it verbatim, don't rewrite it.
   mailer — timeout-bounded, never throws into a request handler unhandled, secrets (none
   exist in this flow) never logged.
 
+- **Roadmap October 2026 — the first background process (module 21).** `gorifi-wa` is a
+  SEPARATE PM2 app (`deploy/ecosystem.config.cjs`, `instances: 1`, `max_memory_restart:
+  '1200M'`) running **whatsapp-web.js** (headless Chromium via Puppeteer, `LocalAuth`
+  session on disk under `/var/www/gorifi{,-staging}/wa-session`, Puppeteer args
+  `--no-sandbox --disable-dev-shm-usage`). It talks to the API only through the
+  `notifications` table in the same SQLite file (WAL; short transactions; it is the ONLY
+  second writer to the DB and it writes only `notifications.status/sent_at/error`). It
+  polls `released` rows, sends with pacing (random 3–10 s gap, ≤ 30/hour), stops on an
+  auth error, and exposes `GET :3010/health` (state, number, queue counts, last error)
+  which the API proxies to the admin settings page along with the pairing QR. The API
+  process never imports whatsapp-web.js. **Server sizing:** 8 GB RAM / 4 vCPU / +2 GB
+  disk / 1–2 GB swap, `/dev/shm ≥ 256 MB` in the LXC — the PO has confirmed resources are
+  not a constraint. Decision record: roadmap doc §12/§16 — **no Baileys, no Business
+  Cloud API**; the outbox sender is a single implementation behind one interface.
+  Fallback when the bot is down or a recipient has no valid number: the composer's
+  wa.me click-to-chat tab (from the admin's own phone) and/or `channel='email'` via the
+  existing mailer.
+- **Payment deep links (module 15)** are pure URL composition — client-side, no outbound
+  call, no dependency — in ~~`PaymentModal.vue`~~ **`frontend/src/lib/payment-links.js`**
+  (PL-T3/PL-T4; "pure URL composition in PaymentModal.vue" always meant client-side, not
+  "inline in that file", and there are now four callers plus `FriendOrder.vue`'s success
+  modal): `https://revolut.me/<user>?amount=<minor>&currency=EUR`,
+  `https://payme.sk/?V=1&IBAN=…&AM=…&CC=EUR&PI=/VS<vs>/SS/KS&MSG=…&CN=…`. The variable
+  symbol is server-owned like `guestPaymentReference()` (one home:
+  `backend/src/helpers/payment.js` — module 21's messages quote it, never re-derive it).
+- **Packeta stays manual** (free-text point); no Packeta API in this roadmap.
+
 ## NFRs
 
 - No horizontal page overflow at 320 px (pinned by `mobile-no-h-overflow.spec.js`;
@@ -222,6 +299,13 @@ The Mailgun no-SDK rule stands — module 08 builds on the existing `fetch`-base
 no nodemailer/Mailgun SDK, and e-mail templates are plain template literals, not a
 templating engine dependency.
 
+
+For module 21, **`whatsapp-web.js`** (+ its `puppeteer` peer, `qrcode-terminal` optional) is
+pre-approved, installed ONLY in the `gorifi-wa` process's own `package.json`
+(`backend-wa/` or `wa/`), never in `backend/`. **`libphonenumber-js`** is pre-approved for
+E.164 normalisation in `backend/` (small, no network). For module 15 no new package: URL
+composition only; `bysquare` gains the `variableSymbol` field it already supports.
+
 ## Testing & gate
 
 **This repo has no unit-test runner and no TypeScript** — do not add Vitest/Jest/`node:test` or a `tsconfig` to satisfy a pipeline default. The quality bar is:
@@ -236,6 +320,20 @@ templating engine dependency.
 **Implementer/e2e-tester note:** "tests first" here means adding/extending **Playwright e2e specs**, not unit tests. When the implementer reports `blocked: no test runner`, the resolution is this e2e convention — no need to introduce one.
 
 Baseline before the redesign effort: **238 passed / 3 skipped** (the skips need `DB_PATH` or a low rate-limit env; see CLAUDE.md). Restyling must keep the suite green — existing specs assert behavior and a few structural hooks (e.g. `data-testid="purpose-tabs"`); update selectors in specs only when a task's spec section explicitly says the DOM structure changes. There is no visual-regression tooling: pixel fidelity is verified manually against `docs/design/friends-portal-redesign/screenshots/` (e.g. via Playwright screenshots side-by-side), not asserted in CI.
+
+
+**Roadmap October 2026 gate notes.** Same bar (no unit runner; Playwright in `e2e/`).
+Every new admin route joins `ADMIN_ENDPOINTS`; every new public guest route joins the
+zero-external-requests sweep in `self-hosted-fonts.spec.js`. Ledger-neutrality of
+hand-over, the 409 `not_packed` refusal, guest inheritance from host, waitlist
+idempotency and the outbox never-sends-from-API rule each need a spec that reads the
+row back. The `gorifi-wa` process is NOT exercised by the e2e suite (no Chromium-in-
+Chromium, no real number): its contract is covered by testing the outbox transitions
+the API owns (`queued → released`) and a **stub sender** (`WA_SENDER=stub`) that flips
+`released → sent` without network, so the composer flow is e2e-testable. Money paths
+(payment link amounts, guest Packeta fee) reuse `guest-payment-modal.spec.js`'s pixel-QR
+approach — changing the bysquare payload is a sanctioned edit to that spec, listed per
+module.
 
 ## Deployment
 

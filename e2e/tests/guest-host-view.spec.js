@@ -1,5 +1,11 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding, gotoCycle as portalGotoCycle } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // GSO-T5: the host's "Objednávky kolegov" view — the enriched
 // `GET /api/guest-links/cycle/:cycleId` payload (§UC-GSO-006), plus the two
@@ -45,12 +51,14 @@ async function markPaid(guestOrderId) {
   expect((await res.json()).guest_order.paid).toBe(1)
 }
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 // A friend with a real per-friend Bearer session — the host identity these
 // endpoints require. Mirrors guest-status.spec.js.
@@ -654,7 +662,7 @@ test.describe('Regenerated link (the case GSO-T4 left open — CLOSED by module 
     expect((await canonical.json()).order.id).toBe(created.order.id)
 
     // ⚠ THE COUNTER-PIN: regeneration keeps its whole revocation purpose on the
-    // ORDERING surface (`resolveLink` is untouched). The two credentials have
+    // ORDERING surface (`resolveEntry`, formerly `resolveLink`, still 404s a retired token). The two credentials have
     // different lifetimes — the retired link lists nothing and takes no new
     // sub-orders, so a leaked link still cannot be ordered through.
     expect((await ctx.get(`/api/guest/${link.token}`)).status(), 'the retired token lists nothing').toBe(404)
@@ -702,10 +710,11 @@ async function signInAsHost(page, host) {
 // Going in through the portal is therefore how a real host gets here, and it is
 // still a full page load, so it proves state came back from the server.
 async function gotoCycle(page, cycle) {
-  await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
-  await page.getByRole('heading', { name: cycle.name, exact: true }).click()
-  await expect(page).toHaveURL(new RegExp(`/cycle/${cycle.id}$`))
+  // ⚠ PI-T3 · 18 §UC-PI-019 item 3 — the cycle CARDS are retired (§UC-PI-005), so
+  // `goto('/')` + a heading click is no longer a route to an order screen.
+  // `portalGotoCycle` (helpers/portal.js) is the ONE home of that navigation; it
+  // still enters cold and still proves state came back from the server.
+  await portalGotoCycle(page, cycle.id)
 }
 
 // Everything guest-related now lives behind the "Kolegovia" tab (the page opens on

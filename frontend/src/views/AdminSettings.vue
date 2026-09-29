@@ -16,6 +16,8 @@ const router = useRouter()
 const friendsPassword = ref('')
 const paymentIban = ref('')
 const paymentRevolutUsername = ref('')
+// 15 §UC-PL-002 — the account holder's name the payer's bank shows („Platba pre …“).
+const paymentCreditorName = ref('')
 const authMode = ref('legacy')
 const savingAuthMode = ref(false)
 const loading = ref(true)
@@ -83,6 +85,7 @@ async function loadSettings() {
     friendsPassword.value = settings.friendsPassword || ''
     paymentIban.value = settings.paymentIban || ''
     paymentRevolutUsername.value = settings.paymentRevolutUsername || ''
+    paymentCreditorName.value = settings.paymentCreditorName || ''
     authMode.value = settings.authMode || 'legacy'
     pickupLocations.value = locations
     roasteries.value = roasteriesData
@@ -376,7 +379,8 @@ async function savePaymentSettings() {
   try {
     await api.updateAdminSettings({
       paymentIban: paymentIban.value,
-      paymentRevolutUsername: paymentRevolutUsername.value
+      paymentRevolutUsername: paymentRevolutUsername.value,
+      paymentCreditorName: paymentCreditorName.value
     })
     successMessage.value = 'Platobné údaje boli uložené'
     setTimeout(() => { successMessage.value = '' }, 3000)
@@ -618,6 +622,22 @@ async function savePaymentSettings() {
             />
             <p class="text-xs text-muted-foreground">
               Pre tlacidlo na platbu cez Revolut (revolut.me odkaz).
+            </p>
+          </div>
+
+          <div class="space-y-2">
+            <Label for="paymentCreditorName">Meno príjemcu</Label>
+            <!-- maxlength mirrors the server bound (helpers/payment.js
+                 MAX_CREDITOR_NAME_LENGTH = 70); a longer name is refused with a 400. -->
+            <Input
+              id="paymentCreditorName"
+              v-model="paymentCreditorName"
+              type="text"
+              maxlength="70"
+              placeholder="napr. Karol Skolar"
+            />
+            <p class="text-xs text-muted-foreground">
+              Meno majiteľa účtu (IBAN vyššie). Zobrazí sa platiteľovi v bankovej appke pri platbe cez PayMe a v QR kóde.
             </p>
           </div>
 

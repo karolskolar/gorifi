@@ -53,7 +53,12 @@ const ONB_EMAIL_INVALID = 'Neplatný email'
 const ONB_USERNAME_REQUIRED = 'Uzivatelske meno je povinne'
 const LINK_NOTE_REQUIRED = 'Popis je povinný'
 const LINK_NOTE_EMPTY = 'Popis nemôže byť prázdny'
-const PROFILE_NAME_REQUIRED = 'Prihlasovacie meno je povinné'
+// ⚠ FUP-T21 (e2e-immutability case (a), RETARGET not weaken): this route's message was
+// relabelled to match `POST /api/friends` byte for byte, because FUP-T20 retired the
+// portal label the old copy named. Still copied VERBATIM from the handler
+// (`backend/src/routes/friends.js`, PATCH /:id/profile) — the shape matrix below is
+// unchanged and still proves every non-string 400s rather than 500s.
+const PROFILE_NAME_REQUIRED = 'Meno a priezvisko je povinné'
 const PARCEL_ADDRESS_REQUIRED = 'Adresa výdajného miesta je povinná'
 const PICKUP_NAME_REQUIRED = 'Názov je povinný'
 const ROASTERY_NAME_REQUIRED = 'Názov pražiarne je povinný'
@@ -558,7 +563,7 @@ test.describe('FUP-T12 — PATCH /api/friends/:id/profile with non-string text',
       })
       expect(res.status(), `${label(name)} is a client mistake`).toBe(400)
       const body = await res.json()
-      expect(body.error, 'module 03\'s pinned message, unchanged').toBe(PROFILE_NAME_REQUIRED)
+      expect(body.error, 'the route\'s blank-name message, verbatim (FUP-T21 relabel)').toBe(PROFILE_NAME_REQUIRED)
       expectNoInternals(body)
     })
   }
@@ -1076,9 +1081,15 @@ test.beforeAll(async () => {
   })
   expect(cycle.status(), 'T13 cycle fixture').toBe(201)
   t13Cycle = (await cycle.json()).id
+  // ⚠ `opens_at` / `closes_at` are seeded with REAL dates (CS-T4): the read-back
+  // block below proves "the stored value SURVIVES an unbindable shape", and
+  // null-survives-null would be the vacuous version of that claim.
   const seeded = await ctx.patch(`/api/cycles/${t13Cycle}`, {
     headers: admin(),
-    data: { shared_password: 'fup13cyclePass', markup_ratio: 1.25, parcel_fee: 3.5 },
+    data: {
+      shared_password: 'fup13cyclePass', markup_ratio: 1.25, parcel_fee: 3.5,
+      opens_at: '2026-12-01', closes_at: '2026-12-20',
+    },
   })
   expect(seeded.status(), 'T13 cycle seeded with every optional column').toBe(200)
 
@@ -1229,7 +1240,10 @@ test.describe('FUP-T13 — POST /api/cycles with a non-string field', () => {
   }
 
   test('the OPTIONAL columns are treated as absent, not as a 500', async () => {
-    for (const field of ['expected_date', 'type', 'plan_note']) {
+    // CS-T4 (17 §UC-CS-009 item 3) added `opens_at` / `closes_at`: they are bound
+    // into the INSERT exactly like `expected_date` beside them, so `bindValue` must
+    // map an unbindable shape to "absent" rather than to a binder throw.
+    for (const field of ['expected_date', 'type', 'plan_note', 'opens_at', 'closes_at']) {
       for (const bad of UNBINDABLE) {
         const res = await ctx.post('/api/cycles', {
           headers: admin(),
@@ -1240,6 +1254,25 @@ test.describe('FUP-T13 — POST /api/cycles with a non-string field', () => {
         if (field === 'type') expect(row.type, 'the default type, exactly as if absent').toBe('coffee')
         else expect(row[field], `${field} stored as absent`).toBeNull()
       }
+    }
+  })
+
+  // CS-T4 (17 §UC-CS-009 item 3). ⚠ `stage` is the one field on this route that is
+  // NOT read through `bindValue` — a CREATE body's `stage` is IGNORED outright
+  // (17 §UC-CS-002: a new cycle is `open` or `planned`, where a stage is
+  // meaningless), so the junk shapes must be a plain 201 with a NULL column, never
+  // a 400 and never the `CHECK constraint failed: stage IN (…)` 500 that reaching
+  // the storage layer would produce.
+  test('a non-string `stage` is ignored exactly as a valid one is — 201, column NULL', async () => {
+    for (const bad of [...UNBINDABLE, 'packed', null]) {
+      const res = await ctx.post('/api/cycles', {
+        headers: admin(),
+        data: { name: `FUP13 stage ${uniq}${nextSeq()}`, stage: bad },
+      })
+      expect(res.status(), `stage=${label(bad)} still creates the cycle`).toBe(201)
+      const row = await res.json()
+      expect(row.stage, `stage=${label(bad)} stored as absent`).toBeNull()
+      expect(row.status, 'and the cycle is open, as it would be without the field').toBe('open')
     }
   })
 
@@ -1302,7 +1335,13 @@ test.describe('FUP-T13 — PATCH /api/cycles/:id leaves every column UNCHANGED',
     expect(before.parcel_fee).toBe(3.5)
     expect(before.expected_date).toBe('2026-12-24')
     expect(before.plan_note).toBe('FUP13 pôvodná poznámka')
-    for (const field of ['name', 'shared_password', 'markup_ratio', 'expected_date', 'plan_note', 'parcel_fee']) {
+    // CS-T4 (17 §UC-CS-009 item 3): the two planning dates are bound into the same
+    // UPDATE, so they carry the same hazard — an unbindable shape coerced to NULL
+    // would answer 200 while WIPING the column.
+    expect(before.opens_at).toBe('2026-12-01')
+    expect(before.closes_at).toBe('2026-12-20')
+    for (const field of ['name', 'shared_password', 'markup_ratio', 'expected_date', 'plan_note', 'parcel_fee',
+      'opens_at', 'closes_at']) {
       for (const bad of UNBINDABLE) {
         const res = await ctx.patch(`/api/cycles/${t13Cycle}`, { headers: admin(), data: { [field]: bad } })
         expect(res.status(), `${field}=${label(bad)} must not be a server fault`).toBe(200)
@@ -1312,6 +1351,35 @@ test.describe('FUP-T13 — PATCH /api/cycles/:id leaves every column UNCHANGED',
     }
     // Nothing else drifted either.
     expect(await cycleRow(t13Cycle)).toEqual(before)
+  })
+
+  // CS-T4 (17 §UC-CS-009 item 3). `stage` is the ODD ONE OUT on this route and the
+  // reason it gets its own test rather than a row in the loop above: it is NOT read
+  // through `bindValue` (that helper answers "can SQLite bind this?"; the question
+  // here is the stricter "is this one of the three enum values?"), so a non-string
+  // shape is a 400 — the same 400 as `'packed'` — and never a 200. It must never
+  // reach `CHECK (stage IN ('ordered','arrived','ready'))`, because a
+  // `SQLITE_CONSTRAINT_CHECK` throw is a 500 with a stack in the log.
+  test('a non-string `stage` is a 400 `Neplatná fáza`, and the row does not move', async () => {
+    const before = await cycleRow(t13Cycle)
+    expect(before.status, 'the fixture cycle is OPEN — stage is refused here anyway').toBe('open')
+    for (const bad of [...UNBINDABLE, null, 'packed']) {
+      const res = await ctx.patch(`/api/cycles/${t13Cycle}`, { headers: admin(), data: { stage: bad } })
+      expect(res.status(), `stage=${label(bad)} must be a validation refusal, not a server fault`).toBe(400)
+      const body = await res.json()
+      expect(body.error).toBe('Neplatná fáza')
+      expectNoInternals(body)
+      expect(await cycleRow(t13Cycle), `nothing was written for ${label(bad)}`).toEqual(before)
+    }
+
+    // ⚠ NON-VACUITY, and it pins the ORDER of the two checks: a VALID stage value
+    // on this same open cycle is refused by a DIFFERENT door (409 `not_locked`), so
+    // the 400s above came from the shape guard and not from a route that answers
+    // 400 to every `stage` key it is handed.
+    const valid = await ctx.patch(`/api/cycles/${t13Cycle}`, { headers: admin(), data: { stage: 'ready' } })
+    expect(valid.status(), 'a real enum value reaches the status check').toBe(409)
+    expect((await valid.json()).reason).toBe('not_locked')
+    expect(await cycleRow(t13Cycle), 'and that refusal writes nothing either').toEqual(before)
   })
 
   test('NOTHING LOOSENED: an explicit null still CLEARS and a real value still writes', async () => {
@@ -1967,7 +2035,7 @@ test.describe('FUP-T13 — no stack reaches the log for any site in this row', (
 
 // Messages copied verbatim from the handlers — never re-worded here.
 const GUEST_CART_EMPTY = 'Košík je prázdny'
-const GUEST_NOTHING_PRICED = 'Žiadnu z položiek sa nepodarilo spracovať. Obnovte stránku a skúste to znova.'
+const GUEST_NOTHING_PRICED = 'Žiadnu z položiek sa nepodarilo spracovať. Obnov stránku a skús to znova.'
 const FRIEND_NOT_FOUND_OR_INACTIVE = 'Priateľ nebol nájdený alebo je neaktívny'
 const FRIEND_NOT_FOUND = 'Priateľ nebol nájdený'
 const PICKUP_NOT_FOUND = 'Vybrané miesto vyzdvihnutia neexistuje alebo nie je aktívne'

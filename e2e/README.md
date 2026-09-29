@@ -27,7 +27,8 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   closed cycle must not swap in its link (and its buttons must not act on it).
 - `tests/guest-order.spec.js` — GSO-T3: the public guest ordering surface
   (`GET /api/guest/:token`, `POST /api/guest/:token/orders`) — link resolution
-  (200 / 410 deactivated / 410 non-open cycle / 404 unknown token), identity
+  (200 / 410 deactivated / ~~410 non-open cycle~~ 200 `page:'preopen'` on a non-open
+  cycle, 19 §UC-GL-002 / 404 unknown token), identity
   validation (name + mobile required, ≥9 digits), a successful submit with
   frozen marked-up prices + `order_token` + payment info, the 409 lock race,
   and the **stock-limit UNION in both directions** (a guest order shrinks the
@@ -45,7 +46,8 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   released** while the item rows are KEPT (so the release is proven to come from
   the `<> 'cancelled'` status predicate in `helpers/stock.js`, not from deletion),
   and a locked cycle makes the page read-only — `GET` still 200s while the
-  product listing 410s, `PUT` 409s. Because cancelling is irreversible, one test
+  product listing ~~410s~~ answers the pre-open page (200 `page:'preopen'`, 19
+  §UC-GL-002 — GL-T2), `PUT` 409s. Because cancelling is irreversible, one test
   pins down that **only** a literal `items: []` triggers it: `PUT {}`, a bodyless
   `PUT`, a non-array `items`, and a non-empty `items` in which nothing prices are
   all non-destructive 400s. Plus the `excludeGuestOrderId` seam (a re-save at the
@@ -232,9 +234,83 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   attributes** (the retired claim lived in a `placeholder=`, invisible to an
   innerText-only sweep), and `/admin/friends?create=1&name=X` opening the plain list
   with no modal. `Prihlásenie` (the credentials column) is deliberately kept and
-  asserted present. Scoped entirely to `/admin/friends`: the identical label in
-  `FriendPortalSession.vue` is correct there and belongs to
-  `tests/portal-profile-modal.spec.js`.
+  asserted present. Scoped to `/admin/friends`; the friend half of the SAME rule lives in
+  `tests/portal-profile-modal.spec.js`. ⚠ This entry used to say the identical label in
+  `FriendPortalSession.vue` "is correct there" — **it was not** (that field writes the same
+  `friends.name` column, and it shipped the lie to production; FUP-T20). The guard is
+  **two views**: `grep -i prihlasovac frontend/src/views/AdminFriends.vue
+  frontend/src/views/FriendPortalSession.vue` must stay empty — no view that edits
+  `friends.name` may call it a login.
+  ⚠ **FUP-T22 — the sweep reads the app's own COPY, not the DATA it renders.** The
+  collector lives in `e2e/helpers/copy-sweep.js` (ONE home, shared with
+  `portal-profile-modal.spec.js`, which carried a byte copy) and drops every
+  `[data-user-copy]` subtree; `AdminFriends.vue` marks the person-typed
+  interpolations and nothing else, so `Bez e-mailu` / `Neúplné` / `dočasné heslo`
+  and the `title=`s beside them are still swept. The reason is in the template:
+  friend `id 72` is NAMED `Prihlasovacie.meno` (names are KEPT by PO decision), so
+  before this the full suite could not be green — a person's name tripped a guard
+  about the app's own wording. A third test mutation-proves both directions every
+  run (an injected mislabel in text and in a `placeholder=` must redden it; the same
+  string as marked DATA must not). ⚠ A new data field rendered without the marker
+  reddens this file on some unlucky name — mark the data render, never narrow the
+  regex.
+- `tests/cycle-stages.spec.js` — CS-T1 / 17 §UC-CS-001…004: the BACKEND half of the
+  cycle stage model. The `POST`/`PATCH /api/cycles` contract over `opens_at` /
+  `closes_at` / `stage` (**every refusal reads the row back** — a 400/409 must leave it
+  byte-identical, and `bindValue` answering 200 while NULLing a column is invisible to a
+  status assertion), the status↔stage coupling (lock ⇒ `ordered`, unlock ⇒ NULL,
+  complete leaves the historical value alone, `{status:'open',stage:…}` is the 409 and
+  writes NEITHER), the payload publication on all five cycle blocks, and the module-16
+  seam driven through 16's REAL hand-over routes. ⚠ `stage` is enum-checked before the
+  write because a `SQLITE_CONSTRAINT_CHECK` throw is a **500** — deleting that check reds
+  12 tests with `CHECK constraint failed` in the server log. Two tests are **DB_PATH
+  build-the-scenario gates**, not extra assertions: a locked cycle with `stage IS NULL`
+  (the pre-module row the no-backfill rule creates — ~~unreachable through the API~~, and
+  precisely the row DP-T1's superseded `stage IN ('ordered','arrived')` would have left
+  stuck) and a global `transactions` count.
+  ⚠ **FUP-T26 (2026-09-20) superseded that „unreachable" half**: the lock default now fires
+  from `open` ONLY, so `PATCH { status: 'locked' }` on a PLANNED cycle reaches that row. The
+  manufactured fixture stays — it is still the honest way to pin the PRE-MODULE state.
+  It also carries the **`FUP-T26 · 17 §UC-CS-002`** describe: WHICH transitions may write
+  `stage`. `completed → locked` (the admin's recovery path for a mis-completed round) used to
+  RESET a handed-out round from `ready` to `ordered`, rewinding the friend-facing timeline
+  from step 5 to step 2; the two transitions the table leaves alone (`locked → planned`,
+  `completed → open`) are pinned as DELIBERATE beside it. ⚠ All of it is API-level on
+  purpose — `stageIndex()` reads `status` before `stage`, so a rendered-step assertion passes
+  with the defect present, which is how it survived a module closeout. ⚠ Every fixture starts
+  from a stage that DIFFERS from `ordered`: one that already equals the default is a fixed
+  point of the whole defect class. One test needs no server at all: it builds a
+  pre-'planned' `order_cycles` and runs `db/schema.js` in a child process, because the
+  three ALTERs must survive the `_check_test` recreate — move them above that block and
+  it is the ONLY test in the suite that reds. ⚠ It also has to give the fixture a `type`
+  column: the recreate block's `INSERT ... SELECT` names `type` while the ALTER that adds
+  it is ~430 lines later, so on a genuinely old database that block throws at boot (a
+  pre-existing defect, recorded and deliberately not fixed here).
+  It also carries CS-T2 (the lib + the SFC, at source level), CS-T3 (the admin
+  controls + the header's COMPACT timeline, incl. the only runtime proof of the
+  component's token fallbacks — `.d` measured on a page with no `.app`) and CS-T4
+  (17 §UC-CS-008: the guest status page's „Kde je vaša káva" card — the module's only
+  VERTICAL mount). ⚠ CS-T4 deliberately does NOT re-measure the fallbacks: that page's
+  root is `.app`, which DEFINES `--nb-ink:#0a0a0a` byte-identically to the component's
+  own fallback, so a `getComputedStyle('.mk')` read there passes with every fallback
+  deleted. It pins the state VECTOR, keys, labels and the `when` line instead, on TWO
+  fixtures one step apart (`ready` and `arrived`) so a fixed index cannot satisfy both.
+- `tests/portal-shell.spec.js` — PI-T1 / 18 §UC-PI-001, §UC-PI-002, §UC-PI-019 items 1, 2,
+  15: the module-18 SHELL. The four friend routes on one session component (`meta.view`,
+  no auth guard — anonymous keeps its URL and shows the login card), the session boundary
+  across a friend switch, `lib/portal-state.js resolveLanding()` both as a module and wired
+  to the real payload through a `page.route` stub, `lib/dates.js`, the one-home source pins
+  (`portal-state.js` formats no date and sorts no cycle; `FriendPortal.vue` holds none of
+  it), and the friend cycles payload extension driven through the REAL routes
+  (submit → packed → handed-over → paid, then back again). ⚠ Its FIRST test is the one that
+  matters most: `data-testid="portal-landing"` must be ABSENT anonymous, PRESENT signed in
+  and absent again after logout — 60 assertions in 28 files were retargeted onto that
+  marker in one commit, and a marker that also rendered on the login screen would have
+  turned every one of them into an assertion that cannot fail. ⚠ Two timezone tests, two
+  zones, because one could not catch both rules: a SPRING-FORWARD boundary for
+  `weeksUntil` (the autumn one is a FIXED POINT of the naive implementation — measured) and
+  a NEGATIVE-OFFSET zone for the display day. Needs the frontend source beside `e2e/` for
+  the module-import and source-pin describes; they self-skip against a deployment.
 - `tests/self-hosted-fonts.spec.js` — RD-DS-6: the brand webfonts must be
   **self-hosted**, and the CSP hole that hid it. The Podpultovka restyle loaded
   Darker Grotesque / Figtree / Courier Prime from `fonts.googleapis.com`, which
@@ -295,6 +371,84 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   settings (IBAN / Revolut username) **only if they are empty**, because guest
   confirmation needs them — a real environment's values are never overwritten.
 - `fixtures.js` — credentials/constants, overridable via env.
+- `helpers/qr-pixels.js` — `readQrModules(page)` + `qrMatrix(QRCode, qrString)` +
+  `independentQr(amount, reference, iban, variableSymbol?, beneficiaryName?)` (GP-T3): reading a
+  Pay-by-Square QR back off the RENDERED PIXELS, which is how every money path is pinned
+  (01-architecture §Testing & gate). It lives OUTSIDE `tests/` on purpose — `testDir` is
+  `./tests`, and a file there with no `test()` fails the run. `guest-payment-modal.spec.js`
+  imports its scanner and independent encode from here since GP-T3 (learnings 12 §19);
+  `money-rounding.spec.js` still carries its own older copy; new specs import this one
+  (PL-T4, 15 §UC-PL-009 item 7).
+- `tests/pickup-location-delete.spec.js` — FUP-T23: `DELETE /api/pickup-locations/:id`
+  and the TWO-STORE rule. The route used to guard itself with `SELECT COUNT(*) FROM
+  **orders** WHERE pickup_location_id = ?`, while `helpers/pickup.js` — the one home for
+  *which row stores a party's pickup* — says the store is the `orders` row if one exists
+  (ANY status) and the party's `guest_order_links` row otherwise. So a **host with no own
+  order** was invisible to that count and had their pickup point destroyed under them:
+  a `loc<id>` key with no row behind it. Data loss (the route is `requireAdmin`, so not a
+  security hole), reachable through the public API alone — DP-T2 hit it while building a
+  dangling-label fixture. The file is a **matched pair**: the same party, the same
+  assertions, differing only in which store holds the pickup — (a) a submitted own order,
+  (b) a DRAFT own order (`pickupTargetFor()` has no status filter), (c) a host with no own
+  order. (c) is mutation-proved: reverting `pickupLocationInUse()` to the `orders`-only
+  COUNT reddens exactly the two link-stored tests (`the row SURVIVES the delete`) while
+  (a) and (b) stay green. Every outcome is READ BACK through `GET /api/pickup-locations/all`,
+  because both a soft and a hard delete answer 204 — soft = the row is there with
+  `active: 0` and gone from the public picker list, hard = the row is gone from `/all` and a
+  second DELETE 404s. Two baselines keep "soft delete" from degenerating into "this route
+  deletes nothing" (a point nobody chose, and a point a party chose and then LEFT). One
+  test asserts the consequence the party feels — the distribution payload still NAMES the
+  retired point (`target_label`, the plan card, `locations[]`) — and one reads the route's
+  own source to pin that the reference question is asked in ONE place, since a second
+  hand-written COUNT at the call site is exactly how this bug arrives. No auth test: the
+  route is already in `ADMIN_ENDPOINTS`.
+- `tests/pickup-active-gate.spec.js` — FUP-T25: the OTHER pickup question, "is this point
+  **choosable**?" (`active = 1`), asked of both writers of `pickup_location_id` at once.
+  `POST …/submit` (the friend chooses) and `PATCH …/pickup` (the admin corrects) are the
+  only two, and the submit used to carry a byte copy of `helpers/pickup.js`
+  `activeLocation()` while the PATCH already called it. Never a defect — both copies
+  agreed — but FUP-T23's claim that *no sequence of API calls can leave a party pointing at
+  a row that does not exist* rests on BOTH refusing a retired point, and with two copies a
+  mutation in the helper reddened only one of them. ⚠ **Every gate test is generated from
+  one `WRITERS` table, and each writer carries both halves** — the refusal AND the
+  non-vacuity acceptance — so the mutation lands on both symmetrically: dropping the active
+  flag from the helper reddens both "refuses a DEACTIVATED point" tests, and making the
+  helper answer `null` for everything reddens both "NOTHING TIGHTENED" ones. ⚠ The fixture
+  retires its point through the plain admin `PATCH /api/pickup-locations/:id`, i.e. through
+  NEITHER writer, on purpose: an earlier draft reached that state by submitting an order and
+  letting FUP-T23's soft-delete retire the point, which made `beforeAll` depend on the gate
+  under test — the null-mutation then killed the fixture and the file reported ONE failure
+  with 16 "did not run", telling you nothing about which writer broke. The soft-delete
+  lifecycle is still pinned, as a test of its own (usable today → referenced, so DELETE
+  deactivates → refused by both writers tomorrow). The two refusals share a sentence and
+  NOT an envelope — the submit answers `{ error }` alone, the PATCH adds
+  `field: 'pickup_location_id'` — and both shapes are pinned so the shared gate cannot
+  quietly align them. One test greps `backend/src` for the statement, the structural half of
+  the same claim. No auth test: submit is friend-authenticated and the PATCH is already in
+  `ADMIN_ENDPOINTS`.
+- `helpers/copy-sweep.js` — `collectAppCopy()` / `collectAllCopy()` / `collectMarkedData()`:
+  the rendered-COPY sweep ("does this page's own wording say X?"), text **plus**
+  `placeholder`/`title`/`aria-label`/`alt`. Also OUTSIDE `tests/` on purpose, for the same
+  `testDir` reason as the QR helper. ⚠ `collectAppCopy()` drops every `[data-user-copy]`
+  subtree, because a copy sweep asserts what the APP calls a field and a person may be
+  NAMED anything — the e2e template has an active friend called `Prihlasovacie.meno`, which
+  is what made the full suite unable to be green (FUP-T22). Used by
+  `admin-friends-labels.spec.js` and `portal-profile-modal.spec.js`, which used to carry a
+  byte copy each. ⚠ **A new copy sweep imports this — it does not grow a third copy**; the
+  planned `portal-vocabulary.spec.js` (18 §UC-PI-018, `/cykl|kolo/i` over the friend
+  surfaces) is the next case, and it must mark the interpolations on the surfaces it sweeps
+  the way `AdminFriends.vue` does.
+- `helpers/portal.js` — `expectLanding(page)` / `expectNoLanding(page)` / `LANDING`: the ONE
+  home of the „the friend portal is (not) on screen" gate (18 §UC-PI-019 item 1). It
+  replaced `getByRole('heading', { name: 'Objednávkové cykly' })` in **28 files / 60
+  occurrences** (PI-T1) — that heading is a structure module 18 retires, so a gate tied to
+  its copy could not survive the screen. Outside `tests/` for the same `testDir` reason as
+  the other two. ⚠ The marker means „a friend is signed in and the session is mounted" and
+  nothing more — NOT „the cycles have loaded", which the heading did not claim either.
+  ⚠ `expectNoLanding` is `toHaveCount(0)`, not `not.toBeVisible()`: the session is unmounted
+  by a `v-if`, and count-0 is what would red if a change merely HID it (the six-leak class).
+  ⚠ **PI-T2 adds `openMenu` / `menuGo` / `logout` / `openProfile` / `openInvite` HERE** —
+  they all drive the drawer PI-T2 builds, which is why PI-T1 shipped only two.
 
 ## The database is an INPUT — copy the template, never reuse a working file
 
@@ -306,51 +460,230 @@ found — including a commit bisection for a regression that did not exist. If s
 red looks suspicious, **reseed and re-measure before you believe it.**
 
 `./e2e/make-test-db.sh` builds a **template** from production, scrubbed on the server so
-unscrubbed data never leaves it, with a fail-closed check that refuses to download
-anything while a single row still carries production contact data or a credential.
-Result: 76 friends, 12 cycles, 226 orders, 20 guest sub-orders, 486 ledger rows — the
-shape that shows up bugs a 1-friend seed cannot (an unbounded list, an N+1, a fold that
-is fine with 3 rows and unusable with 76).
+unscrubbed data never leaves it. Result: 76 friends, 12 cycles, 226 orders, 20 guest
+sub-orders, 486 ledger rows — the shape that shows up bugs a 1-friend seed cannot (an
+unbounded list, an N+1, a fold that is fine with 3 rows and unusable with 76).
 
 **Names are KEPT** (PO decision, 2026-08-31 — the screens read like the real thing).
-Phones, e-mails and Packeta addresses are generated deterministically from the row id, so
-a friend keeps one number across rebuilds. ⚠ Every credential is regenerated, and that
-list is longer than it looks: `friends.invite_code`, `guest_order_links.token`,
-`guest_orders.order_token` (since GR-T1 the order token alone IS the credential),
-`login_tokens`, `onboarding_links`, `friend_sessions`, `password_hash`, `google_sub`, and
-the admin/friends password rows. Without that, a template in someone's `/tmp` is a set of
-working keys to podpultovka.biz.
+Everything else identifying is regenerated deterministically from the row id, so a friend
+keeps one number across rebuilds.
+
+⚠ **Do not read the list of scrubbed columns from this paragraph — read it from
+`e2e/scrub-template.sql`, and read what is actually checked from
+`e2e/verify-scrub.sql`.** Those two files are the scrub; prose beside them is a fourth
+copy waiting to drift, and this section already carried one. The fail-closed check now
+covers **one line per column the scrub touches** and prints all ~~22~~ **26** (GL-T6), because twice it was
+narrower than the scrub, which was narrower than the schema:
+
+- **2026-08-31** — `payment_iban` / `payment_revolut_username` (the PO's real bank
+  account and Revolut handle) were neither scrubbed nor checked.
+- **2026-09-19, GR-T9 review** — `friends.access_token` (76 production values,
+  `routes/friends.js:18` calls it "a live auth credential"), `friends.google_email`
+  (**11 real third-party Gmail addresses**, sitting beside a `friends.email` that WAS
+  correctly randomised), and `invitations.google_sub` / `invitations.google_email` — and
+  the `google_sub` is not inert: `routes/invitations.js:572,653` copies it onto the
+  friend row at approval and `:321,580` matches on it, so the file shipped a live Google
+  identity. All four passed a check that confidently returned `0`.
+
+**A verification narrower than the scrub does not weaken the claim, it launders it.**
+
+⚠⚠ **`make-test-db.sh` FAILS CLOSED UNTIL PRODUCTION CARRIES MODULE 19's MIGRATIONS
+(GL-T6, 2026-09-23).** Both SQL files now name `friends.guest_link_token` (GL-T1, the
+standing guest-link bearer token) and `guest_waitlist` (GL-T3, non-member PII: name,
+phone, `phone_e164` — ALL scrubbed, the name too; the „names are kept" rule is for
+friends only). SQL cannot branch on a missing table or column, so against a production
+that predates those deploys the server-side scrub stops with `no such table:
+guest_waitlist` / `no such column: guest_link_token` and **nothing is downloaded**. That
+is deliberate: the lines ship with the first row that can mint a standing token (GL-T6's
+share dialog / the admin friend detail), never after it. The fix is to deploy module 19
+to production first (a backend restart runs the migrations), then build the template;
+the existing `prod-template.sqlite` keeps working meanwhile (it predates GL-T1 — the gate
+server migrates the per-run COPY on boot). `node e2e/scrub-local.mjs` fails the same way
+on a pre-GL-T1 file, so to re-check an OLD template boot a backend on a copy once first.
 
 ```bash
 ./e2e/make-test-db.sh                      # once, or whenever you want fresher data
-cp e2e/fixtures/prod-template.sqlite /tmp/gorifi-run.sqlite   # ⚠ per RUN
-# …start the server on the COPY, then `node seed.mjs` to add the suite's own fixtures
+
+# Check (or re-apply) the scrub on a template you already have — same SQL files,
+# no server and no sqlite3 CLI needed. Exits non-zero on any non-zero count.
+node e2e/scrub-local.mjs --verify          # SQL checks + a raw byte scan
+node e2e/scrub-local.mjs --scrub           # apply, then verify
 ```
+
+The byte scan is there because the SQL checks only see live rows: the scrub ends in
+`VACUUM`, and that is the only thing between a deleted row and someone running
+`strings` on the file. It reports e-mail addresses whose domain is not `example.test`
+and bcrypt prefixes, over the whole file including freed pages.
+
+Then **the recipe in the next section copies it per run** — that block is the one to
+follow, and its step order (stop the server → confirm the port is free → replace the
+DB → start → seed) is part of the fix, not housekeeping.
 
 ⚠ `seed.mjs` is still required on top: the template has no `E2E Test Cycle`/`E2ETester`,
 and the password columns are bcrypt hashes SQL cannot produce, so the script deletes them
 and `seed.mjs` re-creates them from `fixtures.js`. Running the suite against the
-**template itself** reintroduces exactly the accumulation this replaces.
+**template itself** reintroduces exactly the accumulation this replaces — and leaves a
+`prod-template.sqlite-wal`/`-shm` pair beside it as the evidence. Copy only the
+`.sqlite`; if that stray `-wal` is ever non-empty, rebuild the template rather than
+copying a file whose newest pages live in a WAL you are not copying.
+
+⚠ **The per-run copy is the whole fix; do NOT add teardown to the `makeCycle`/`makeHost`
+helpers** (considered and rejected, GR-T9, 2026-09-19). Two reasons, both checkable:
+**24 spec files define their own private `makeCycle` and/or `makeHost`** (21 and 16, with
+13 defining both), so teardown means 24 edits with 24 chances to diverge — the multi-copy failure this row is about; and a
+helper that deleted its cycle would have to unwind the same cascade the app owns
+(orders, guest links, sub-orders, ledger rows), which no helper does today. Measured:
+four back-to-back `share-dialog` runs against one already-used copy took 15.8 / 16.1 /
+16.4 s, all 15/15 — against the 3.7 min and 2 failures that started this row. The copy
+buys that isolation with no new code.
 
 ## Run against a local prod-like backend
 
-```bash
-# from repo root: build the frontend into backend/public, run backend on one port
-cd frontend && npm run build && rm -rf ../backend/public && cp -r dist ../backend/public && cd ..
-DB_PATH=/tmp/gorifi-e2e.sqlite PORT=3997 CORS_ORIGIN=http://localhost:3997 node backend/src/index.js &
+⚠ **The database in this recipe is a PER-RUN COPY, and the numbered order is
+load-bearing** — see the section above for why, and the "replace the DB, not under a
+running server" gotcha below for what happens when you do steps 2–4 in any other
+order. This block is verified end-to-end (GR-T9, 2026-09-19); run it as written.
 
+```bash
+# 1 — build the frontend into backend/public (git-ignored; a missing one answers 503)
+cd frontend && npm run build && rm -rf ../backend/public && cp -r dist ../backend/public && cd ..
+
+# 2 — STOP whatever holds the port, BY THE PID THAT OWNS IT, and confirm it is free.
+#     `pkill -f node` self-matches; `ss` names the one process that actually matters.
+PID=$(ss -lptnH 'sport = :3997' | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
+[ -n "$PID" ] && kill "$PID"
+# ⚠ `kill` returns before the process is gone — WAIT for the port, don't just look.
+for i in $(seq 1 10); do ss -lptnH 'sport = :3997' | grep -q . || break; sleep 1; done
+ss -lptnH 'sport = :3997'        # ⚠ must print NOTHING before you go on
+
+# 3 — a PER-RUN database. ONLY NOW, with nothing holding the old one open.
+RUN_DB=$(mktemp -u /tmp/gorifi-run-XXXXXX.sqlite)
+cp e2e/fixtures/prod-template.sqlite "$RUN_DB"   # no template? omit this line:
+                                                 # a nonexistent path is created and
+                                                 # seeded from scratch (1 friend, 1
+                                                 # cycle) — still per-run.
+
+# 4 — start the backend on that copy
+# ⚠ ALL FIVE MAXIMA AT 100000 — see "the shared auth-limiter budget" below. The
+#   values this block used to carry (1000 / 2000 / 5000) are the ones that section
+#   MEASURED as too small for a full run, so the one runnable block contradicted its
+#   own warning; DP-T8 paid 9 minutes and 30 fake failures for that (2026-09-20).
+#   The three limiter specs self-skip either way — that is the documented skip.
+DB_PATH="$RUN_DB" PORT=3997 CORS_ORIGIN=http://localhost:3997 \
+  GOOGLE_CLIENT_ID=test-client GOOGLE_AUTH_TEST_MODE=1 \
+  RATE_LIMIT_AUTH_MAX=100000 RATE_LIMIT_ABUSE_MAX=100000 \
+  RATE_LIMIT_GUEST_READ_MAX=100000 RATE_LIMIT_GUEST_WRITE_MAX=100000 \
+  RATE_LIMIT_MAGIC_MAX=100000 \
+  setsid node backend/src/index.js > /tmp/gorifi-e2e-server.log 2>&1 </dev/null &
+# ⚠ /api/health, NOT /api/cycles — `cycles` is requireAdmin and answers 401, so
+#   `curl -sf` there NEVER succeeds and the wait degrades into a silent 15 s sleep.
+#   The trailing re-check is what makes a dead backend loud instead of a confusing
+#   seed failure ten seconds later.
+for i in $(seq 1 30); do curl -sf http://localhost:3997/api/health >/dev/null && break; sleep 1; done
+curl -sf http://localhost:3997/api/health >/dev/null \
+  || { echo "!! backend never came up — read /tmp/gorifi-e2e-server.log"; exit 1; }
+
+# 5 — the suite's own fixtures ON TOP of the template
 cd e2e
-npm install && npx playwright install --with-deps chromium
-BASE_URL=http://localhost:3997 node seed.mjs
-# DB_PATH is optional: no spec requires it any more. When it points at the same
-# file the server was started with, guest-admin-view.spec.js adds one extra
-# assertion (a GLOBAL `transactions` row count around the guest paid toggle,
-# which also catches a row written with a NULL friend_id).
-DB_PATH=/tmp/gorifi-e2e.sqlite BASE_URL=http://localhost:3997 npm test
+npm install && npx playwright install --with-deps chromium   # first time only
+BASE_URL=http://localhost:3997 DB_PATH="$RUN_DB" node seed.mjs
+# ⚠ It must say `cycle: created` / `friend: created`. `exists` means you are talking
+#   to a server that is NOT on your fresh copy — stop and read the gotcha below.
+#
+# ⚠⚠ `DB_PATH` IS NOT OPTIONAL FOR THE SEED SINCE PI-T9 (18 §UC-PI-013), and its
+#   absence is SILENT. Step 7 of the seed pre-stamps `friends.explainer_seen_at` for
+#   every friend it finds — the state a live deployment reaches after everyone has
+#   logged in once — leaving exactly ONE named fixture (`E2EExplainerGate`)
+#   unacknowledged. ⚠ That is **77**, not 76: the template holds 76 friends and the
+#   seed adds its own `E2ETester` two steps earlier (`E2EExplainerGate` is the 78th
+#   and the one left NULL). The seed COUNTS rather than assuming, so the number moves
+#   with the template — a mismatch between this line and what the run prints means
+#   the template changed, not that the step is broken. Without `DB_PATH` the step prints
+#   `explainer: DB_PATH not set — skipping the pre-stamp` and every UI friend login in
+#   the suite lands on `/ako-to-funguje` instead of the screen it came to measure.
+#   The tell is that line in the seed output, and `explainer: pre-stamped 77 friend(s);
+#   1 left unacknowledged (the gate fixture)` is what a correct run prints. ⚠ A
+#   `DB_PATH` that names a DIFFERENT database than `BASE_URL` serves is refused rather
+#   than written to: the seed correlates the gate fixture's id, prints `is NOT the
+#   database … — pre-stamp SKIPPED` and exits **non-zero** (the exit code is there
+#   because `mailgun-harness.js` spawns the seed with `stdio: 'ignore'`).
+
+# 6 — run. ⚠ DB_PATH is optional only in the sense that nothing ERRORS without it —
+#     it SILENTLY REMOVES assertions, so pass it. Pointed at the same file the server
+#     was started with it:
+#       • adds one extra assertion in guest-admin-view.spec.js (a GLOBAL
+#         `transactions` row count around the guest paid toggle, which also catches a
+#         row written with a NULL friend_id), and
+#       • un-skips ONE test in distribution-handover.spec.js ("a dangling pickup
+#         id keeps its key and loses only its label"). ⚠ NEW WITH FUP-T23, and it
+#         is a gate of the BUILD-THE-SCENARIO kind, not an extra-assertion one:
+#         `DELETE /api/pickup-locations/:id` now asks `helpers/pickup.js
+#         pickupLocationInUse()` (both stores), and both writers of
+#         `pickup_location_id` refuse a non-active point — so NO sequence of API
+#         calls can leave a party pointing at a row that does not exist. The
+#         fixture destroys the row directly instead. The payload's tolerance of a
+#         dangling id stays worth pinning because databases written BEFORE the fix
+#         still contain them. (`pickup-location-delete.spec.js` owns the delete
+#         itself and needs no DB_PATH at all.)
+#       • ~~un-skips TWO tests in distribution-handover.spec.js ("handed_over_at
+#         moves stage to handed…", "derived handed_over_at: …")~~ — **RETIRED by
+#         DP-T3, 2026-09-20, exactly as that row promised.** Both now drive the real
+#         `PATCH …/handed-over` routes and carry NO gate, so they run on every
+#         target. Nothing in that file stamps the column any more; its only DB_PATH
+#         use left is the strictly-EXTRA ledger watermark (an assertion additive to
+#         an API-level one, never a scenario), so losing DB_PATH cannot make it
+#         vanish, and
+#       • un-skips FOUR tests in cycle-stages.spec.js (three CS-T1, one CS-T3) —
+#         the storage-layer
+#         CHECK probe, plus three of the BUILD-THE-SCENARIO kind: "a PRE-MODULE locked cycle (`stage IS NULL`) is
+#         promoted to `ready`" manufactures the row the no-backfill rule creates
+#         (~~locking writes `ordered`, unlocking also opens the cycle, and `stage:
+#         null` is a 400, so NO sequence of API calls produces it~~ — ⚠ SUPERSEDED by
+#         FUP-T26, 2026-09-20: the lock default fires from `open` only, so locking a
+#         PLANNED cycle produces it; the manufactured fixture stays because it is
+#         still the honest way to pin the PRE-MODULE state), the global
+#         `transactions` row count, and CS-T3's UI twin of the first one ("a
+#         PRE-MODULE locked round (`stage IS NULL`) offers both buttons and reads as
+#         `ordered`"), which manufactures the SAME unreachable row to prove the admin
+#         header treats NULL as "not started" rather than "past it" — the state every
+#         locked round in production is in. A run without DB_PATH silently loses the
+#         one test that covers the predicate DP-T1's superseded stub got wrong, and
+#       • un-skips ONE test in distribution-foundation.spec.js ("only the hand-over
+#         routes write a notifications row — and these are the rows"). That gate is
+#         permanent and is a DIFFERENT kind: `notifications` has NO API at all in
+#         module 16, so the queued rows' COLUMNS (template/segment keys, `body IS
+#         NULL`) are unobservable without the file. The route BEHAVIOUR (how many
+#         rows, and when none) is asserted ungated in distribution-handover.spec.js
+#         through the `queued_notifications` / `dequeued_notifications` counts.
+# ⚠ THE TELL IS THE SKIP COUNT, NOT THE FAILURE COUNT. A run that loses DB_PATH is
+#   still green. This bit once already (DP-T2, 2026-09-20): `RUN_DB=$(mktemp) && … &`
+#   backgrounds the WHOLE `&&` list, so the variable never exists in the foreground
+#   shell, DB_PATH reached Playwright empty, and the run reported "39 passed, 2
+#   skipped, EXIT 0" — a false clean. Read the skip list every time.
+# ⚠ SERVER_LOG is what un-skips the "no stack reaches the log" families (FUP-T7/T10/
+#   T11/T12/T13/T14/T15). Without it, 21 tests self-skip SILENTLY — measured on a full
+#   run (PL-T4, 2026-09-19): 26 skips, of which only 4 are the documented rate-limit
+#   ones plus forced-change-ui. Point it at step 4's log file and they run.
+DB_PATH="$RUN_DB" SERVER_LOG=/tmp/gorifi-e2e-server.log \
+  BASE_URL=http://localhost:3997 npm test -- --workers=1
 ```
 
-Two gotchas in that recipe that look like app bugs when you skip them:
+Gotchas in that recipe that look like app bugs when you skip them:
 
+- ⚠ **Free the port BEFORE you start the new server — that is why step 2 comes before
+  step 4, and the failure is silent.** Leave the old backend running and the new one
+  dies instantly with `EADDRINUSE` **in its own log only**; the port stays owned by
+  the old process, so every request — `seed.mjs` included — lands on **its** database,
+  not the fresh copy you just made. Nothing errors. The run measures the wrong data.
+  **The tell is `seed.mjs` printing `cycle: exists` / `friend: exists` (and
+  `admin: already set up`) on what should be a fresh copy** — if you see that, stop.
+  Order: **stop by the owning PID → confirm the port is free → copy the DB → start →
+  seed.** Verified 2026-09-19 (GR-T9).
+  ⚠ Related, if you reuse a fixed DB path instead of `mktemp`: `rm` + `cp` over a file
+  a server still holds open leaves that process on the **deleted inode**
+  (`/proc/<pid>/fd/20 → …run.sqlite (deleted)`, measured) while your copy sits unused,
+  and a plain `cp` onto the path is worse — it truncates in place and corrupts an open
+  database. A fresh `mktemp -u` name per run, as in step 3, has neither problem.
 - **`CORS_ORIGIN=http://localhost:PORT` is required**, not optional. The built
   SPA uses `crossorigin` script tags, so serving it from `backend/public` on a
   bare `localhost:PORT` without that origin allow-listed makes the asset
@@ -470,10 +803,11 @@ Mitigations:
 - Prefer a **fresh** DB + freshly-started server per full-suite run (matches
   the recipe above) rather than re-running against a server that has already
   served many earlier runs.
-- If you must re-run repeatedly against the same long-lived server, start it
-  with a generous budget, e.g. `RATE_LIMIT_AUTH_MAX=1000`, to get a true
-  pass/fail signal (`rate-limit.spec.js` still self-skips above 10, so this
-  doesn't weaken that check).
+- ~~If you must re-run repeatedly against the same long-lived server, start it
+  with a generous budget, e.g. `RATE_LIMIT_AUTH_MAX=1000`~~ — **`1000` is not enough
+  for even ONE full run** (see the measured paragraph at the end of this section, and
+  step 4, which now carries `100000` for all five). Use `100000`; `rate-limit.spec.js`
+  still self-skips above 10, so this does not weaken that check.
 
 The same applies to the other limiters, each of which is its **own** bucket:
 
@@ -494,13 +828,32 @@ guest traffic than a real office does — `guest-order.spec.js` alone makes ~35 
 — so a full run against the defaults can 429 in unrelated-looking places. Give every
 limiter a generous budget:
 
-```bash
-DB_PATH=/tmp/gorifi-e2e.sqlite PORT=3997 CORS_ORIGIN=http://localhost:3997 \
-  RATE_LIMIT_AUTH_MAX=1000 RATE_LIMIT_ABUSE_MAX=2000 \
-  RATE_LIMIT_GUEST_READ_MAX=5000 RATE_LIMIT_GUEST_WRITE_MAX=5000 \
-  RATE_LIMIT_MAGIC_MAX=5000 \
-  node backend/src/index.js &
-```
+⚠ **All five are already on the server-start line in step 4 of the recipe above, and
+there is deliberately NO second copy of that command here.** Two sections of this file
+disagreeing about how to start the backend is exactly what created GR-T9 — and a copy
+in this section would be worse than merely redundant: it would reference `$RUN_DB`,
+which is only defined by step 3, and it would omit the Google vars, `setsid`, the log
+redirect and the stdin redirect. Raise the limits there, in the one runnable block.
+
+⚠ With all five raised, `rate-limit*.spec.js` and `magic-link-rate-limit.spec.js`
+self-skip — those are the documented skips, not a hole.
+
+⚠ **`RATE_LIMIT_AUTH_MAX=1000` is NOT enough for a full run any more** (measured, PL-T4
+2026-09-19, on a fresh per-run copy). The suite is ~1870 tests and enough of them log in
+that the shared `authLimiter` bucket exhausts around test ~1700: the tail collapses into
+**16 failures and 108 "did not run"**, every one a `429` on an `admin login` in a
+`beforeAll` — which reads as a broad regression and is nothing of the kind. The SAME tree
+re-run with all five maxima at `100000` gave **1841 passed / 1 failed / 26 skipped**.
+Raise them far past the documented defaults for a full run; the three limiter specs
+self-skip either way.
+⚠ **Measured again, worse, DP-T8 2026-09-20:** with step 4's OLD values
+(`AUTH=1000`) a full run collapsed at test **~1292** — **30 failed / 631 did not run**,
+every failure a `429` on an `admin login` in a `beforeAll`, reading exactly like a mass
+regression in whatever you just changed. The failure point depends on how many logins the
+tree's specs make, so it MOVES; do not treat "it got further last time" as evidence.
+**Step 4 now carries `100000` for all five — that block and this paragraph must never
+disagree again** (CLAUDE.md §Documentation discipline: a superseded claim gets rewritten
+in every copy, and a runnable block that contradicts its own warning is the worst copy).
 
 **`backend/public` is git-ignored build output** — the build step in the recipe
 above is mandatory, not a convenience. Production never uses it (nginx serves

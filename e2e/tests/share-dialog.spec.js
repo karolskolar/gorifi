@@ -1,5 +1,12 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding, gotoCycle as portalGotoCycle } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
+import { STANDING_GUEST_LINK, STANDING_PARKED } from '../helpers/features.js'
 
 // RD-KG-2 — 05 §UC-KG-006/007: `GuestShareDialog.vue` recomposed onto
 // `NeoModal` (02 §UC-DS-010) + `NeoCopyRow` (02 §UC-DS-011).
@@ -39,12 +46,14 @@ let ctx
 let adminToken
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 // The backend keeps exactly ONE live admin session, overwritten on every
 // /api/admin/login — a UI login elsewhere invalidates a token captured earlier.
@@ -118,6 +127,14 @@ async function hostView(host, cycleId) {
   return res.json()
 }
 
+// GL-T6b · 19 §UC-GL-008 — the host's STANDING link (a GET mints lazily, then is
+// idempotent), read back to pin the share sheet's url (item 3).
+async function standingOf(host) {
+  const res = await ctx.get('/api/guest-links/standing', { headers: host.auth })
+  expect(res.status(), 'standing GET').toBe(200)
+  return res.json()
+}
+
 // FriendPortal resolves the stored session against GET /api/friends?active=true,
 // which is admin-gated — an anonymous browser gets 401 (pre-existing app gap, see
 // e2e/README.md), so that ONE response is stubbed. Everything under test still
@@ -136,18 +153,32 @@ async function signInAsHost(page, host) {
 
 async function gotoPortal(page) {
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+  await expectLanding(page)
 }
 
 // A hard load of /cycle/:id bounces to the portal, so a real host arrives through it.
 async function gotoCycle(page, cycle) {
-  await gotoPortal(page)
-  await page.getByRole('heading', { name: cycle.name, exact: true }).click()
-  await expect(page).toHaveURL(new RegExp(`/cycle/${cycle.id}$`))
+  // ⚠ PI-T3 · 18 §UC-PI-019 item 3 — the cycle CARDS are retired (§UC-PI-005), so
+  // `goto('/')` + a heading click is no longer a route to an order screen.
+  // `portalGotoCycle` (helpers/portal.js) is the ONE home of that navigation; it
+  // still enters cold and still proves state came back from the server.
+  await portalGotoCycle(page, cycle.id)
 }
 
-const portalCard = (page, name) =>
-  page.locator('div.card.p-4', { has: page.getByRole('heading', { name, exact: true }) })
+// ⚠ PI-T3 · 18 §UC-PI-005/011 — `portalCard()` IS GONE. It located module 03's cycle
+// CARD (`div.card.p-4` + the cycle's `<h3>`), whose share ROW was entry point B into
+// this dialog. The card is retired with the cycle list; the landing IS the current
+// open round's order screen, and its share affordance is the `.cartbar` icon, whose
+// accessible name §UC-PI-011 fixes to the SAME „Zdieľať s kolegami" the card's button
+// carried. So the locator moved and the accessible-name contract did not.
+//
+// ⚠ It only resolves for the CURRENT OPEN round (`lib/portal-state.js`), which every
+// caller below satisfies by creating its cycle immediately before navigating — the
+// newest open cycle is the landing's. A test that needs a DIFFERENT cycle's dialog
+// goes through `/cycle/:id` and module 05's Kolegovia card instead (see the
+// „reopening for another cycle" test).
+const landingShare = (page) =>
+  page.locator('.app .cartbar').getByRole('button', { name: 'Zdieľať s kolegami' })
 
 // Entry point A — the "Kolegovia" panel in FriendOrder (module 05's own).
 async function openFromOrderPage(page, host, cycle, { width = 378 } = {}) {
@@ -161,12 +192,13 @@ async function openFromOrderPage(page, host, cycle, { width = 378 } = {}) {
   return dialog
 }
 
-// Entry point B — the portal cycle card's share row (module 03's, same dialog).
+// Entry point B — the LANDING's cartbar share icon (18 §UC-PI-011; was module 03's
+// cycle-card share row until PI-T3 retired the card). Same dialog, same name.
 async function openFromPortal(page, host, cycle, { width = 378 } = {}) {
   await page.setViewportSize({ width, height: 900 })
   await signInAsHost(page, host)
   await gotoPortal(page)
-  await portalCard(page, cycle.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+  await landingShare(page).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog).toBeVisible()
   return dialog
@@ -217,13 +249,13 @@ test.describe('UC-KG-006 — the NeoModal shell', () => {
 
     // Reopen: Escape closes too, and the count goes to 0 (guest-link.spec.js's
     // race test depends on exactly this).
-    await portalCard(page, cycle.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    await landingShare(page).click()
     await expect(page.getByRole('dialog')).toBeVisible()
     await page.keyboard.press('Escape')
     await expect(page.getByRole('dialog')).toHaveCount(0)
 
     // And the ×, whose accessible name must NOT contain "Zavrieť" (02 §UC-DS-010).
-    await portalCard(page, cycle.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    await landingShare(page).click()
     await page.getByRole('button', { name: 'Zatvoriť dialóg' }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
   })
@@ -245,14 +277,16 @@ test.describe('UC-KG-006 — body states', () => {
     await expect(create).toBeVisible()
     expect(await create.evaluate((el) => el.className)).toContain('accent')
     expect(await create.evaluate((el) => el.className)).toContain('block')
-    await expect(dialog.locator('.copyrow'), 'no link ⇒ no copy row').toHaveCount(0)
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').locator('.copyrow'), 'no link ⇒ no copy row').toHaveCount(0)
     await expect(dialog.locator('.banner'), 'and no banner of any kind').toHaveCount(0)
     await expect(dialog.locator('.confirmbox')).toHaveCount(0)
     await expect(dialog.getByRole('button', { name: 'Deaktivovať odkaz' })).toHaveCount(0)
 
     // Creating flips the state in place.
     await create.click()
-    await expect(dialog.locator('.copyrow')).toHaveCount(1)
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').locator('.copyrow')).toHaveCount(1)
     await expect(dialog.locator('p.sub')).toHaveCount(0)
     await expect(dialog.getByRole('button', { name: 'Vytvoriť odkaz' })).toHaveCount(0)
 
@@ -277,17 +311,19 @@ test.describe('UC-KG-006 — body states', () => {
     })
 
     await gotoPortal(page)
-    await portalCard(page, cycle.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    await landingShare(page).click()
 
     const dialog = page.getByRole('dialog')
     const loading = dialog.locator('.m-body > .sub')
     await expect(loading).toHaveText('Načítavam...')
     expect(await loading.evaluate((el) => getComputedStyle(el).textAlign)).toBe('center')
-    await expect(dialog.locator('.copyrow'), 'nothing renders under the spinner').toHaveCount(0)
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link'), 'nothing renders under the spinner').toHaveCount(0)
     await expect(dialog.getByRole('button', { name: 'Vytvoriť odkaz' })).toHaveCount(0)
 
     // …and it resolves into the link state.
-    await expect(dialog.locator('.copyrow')).toHaveCount(1, { timeout: 10000 })
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').locator('.copyrow')).toHaveCount(1, { timeout: 10000 })
     await expect(dialog.locator('.m-body > .sub')).toHaveCount(0)
   })
 
@@ -308,7 +344,7 @@ test.describe('UC-KG-006 — body states', () => {
     })
 
     await gotoPortal(page)
-    await portalCard(page, cycle.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    await landingShare(page).click()
 
     const dialog = page.getByRole('dialog')
     const banner = dialog.locator('.banner.danger.slim')
@@ -342,7 +378,8 @@ test.describe('UC-KG-006 — body states', () => {
     await expect(val).toHaveAttribute('title', `${origin}/g/${link.token}`)
 
     await expect(dialog.locator('.banner.warn'), 'an active link warns about nothing').toHaveCount(0)
-    await expect(dialog.getByRole('button', { name: 'Kopírovať' })).toBeVisible()
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second copy button; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').getByRole('button', { name: 'Kopírovať' })).toBeVisible()
     await expect(dialog.getByRole('button', { name: 'Deaktivovať odkaz' })).toBeVisible()
     await expect(dialog.getByRole('button', { name: 'Vygenerovať nový odkaz' })).toBeVisible()
     await expect(dialog.locator('.confirmbox')).toHaveCount(0)
@@ -356,7 +393,8 @@ test.describe('UC-KG-006 — body states', () => {
     const link = await shareLink(host, cycle.id)
 
     const dialog = await openFromOrderPage(page, host, cycle)
-    const btn = dialog.locator('.copyrow button')
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second copy button; scoped to the per-cycle section)
+    const btn = dialog.getByTestId('per-cycle-link').locator('.copyrow button')
     await expect(btn).toHaveText('Kopírovať')
 
     await btn.click()
@@ -477,7 +515,8 @@ test.describe('UC-KG-006 — native share', () => {
     await shareLink(host, cycle.id)
 
     const dialog = await openFromOrderPage(page, host, cycle)
-    await expect(dialog.locator('.copyrow')).toHaveCount(1)
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').locator('.copyrow')).toHaveCount(1)
     await expect(dialog.getByRole('button', { name: 'Zdieľať' })).toHaveCount(0)
     await expect(dialog.getByRole('button', { name: 'Zdieľať odkaz' })).toHaveCount(0)
     // The only accent-block button in this state would have been the share sheet.
@@ -503,7 +542,7 @@ test.describe('UC-KG-006 — native share', () => {
     })
 
     await gotoPortal(page)
-    await portalCard(page, cycle.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    await landingShare(page).click()
     const dialog = page.getByRole('dialog')
 
     const share = dialog.getByRole('button', { name: 'Zdieľať odkaz' })
@@ -521,9 +560,62 @@ test.describe('UC-KG-006 — native share', () => {
     expect(await page.evaluate(() => window.__shared)).toEqual([{
       title: 'Objednávka Podpultovka',
       text: `Pridajte sa k mojej objednávke - ${cycle.name}`,
-      url: `${origin}/g/${link.token}`,
+      // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — item 3: native share prefers the STANDING url)
+      // — and back to the per-cycle url while the standing link is parked (lib/features.js).
+      url: STANDING_GUEST_LINK ? `${origin}${(await standingOf(host)).standing.url_path}` : `${origin}/g/${link.token}`,
     }])
   })
+
+  test('⚠ PI-T11 (18 §UC-PI-017) — the share-sheet TEXT falls back to "objednávka" when the cycle name is blank',
+    async ({ page }) => {
+      // No real cycle is ever unnamed, so the only way to reach `cycleName`'s own
+      // `|| 'objednávka'` branch (`nativeShare()`) is to blank the name IN THE PAYLOAD
+      // `FriendOrder.vue` reads it from — the `route.fetch()`-and-edit idiom
+      // (guest-status-shell.spec.js), never a hand-built stub, so every other field
+      // this screen needs stays real. This used to fall back to the retired
+      // "objednávkový cyklus" — pinned here so the copy-table edit stays proven, not
+      // merely read off the diff.
+      const host = await makeHost('blank')
+      const cycle = await makeCycle('blank')
+      const link = await shareLink(host, cycle.id)
+
+      await page.setViewportSize({ width: 378, height: 900 })
+      await signInAsHost(page, host)
+      await page.addInitScript(() => {
+        window.__shared = []
+        Object.defineProperty(navigator, 'share', {
+          configurable: true,
+          value: (data) => { window.__shared.push(data); return Promise.resolve() },
+        })
+      })
+      await page.route('**/api/orders/cycle/*/friend/*', async (route) => {
+        const res = await route.fetch()
+        const body = await res.json()
+        if (body?.cycle) body.cycle.name = ''
+        await route.fulfill({ response: res, body: JSON.stringify(body) })
+      })
+
+      await gotoPortal(page)
+      // The subtitle's bold name line shares the SAME `v-if="cycleName"` the share
+      // sheet reads — gone here too, non-vacuously (the good case above proves the
+      // line renders when a name IS there).
+      await landingShare(page).click()
+      const dialog = page.getByRole('dialog')
+      await expect(dialog).toBeVisible()
+      await expect(dialog.locator('.sub b')).toHaveCount(0)
+
+      const share = dialog.getByRole('button', { name: 'Zdieľať odkaz' })
+      await expect(share).toBeVisible()
+      await share.click()
+      const origin = await page.evaluate(() => window.location.origin)
+      expect(await page.evaluate(() => window.__shared)).toEqual([{
+        title: 'Objednávka Podpultovka',
+        text: 'Pridajte sa k mojej objednávke - objednávka',
+        // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — item 3: native share prefers the STANDING url)
+        // — and back to the per-cycle url while the standing link is parked (lib/features.js).
+        url: STANDING_GUEST_LINK ? `${origin}${(await standingOf(host)).standing.url_path}` : `${origin}/g/${link.token}`,
+      }])
+    })
 })
 
 // ---------------------------------------------------------------------------
@@ -583,21 +675,36 @@ test.describe('UC-KG-007 — mount seam and invariants', () => {
 
     await page.setViewportSize({ width: 378, height: 900 })
     await signInAsHost(page, host)
-    await gotoPortal(page)
 
-    await portalCard(page, cycleA.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    // ⚠ PI-T3 · 18 §UC-PI-005 — TWO cycles cannot both be on one screen any more: the
+    // landing resolves exactly ONE round (the newest open — here `cycleB`). So A is
+    // opened through its DEEP LINK and module 05's Kolegovia card, and B through the
+    // landing's cartbar icon. Three entry points, one dialog (§UC-PI-011), which is
+    // precisely what makes this the right pair for the reset claim.
+    //
+    // ⚠ The hop between them is the appbar chevron, NOT a second `page.goto`: this
+    // test is about the dialog's `open` watcher clearing state WITHIN one document,
+    // and a fresh document load would satisfy it vacuously. „Späť" is a client-side
+    // `router.push('/')`.
+    await portalGotoCycle(page, cycleA.id)
+    await page.getByTestId('main-tab-guests').click()
+    await page.getByRole('button', { name: /Zdieľať/ }).click()
     await expect(page.getByTestId('guest-link-url')).toContainText(`/g/${linkA.token}`)
     await page.keyboard.press('Escape')
     await expect(page.getByRole('dialog')).toHaveCount(0)
 
+    await page.getByRole('button', { name: 'Späť', exact: true }).click()
+    await expectLanding(page)
+
     // Cycle B has no link at all — so a leaked `link.value` would show up as
     // cycle A's URL where the "not created yet" sentence belongs.
-    await portalCard(page, cycleB.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    await landingShare(page).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog).toContainText(cycleB.name)
     await expect(dialog.locator('p.sub')).toHaveText('Odkaz ešte nie je vytvorený.')
     await expect(dialog.getByTestId('guest-link-url')).toHaveCount(0)
-    await expect(dialog.locator('.copyrow')).toHaveCount(0)
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').locator('.copyrow')).toHaveCount(0)
   })
 
   test('a guest\'s order_token is published to the host payload (UC-GR-006) but never rendered into the DOM', async ({ page }) => {
@@ -619,7 +726,8 @@ test.describe('UC-KG-007 — mount seam and invariants', () => {
       .toBe(sub.order.order_token)
 
     const dialog = await openFromOrderPage(page, host, cycle)
-    await expect(dialog.locator('.copyrow')).toHaveCount(1)
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').locator('.copyrow')).toHaveCount(1)
     // The host's URL is the LINK token; the guest's private edit token is nowhere.
     await expect(dialog.getByTestId('guest-link-url')).toContainText(`/g/${link.token}`)
     const html = await page.evaluate(() => document.documentElement.outerHTML)
@@ -640,9 +748,10 @@ test.describe('UC-KG-007 — mount seam and invariants', () => {
       Object.defineProperty(navigator, 'share', { configurable: true, value: () => Promise.resolve() })
     })
     await gotoPortal(page)
-    await portalCard(page, cycle.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    await landingShare(page).click()
     const dialog = page.getByRole('dialog')
-    await expect(dialog.locator('.copyrow')).toHaveCount(1)
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').locator('.copyrow')).toHaveCount(1)
 
     // ⚠ `.btn` is `white-space:nowrap`, so a too-wide control gives NO
     // degradation signal — it neither wraps nor ellipsizes, it pushes sideways.

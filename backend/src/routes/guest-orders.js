@@ -12,6 +12,13 @@ import {
   loadSubOrder,
   softCancelGuestOrder,
 } from '../helpers/guest-orders.js';
+import { guestOrderVariableSymbol } from '../helpers/payment.js';
+import { deliveryOf } from '../helpers/delivery.js';
+import { readHandedOverFlag, partyDelivery, guestOrderStage } from '../helpers/handover.js';
+import { enqueueForHandOver, cancelForUnHandOver } from '../helpers/outbox.js';
+import { markCycleReady } from '../helpers/cycle-stage.js';
+import { applyGuestDelivery } from '../helpers/pickup.js';
+import { hostOwnOrder } from '../helpers/packing.js';
 
 const router = Router();
 
@@ -21,8 +28,10 @@ const router = Router();
 //   HOST-only  (friend Bearer identity, §UC-GSO-007/008)
 //     PATCH  /:id/delivered
 //     DELETE /:id
-//   ADMIN-only (`requireAdmin`, §UC-GSO-009/010, 14 §UC-GR-005)
+//   ADMIN-only (`requireAdmin`, §UC-GSO-009/010, 14 §UC-GR-005, 16 §UC-DP-005)
 //     PATCH  /:id/paid
+//     PATCH  /:id/handed-over
+//     PATCH  /:id/delivery        (GP-T5, 20 §UC-GP-009)
 //     POST   /:id/cancel
 //     GET    /cycle/:cycleId/unpaid
 // Wrapping the mount in either guard would be wrong in both directions — an admin
@@ -34,6 +43,13 @@ const router = Router();
 //     the colleague picks their bag up; the admin will see it read-only (GSO-T6)
 //     and never toggles it (their own delivery tracking is the Distribution
 //     packing flow, a separate concept).
+//   - `handed_over_at` is ADMIN-only (16 §UC-DP-005), exactly as `paid` is and
+//     unlike `delivered`. ⚠ THE TWO ARE DIFFERENT COLUMNS AND DIFFERENT EVENTS:
+//     `handed_over_at` is the admin letting the bag go (into the host's hands, to
+//     Packeta, onto the pickup point's shelf); `delivered` is the host afterwards
+//     confirming the colleague actually took it. Neither writes the other, and the
+//     guards point in OPPOSITE directions on the same row — which is the whole
+//     reason this mount is bare and every route states its own guard.
 //   - `paid` is ADMIN-only — the admin is the money recipient. The host sees it
 //     READ-ONLY, so NOTHING in this file may write `paid`/`paid_at`. Every UPDATE
 //     below names its columns literally for exactly that reason: the request body
@@ -179,9 +195,12 @@ router.delete('/:id', (req, res) => {
     });
   }
 
+  // GL-T7: the HOST reads this (`GuestSubOrders.vue` paints `e.message`), so it says
+  // „objednávky", never „cyklus" (18 §UC-PI-017; PO DRAFT). The admin cancel below keeps
+  // „Cyklus" by the audience rule — both halves pinned in `portal-vocabulary.spec.js` §6.
   if (row.cycle_status !== 'open') {
     return res.status(409).json({
-      error: 'Cyklus je už uzavretý, objednávku kolegu už nie je možné odstrániť.',
+      error: 'Objednávky sú už uzavreté, objednávku kolegu už nie je možné odstrániť.',
       reason: 'closed',
     });
   }
@@ -222,7 +241,7 @@ router.delete('/:id', (req, res) => {
   }
   if (applied.conflict === 'closed') {
     return res.status(409).json({
-      error: 'Cyklus bol práve uzavretý, objednávku kolegu už nie je možné odstrániť.',
+      error: 'Objednávky boli práve uzavreté, objednávku kolegu už nie je možné odstrániť.',
       reason: 'closed',
     });
   }
@@ -270,19 +289,204 @@ router.patch('/:id/paid', requireAdmin, (req, res) => {
 
   // Two literal statements, for the same two reasons as the delivered toggle: the
   // timestamp rule ("set on tick, CLEARED on untick") cannot be got half-right,
-  // and NOTHING outside these two columns can be written from here. The request
+  // and NOTHING outside these three columns (`paid`, `paid_at`, `delivery_fee_paid`)
+  // can be written from here. The request
   // body is never spread into SQL, so a `delivered: 1` (the HOST's flag), a
   // `status`, `total`, `guest_name` or `link_id` smuggled into this body lands
   // nowhere. `paid_at` is server time, never the caller's.
+  //
+  // `delivery_fee_paid` (GP-T1) is „the fee part of what the guest was asked to pay,
+  // frozen at the FIRST of {paid, cancel}" — ~~written ONLY by this route~~ it has TWO
+  // writers since the GP-T1 review (orchestrator decision 2026-09-23, pending PO;
+  // learnings 12 §6): this toggle and `softCancelGuestOrder`. The refund („items + fee",
+  // GP-T5's `/unpaid`) reads it because cancel zeroes the live fee.
+  //   paid=1: `COALESCE(delivery_fee_paid, delivery_fee)` — an existing snapshot ALWAYS
+  //           wins (a cancel froze it, or an earlier tick did); a live row with none
+  //           copies the current fee.
+  //   paid=0: NULL on a LIVE row (nothing was paid; the next tick re-copies whatever the
+  //           fee then is) but KEPT on a CANCELLED row — there the live fee is 0 and the
+  //           snapshot is the only record of it, so a re-tick must be able to restore it.
   if (paid) {
-    db.prepare('UPDATE guest_orders SET paid = 1, paid_at = CURRENT_TIMESTAMP WHERE id = ?')
-      .run(row.id);
+    db.prepare(`
+      UPDATE guest_orders
+      SET paid = 1, paid_at = CURRENT_TIMESTAMP,
+          delivery_fee_paid = COALESCE(delivery_fee_paid, delivery_fee)
+      WHERE id = ?
+    `).run(row.id);
   } else {
-    db.prepare('UPDATE guest_orders SET paid = 0, paid_at = NULL WHERE id = ?')
-      .run(row.id);
+    db.prepare(`
+      UPDATE guest_orders
+      SET paid = 0, paid_at = NULL,
+          delivery_fee_paid = CASE WHEN status = 'cancelled' THEN delivery_fee_paid ELSE NULL END
+      WHERE id = ?
+    `).run(row.id);
   }
 
   res.json(mutationPayload(row));
+});
+
+// PATCH /guest-orders/:id/handed-over — STAGE 3 for ONE guest bag (DP-T3,
+// 16 §UC-DP-005). ADMIN-only. Body: `{ handed_over: boolean }` — an EXPLICIT
+// boolean, exactly as on the friend route; `{}`, `true`, `[id]`, `'abc'`, `'true'`
+// and `1` are all 400 and write nothing. There is deliberately no absent-field
+// toggle here either: a hand-over enqueues a message.
+//
+// ⚠ WHY A PER-BAG ROUTE EXISTS AT ALL. Most guest bags are handed over by
+// INHERITANCE, when their host's `PATCH /orders/:id/handed-over` fires — they are
+// physically inside the host's bag. This route is for the three cases where a guest
+// bag IS the unit:
+//   (a) a module-20 Packeta guest, who is their own party;
+//   (b) a host with NO own `orders` row — their „party" is exactly the set of their
+//       guest bags, and there is no order id to PATCH (§Edge Cases);
+//   (c) a correction on ONE withheld bag under a host who is already handed over.
+//
+// ⚠ IT DOES NOT TOUCH THE HOST'S `orders.handed_over_at`, in either direction. A
+// guest-level hand-over is a statement about one bag; the board renders a mixed
+// host as „odovzdané okrem {n}" (§UC-DP-011) rather than promoting or demoting the
+// host's own row behind the admin's back.
+//
+// ⚠ NO `transactions` ROW — the same rule as the `paid` toggle and the admin cancel
+// below, and for the same reason: guests have no `friend_id` and no balance, and the
+// only friend anywhere near this row is the HOST, whose real balance a copied
+// friend-handler INSERT would move for money that never went through it. Stage 3 is
+// ledger-neutral for friends too (`helpers/packing.js` is the ledger moment), so
+// there is no version of this route that writes one.
+//
+// Status codes:
+//   400 — the body is not an explicit boolean
+//   404 — no such sub-order
+//   409 — `cancelled` (terminal: there is nothing to give), or `not_packed` (the bag
+//         has no items, or one of them is still unchecked)
+//   200 — handed over / taken back, or already in that state (idempotent — a double
+//         click or a second device converges, and the FIRST timestamp is the record)
+router.patch('/:id/handed-over', requireAdmin, (req, res) => {
+  const handedOver = readHandedOverFlag(req.body);
+  if (handedOver === undefined) {
+    return res.status(400).json({
+      error: 'Zadajte, či je balíček odovzdaný',
+      field: 'handed_over',
+    });
+  }
+
+  const row = findSubOrderWithLink(req.params.id);
+  if (!row) {
+    return res.status(404).json({ error: 'Objednávka kolegu nebola nájdená' });
+  }
+
+  // `cancelled` is terminal (GSO-T4) — the same shape and reason the host's
+  // `delivered` tick answers, because it is the same impossibility: there is no bag.
+  //
+  // ⚠ UNOWNED SEAM, RECORDED (DP-T3 review, 2026-09-20 — see the DP-T4 and WA-T5
+  // rows of PROGRESS.md). A sub-order cancelled AFTER it was handed over is
+  // unreachable in BOTH directions: this 409 refuses the reversal, and the host's
+  // reversal skips cancelled bags by predicate — while `softCancelGuestOrder()`
+  // clears neither `handed_over_at` nor the queued notification. The bag stays
+  // stamped and a „odovzdané priateľovi" message stays queued for something nobody
+  // will receive. Both predicates are literally what §UC-DP-004/005 specify, so the
+  // fix does not belong here: the cheapest one is at the ADMIN cancel below (reverse
+  // the hand-over for that bag, or refuse with 409 when it is already handed over),
+  // with a release-time guard in WA-T5 as the alternative.
+  if (guestOrderStatus(row) === 'cancelled') {
+    return res.status(409).json({
+      error: 'Táto objednávka bola zrušená, nie je čo odovzdať.',
+      reason: 'cancelled',
+    });
+  }
+
+  // The pack gate, asked of the SHARED stage rule rather than re-derived here: a bag
+  // is packable only when it HAS items and every one of them is checked off (an
+  // empty bag is `to_pack`, not a free pass). An already handed-over bag skips the
+  // gate — that is the idempotent case.
+  const current = loadSubOrder(row.id);
+  if (handedOver && guestOrderStage(current) === 'to_pack') {
+    return res.status(409).json({
+      error: 'Najprv označte všetky položky ako zabalené',
+      reason: 'not_packed',
+    });
+  }
+
+  const apply = db.transaction(() => {
+    // The guest's own delivery, classified with the HOST's — the DP-T1 call-site
+    // contract (§UC-DP-003). Without it a guest would be classified as a standalone
+    // bag and enqueued against the wrong segment.
+    const hostDelivery = partyDelivery(row.cycle_id, row.host_friend_id);
+    const delivery = deliveryOf(current, { host: hostDelivery });
+    const bag = {
+      kind: 'guest',
+      cycleId: row.cycle_id,
+      guestOrderId: row.id,
+      hostFriendId: row.host_friend_id,
+      delivery,
+    };
+
+    if (!handedOver) {
+      db.prepare('UPDATE guest_orders SET handed_over_at = NULL WHERE id = ?').run(row.id);
+      return { queued: 0, dequeued: cancelForUnHandOver([bag]), cycleStage: null };
+    }
+
+    // Re-read inside the transaction, so "was it already handed over?" is answered
+    // by the row and not by the pre-check's snapshot.
+    const before = db.prepare('SELECT handed_over_at FROM guest_orders WHERE id = ?').get(row.id);
+    if (!before) return { conflict: 'gone' };
+
+    // THE RE-CHECK, inside the transaction and as the UPDATE's own predicate —
+    // literally §UC-DP-005's statement. `handed_over_at IS NULL` makes the repeat a
+    // no-op that keeps the first timestamp; the two item clauses re-assert the pack
+    // gate, so an item unchecked between the read above and this write cannot slip
+    // through. ⚠ `COALESCE(packed, 0)` because the column is nullable — a bare
+    // `packed = 0` drops NULL rows in SQL's three-valued logic, which is the
+    // dangerous direction (it would hand over a bag nobody checked).
+    const written = db.prepare(`
+      UPDATE guest_orders SET handed_over_at = CURRENT_TIMESTAMP
+       WHERE id = ?
+         AND handed_over_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM guest_order_items WHERE guest_order_id = ? AND COALESCE(packed, 0) = 0
+         )
+         AND EXISTS (SELECT 1 FROM guest_order_items WHERE guest_order_id = ?)
+    `).run(row.id, row.id, row.id);
+
+    // `changes === 0` means either the bag was ALREADY handed over (the idempotent
+    // 200) or the pack gate refused it between the pre-check and here (the 409).
+    // The re-read above is what tells the two apart.
+    const stamped = written.changes > 0;
+    if (!stamped && !before.handed_over_at) return { conflict: 'not_packed' };
+
+    return {
+      // ⚠ ONLY WHEN THIS CALL ACTUALLY STAMPED — the same rule, and the same reason,
+      // as the friend route: `enqueueForHandOver` dedupes on a `queued` row, which
+      // holds only until module 21 moves one to `released`/`sent` (WA-T5). After
+      // that, a repeat `handed_over: true` on an already-handed bag would mint a
+      // second „odovzdané priateľovi" message for a request that changed nothing.
+      queued: stamped ? enqueueForHandOver([bag]) : 0,
+      dequeued: 0,
+      // §UC-DP-009, inside the transaction, once per request. LIVE since CS-T1: a
+      // Packeta guest is their own bag and counts as a first bag, so this promotes a
+      // LOCKED cycle to `ready` too. ⚠ `.stage` — the published `cycle_stage` is the
+      // STAGE STRING (or null), not the helper's `{ changed }` flag.
+      cycleStage: markCycleReady(row.cycle_id).stage,
+    };
+  });
+
+  const applied = apply();
+  if (applied.conflict === 'gone') {
+    return res.status(404).json({ error: 'Objednávka kolegu nebola nájdená' });
+  }
+  if (applied.conflict === 'not_packed') {
+    return res.status(409).json({
+      error: 'Najprv označte všetky položky ako zabalené',
+      reason: 'not_packed',
+    });
+  }
+
+  const payload = mutationPayload(row);
+  res.json({
+    ...payload,
+    stage: guestOrderStage(payload.guest_order),
+    queued_notifications: applied.queued,
+    dequeued_notifications: applied.dequeued,
+    cycle_stage: applied.cycleStage,
+  });
 });
 
 // POST /guest-orders/:id/cancel — the ADMIN calls off a guest sub-order
@@ -343,6 +547,8 @@ router.post('/:id/cancel', requireAdmin, (req, res) => {
     return res.json({ ...mutationPayload(row), already_cancelled: true });
   }
 
+  // ⚠ „Cyklus" STAYS here on purpose (GL-T7): `requireAdmin`, called only by
+  // `CycleDetail.vue` — „cyklus" is the admin's word (the audience rule, PI-T11 §3).
   if (row.cycle_status !== 'open') {
     return res.status(409).json({
       error: 'Cyklus je už uzavretý, objednávku kolegu už nie je možné zrušiť.',
@@ -370,8 +576,8 @@ router.post('/:id/cancel', requireAdmin, (req, res) => {
     if (cycle?.status !== 'open') return { conflict: 'closed' };
     const current = db.prepare('SELECT id FROM guest_orders WHERE id = ?').get(row.id);
     if (!current) return { conflict: 'gone' };
-    // ONE shared write (helpers/guest-orders.js). Only two columns are ever named
-    // there, so no request body can reach `paid`, `delivered`, `link_id` or the
+    // ONE shared write (helpers/guest-orders.js). Only four columns are ever named
+    // there (`status`, `total`, `delivery_fee`, `delivery_fee_paid` — see its comment), so no request body can reach `paid`, `delivered`, `link_id` or the
     // guest's identity from here.
     return { changed: softCancelGuestOrder(row.id) };
   });
@@ -394,6 +600,143 @@ router.post('/:id/cancel', requireAdmin, (req, res) => {
   res.json({
     ...mutationPayload(row),
     ...(applied.changed ? {} : { already_cancelled: true }),
+  });
+});
+
+// PATCH /guest-orders/:id/delivery — the ADMIN corrects a guest's delivery back to
+// „cez {host}" (GP-T5, 20 §UC-GP-009 / D5). ADMIN-only (`requireAdmin` on THIS route —
+// the mount is bare and mixed). The guest counterpart of the friend pickup PATCH
+// (`routes/orders.js`), written through the SAME one home, `helpers/pickup.js`.
+//
+// Body: EXACTLY `{ method: 'via_host' }`. Anything else — `{}`, `true`, `[1]`,
+// `{ method: 'packeta' }`, a stray `packeta_address` beside it — ⇒ 400 and nothing is
+// written. Explicit intent, the non-destructive form of the `items: []` rule. ⚠ The
+// admin cannot SET a Packeta point for a guest in v1 (PO 2026-09-19): the guest's own
+// edit URL, resendable via 14 §UC-GR-008, is the recovery path.
+//
+// Status codes:
+//   400 — the body is not exactly `{ method: 'via_host' }`
+//   404 — no such sub-order (uniform)
+//   409 — `cancelled` (the `delivered` PATCH precedent: terminal, and the fee is
+//         already 0 there — the snapshot keeps what the refund needs)
+//   409 — `host_handed_over` / `host_packed` (GP-T6 review — the REJOIN gate below)
+//   200 — cleared, or already via_host (`cleared_parcel: false` — idempotent)
+//
+// Deliberately NOT gated on the cycle being open (the correction is needed AFTER the
+// lock — parcels switched off, the bag physically going with the host) and NOT on
+// `paid` (the friend route's precedent): a PAID Packeta row loses its live fee behind
+// the UI confirm that names it. ⚠ The switch SETTLES that fee (orchestrator decision
+// 2026-09-23, option (a), PENDING PO — learnings 12 §31): the confirm tells the admin to
+// return it by hand right then, so ~~a later cancel still refunds what was paid~~ a later
+// cancel refunds the ITEMS only — `/unpaid` counts the snapshot only while
+// `packeta_address IS NOT NULL`, and this route NULLs it. `delivery_fee_paid` is still NOT
+// written here (two writers only, learnings 12 §6); it survives as a trace only.
+//
+// ⚠ NO `transactions` ROW — guests have no ledger (the watermark e2e covers it).
+// ⚠ ACCEPTED RISK (GP-T4 review, learnings 12 §GP-T5): a guest status tab opened
+// BEFORE this correction still shows the old Packeta choice, and its next save sends
+// `use_parcel_delivery: true` (20 §UC-GP-007 item 9 — always sent), re-applying
+// Packeta + the fee while parcels are on. Last-write-wins, like the item cart; no
+// guard here — the guest's save is the guest's own current choice on an open, unpaid
+// order (the only state the edit accepts).
+router.patch('/:id/delivery', requireAdmin, (req, res) => {
+  const body = req.body;
+  const exact = body !== null && typeof body === 'object' && !Array.isArray(body)
+    && Object.keys(body).length === 1
+    && Object.prototype.hasOwnProperty.call(body, 'method')
+    && body.method === 'via_host';
+  if (!exact) {
+    return res.status(400).json({ error: 'Neplatný spôsob prevzatia', field: 'method' });
+  }
+
+  const row = loadSubOrder(req.params.id);
+  if (!row) {
+    return res.status(404).json({ error: 'Objednávka kolegu nebola nájdená' });
+  }
+
+  if (guestOrderStatus(row) === 'cancelled') {
+    return res.status(409).json({
+      error: 'Táto objednávka bola zrušená, spôsob prevzatia už nie je možné zmeniť.',
+      reason: 'cancelled',
+    });
+  }
+
+  const apply = db.transaction(() => {
+    // Re-read inside the transaction (the GA-T8 layer that survives cluster mode and a
+    // future `await`): the row must still exist and still be live at the write.
+    const current = db.prepare(
+      'SELECT id, status, packeta_address, delivery_fee FROM guest_orders WHERE id = ?'
+    ).get(row.id);
+    if (!current) return { conflict: 'gone' };
+    if (guestOrderStatus(current) === 'cancelled') return { conflict: 'cancelled' };
+
+    // ⚠ THE REJOIN GATE (GP-T6 review; ORCHESTRATOR DECISION 2026-09-24, PENDING PO —
+    // learnings 12 §46). Switching a Packeta guest to „cez {host}" puts their bag INSIDE
+    // the host's (20 §UC-GP-010: it rejoins `guest_orders[]`, `packingItemStats()` and
+    // `inheritingGuests()`). If the host's bag has already LEFT, the guest would be
+    // inherited as handed over without ever being handed to anyone; if it is PACKED
+    // while the guest still has unticked bags, those bags sit inside a closed parcel —
+    // the board folds a packed friend's checklist away (`item-packed.spec.js`), so they
+    // are unreachable, and the host's hand-over would inherit them unpacked. REFUSE,
+    // never auto-unpack (an unpack posts a ledger reversal of the host's total — a
+    // money move this route must not make). Only when the row IS Packeta (an
+    // already-via_host row is the idempotent 200 and moves nothing), and only against
+    // the host's OWN SUBMITTED order — `hostOwnOrder()`, the one the gate and the
+    // auto-unpack use. A host with NO own order (synthetic party) has no `packed` column
+    // and no stamp of its own: its stage and hand-over are DERIVED from its bags, so a
+    // rejoined unticked bag simply makes it `to_pack` again with the checklist in reach
+    // (a synthetic row never folds) — nothing to gate. Inside the transaction, so the
+    // check and the write agree (the GA-T8 layer).
+    if (current.packeta_address) {
+      const link = db.prepare(`
+        SELECT glink.host_friend_id, glink.cycle_id, f.name AS host_name
+          FROM guest_orders gord
+          JOIN guest_order_links glink ON glink.id = gord.link_id
+          JOIN friends f ON f.id = glink.host_friend_id
+         WHERE gord.id = ?
+      `).get(current.id);
+      const hostOrder = link ? hostOwnOrder(link.host_friend_id, link.cycle_id) : null;
+      if (hostOrder && hostOrder.handed_over_at) {
+        return { conflict: 'host_handed_over', hostName: link.host_name };
+      }
+      if (hostOrder && hostOrder.packed) {
+        const unticked = db.prepare(
+          'SELECT 1 FROM guest_order_items WHERE guest_order_id = ? AND COALESCE(packed, 0) = 0 LIMIT 1'
+        ).get(current.id);
+        if (unticked) return { conflict: 'host_packed', hostName: link.host_name };
+      }
+    }
+    return { result: applyGuestDelivery(current, { method: 'via_host' }) };
+  });
+
+  const applied = apply();
+  if (applied.conflict === 'gone') {
+    return res.status(404).json({ error: 'Objednávka kolegu nebola nájdená' });
+  }
+  if (applied.conflict === 'cancelled') {
+    return res.status(409).json({
+      error: 'Táto objednávka bola zrušená, spôsob prevzatia už nie je možné zmeniť.',
+      reason: 'cancelled',
+    });
+  }
+  // PO DRAFT copy (admin audience, vy-form, says what to do next).
+  if (applied.conflict === 'host_handed_over') {
+    return res.status(409).json({
+      error: `Balíček ${applied.hostName} je už odovzdaný, hosťa už nie je možné presunúť k nemu.`,
+      reason: 'host_handed_over',
+    });
+  }
+  if (applied.conflict === 'host_packed') {
+    return res.status(409).json({
+      error: `Balíček ${applied.hostName} je už zabalený — najprv dobaľte položky hosťa alebo rozbaľte balíček ${applied.hostName}.`,
+      reason: 'host_packed',
+    });
+  }
+
+  res.json({
+    ...mutationPayload(row),
+    cleared_parcel: applied.result.cleared_parcel,
+    parcel_fee_removed: applied.result.parcel_fee_removed,
   });
 });
 
@@ -439,20 +782,64 @@ router.get('/cycle/:cycleId/unpaid', requireAdmin, (req, res) => {
   // receivables/refund screen — the one place the admin is actively chasing a guest
   // about money — so it is where a guest who lost their status URL most needs it
   // resent. Everything else in this mapping stays as it was.
+  // ⚠ GP-T5 (20 §UC-GP-004/006, PO 2026-09-19 + learnings 12 §6): the refund of a
+  // cancelled PAID sub-order is „what was paid" = items + the fee snapshot. The live
+  // `delivery_fee` is 0 on a cancelled row (cancel zeroes it), so the fee part comes
+  // from `delivery_fee_paid` — which is deliberately NOT on `GUEST_ORDER_FIELDS` and is
+  // therefore selected here BY NAME, by the one surface that reads it.
+  // ⚠ `paid = 1` is in THIS QUERY, not only in the formula below: since GP-T1 an UNPAID
+  // cancelled row carries a snapshot too (cancel freezes it), and that snapshot is not
+  // money anybody received. Both layers, so dropping either one alone still refunds
+  // nothing that was not paid.
+  const refundFees = new Map(db.prepare(`
+    SELECT gord.id, gord.delivery_fee_paid
+      FROM guest_orders gord
+      JOIN guest_order_links glink ON glink.id = gord.link_id
+     WHERE glink.cycle_id = ? AND gord.paid = 1 AND gord.status = 'cancelled'
+  `).all(cycle.id).map((r) => [r.id, r.delivery_fee_paid]));
+
+  // ⚠ ORCHESTRATOR DECISION 2026-09-23 (GP-T5 review, option (a), PENDING PO; learnings
+  // 12 §31): the snapshot counts ONLY while the order is still Packeta. The admin's
+  // switch of a PAID Packeta row to „cez {host}" (`PATCH /:id/delivery`) SETTLES its fee —
+  // the confirm tells the admin to return it right then — so a later cancel must not
+  // refund it a second time. The switch NULLs `packeta_address` and the cancel keeps it,
+  // so the address is exactly „never switched". No new writer of `delivery_fee_paid`.
+  const refundFeeOf = (row) => (row.paid && row.packeta_address ? (refundFees.get(row.id) || 0) : 0);
+
   const rows = cycleSubOrders(cycle.id).map((row) => {
     const status = guestOrderStatus(row);
+    const fee = row.delivery_fee || 0;
+    const refundFee = status === 'cancelled' ? roundMoney(refundFeeOf(row)) : 0;
     return {
       id: row.id,
       guest_name: row.guest_name,
       guest_phone: row.guest_phone,
       guest_email: row.guest_email,
       total: row.total,
-      amount: status === 'cancelled' ? itemsAmount(row) : row.total,
+      // live: what is owed = products + the fee (UC-GP-004); cancelled: the refund =
+      // the kept item rows + (paid ? the fee snapshot : 0).
+      amount: status === 'cancelled'
+        ? roundMoney(itemsAmount(row) + refundFee)
+        : roundMoney((row.total || 0) + fee),
+      // GP-T5 review — the fee part of the refund, exactly the value `amount` counts (0 on a
+      // live row, 0 on a switched or unpaid one). Admin-only; drives the refund card's note.
+      refund_fee: refundFee,
+      // GP-T5 — extended BY NAME (the hand-picked mapping). `packeta` is THE marker
+      // (`packeta_address IS NOT NULL`, never the fee — a fee of 0 is legal and a
+      // cancelled row keeps its address with a zeroed fee).
+      delivery_fee: fee,
+      packeta_address: row.packeta_address || null,
+      packeta: !!row.packeta_address,
       status,
       paid: row.paid,
       delivered: row.delivered,
       created_at: row.created_at,
       reference: guestPaymentReference(row, cycle.name),
+      // 15 §UC-PL-003 item 5 — the SAME symbol the guest was shown on their
+      // confirmation and status pages (`guestPaymentBlock()` derives it from the same
+      // helper), so a statement line reading `VS 9000123` lands on this row and no
+      // other. The hand-picked mapping is EXTENDED by name, never reshaped.
+      variable_symbol: guestOrderVariableSymbol(row.id),
       // The guest's canonical status URL is `/g/o/<this>` (14 §UC-GR-003) — the
       // admin composes it client-side; the token is never a URL in the payload.
       order_token: row.order_token,

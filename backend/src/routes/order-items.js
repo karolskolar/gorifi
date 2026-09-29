@@ -31,17 +31,47 @@ router.patch('/:id/packed', (req, res) => {
 
   const newPacked = item.packed ? 0 : 1;
 
+  // ⚠ STAGE ORDER (DP-T4, 16 §UC-DP-007): un-checking an item whose parent order is
+  // already HANDED OVER is refused, and the auto-unpack below is never reached. The
+  // bag is with the friend; re-opening it here would post the ledger reversal for a
+  // delivery that happened. Checking (0 → 1) is unaffected.
+  if (newPacked === 0 && parentOrder.handed_over_at) {
+    return res.status(409).json({
+      error: 'Balíček je už odovzdaný — najprv zrušte odovzdanie.',
+      reason: 'handed_over',
+    });
+  }
+
   const toggle = db.transaction(() => {
-    db.prepare('UPDATE order_items SET packed = ? WHERE id = ?').run(newPacked, item.id);
+    // ⚠ The same gate REPEATED AS THIS UPDATE'S OWN PREDICATE, so the check and the
+    // write are one statement: an item cannot be released by a hand-over landing
+    // between the read above and here. `changes === 0` ⇒ the bag left in between,
+    // and the abort happens BEFORE the unpack, with nothing written — so the 409
+    // cannot leave a half-applied toggle behind.
+    const written = db.prepare(`
+      UPDATE order_items SET packed = ?
+       WHERE id = ?
+         AND (? = 1 OR NOT EXISTS (
+           SELECT 1 FROM orders WHERE id = ? AND handed_over_at IS NOT NULL
+         ))
+    `).run(newPacked, item.id, newPacked, item.order_id);
+    if (written.changes === 0) return { conflict: 'handed_over' };
 
     // Unchecking an item on an already-packed order un-packs the whole order
     // and posts the reversal transaction (same as the orders.js unpack path).
     if (newPacked === 0 && parentOrder.packed) {
       unpackOrder(parentOrder);
     }
+    return { ok: true };
   });
 
-  toggle();
+  const toggled = toggle();
+  if (toggled.conflict === 'handed_over') {
+    return res.status(409).json({
+      error: 'Balíček je už odovzdaný — najprv zrušte odovzdanie.',
+      reason: 'handed_over',
+    });
+  }
 
   const updated = db.prepare('SELECT * FROM order_items WHERE id = ?').get(item.id);
   const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(item.order_id);

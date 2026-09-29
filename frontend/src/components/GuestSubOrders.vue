@@ -7,6 +7,8 @@
 //   - see every colleague, what they ordered and what it costs;
 //   - tick "Odovzdané" per sub-order — the hand-over checklist. `delivered` is
 //     the HOST's flag (Decision 2), so this is the only place it is written;
+//     (GP-T4, 20 §UC-GP-008: a PACKETA sub-order has no tick — Packeta delivers it,
+//     the host has nothing to hand over; it gets a red badge + the point instead);
 //   - remove a sub-order while the cycle is open (typo, prank, colleague changed
 //     their mind). The server soft-cancels it: the colleague's own status URL then
 //     shows it as cancelled, and the stock it held is released.
@@ -131,6 +133,23 @@ function isCancelled(subOrder) {
   return (subOrder.status || 'submitted') === 'cancelled'
 }
 
+// 20 §UC-GP-008 — a Packeta bag goes to the colleague by parcel, not through the
+// host. ⚠ THE MARKER IS THE ADDRESS, never the fee (learnings 12 §1): a fee of 0 is
+// legal, and a cancelled Packeta row keeps its point with the fee zeroed.
+function isPacketa(subOrder) {
+  return !!subOrder.packeta_address
+}
+
+// §UC-GP-004's host row: the foot shows what the colleague owes the ADMIN —
+// `total + delivery_fee`. `total` itself stays product-only, and so does the server's
+// `totals` in the heading (the pinned GSO-T5 shape, a context figure, not a charge).
+function hasFee(subOrder) {
+  return Number(subOrder.delivery_fee || 0) > 0
+}
+function amountDue(subOrder) {
+  return Number(subOrder.total || 0) + Number(subOrder.delivery_fee || 0)
+}
+
 function formatPrice(price) {
   return `${Number(price || 0).toFixed(2)} EUR`
 }
@@ -194,12 +213,15 @@ const colleagueCount = computed(() => colleaguesLabel(totals.value.count || 0))
 //
 // `count` and `pendingDelivery` are UNCHANGED and stay cancelled-excluded — module
 // 04's tab badge is computed from those two and must NOT be re-gated on `rows`.
+//
+// ⚠ GP-T4 (20 §UC-GP-008 rule 4): `pendingDelivery` also EXCLUDES Packeta rows — the
+// host owes them no hand-over. `count` still includes them (they are colleagues).
 watchEffect(() => {
   const live = subOrders.value.filter((o) => !isCancelled(o))
   emit('summary', {
     count: totals.value.count || 0,
     total: totals.value.total || 0,
-    pendingDelivery: live.reduce((sum, o) => sum + (o.delivered ? 0 : 1), 0),
+    pendingDelivery: live.reduce((sum, o) => sum + (o.delivered || isPacketa(o) ? 0 : 1), 0),
     failed: !!error.value,
     rows: subOrders.value.length,
   })
@@ -232,7 +254,9 @@ function endRowRequest(id) {
 
 async function toggleDelivered(subOrder) {
   const id = subOrder.id
-  if (isCancelled(subOrder) || pending.value[id]) return
+  // A Packeta row renders no tick (nothing to hand over) — and a `disabled`/absent
+  // control is not a guard against a dispatched call, so the handler refuses too.
+  if (isCancelled(subOrder) || isPacketa(subOrder) || pending.value[id]) return
   const isNewest = beginRowRequest(id)
   const next = subOrder.delivered ? 0 : 1
   const previous = { delivered: subOrder.delivered, delivered_at: subOrder.delivered_at }
@@ -424,8 +448,16 @@ async function removeSubOrder(subOrder) {
         >
           <span class="chev" :class="{ open: !isCollapsed(subOrder) }" style="margin-top:3px"><NeoIcon name="chev" /></span>
           <span style="display:block;min-width:0">
-            <span style="display:block;font-weight:800;font-size:15.5px">{{ subOrder.guest_name }}</span>
+            <span style="display:block;font-weight:800;font-size:15.5px" data-user-copy>{{ subOrder.guest_name }}</span>
             <span class="mono sub" style="display:block;font-size:12px">{{ subOrder.guest_phone }}</span>
+            <!-- 20 §UC-GP-008 rule 1 — under the phone, INSIDE the name block (so the
+                 fold control and its testid are unchanged) and deliberately NOT in
+                 `sub-order-badges`, whose „exactly one badge" pin must keep holding. -->
+            <template v-if="isPacketa(subOrder)">
+              <span style="display:block;margin-top:5px"><span class="badge danger" :data-testid="`guest-packeta-${subOrder.id}`">Packeta</span></span>
+              <span class="mono sub" style="display:block;font-size:12px;margin-top:4px;overflow-wrap:anywhere" :data-testid="`guest-packeta-address-${subOrder.id}`" data-user-copy>{{ subOrder.packeta_address }}</span>
+              <span class="sub" style="display:block;font-size:12.5px" :data-testid="`guest-packeta-note-${subOrder.id}`">Tento kolega dostane balík Packetou — nemusíte nič odovzdávať.</span>
+            </template>
             <!-- Folded, this is the only thing left saying how much is hidden. -->
             <span
               v-if="isCollapsed(subOrder) && (subOrder.items || []).length > 0"
@@ -445,8 +477,14 @@ async function removeSubOrder(subOrder) {
         <div v-else style="display:flex;gap:8px;align-items:flex-start;min-width:0;line-height:normal">
           <span class="chev" style="margin-top:3px"><NeoIcon name="chev" /></span>
           <div style="min-width:0">
-            <div style="font-weight:800;font-size:15.5px">{{ subOrder.guest_name }}</div>
+            <div style="font-weight:800;font-size:15.5px" data-user-copy>{{ subOrder.guest_name }}</div>
             <div class="mono sub" style="font-size:12px">{{ subOrder.guest_phone }}</div>
+            <!-- §UC-GP-008 rule 5 — the badge and the point stay on a cancelled row (the
+                 record); the „nemusíte nič odovzdávať" promise does not. -->
+            <template v-if="isPacketa(subOrder)">
+              <div style="margin-top:5px"><span class="badge danger" :data-testid="`guest-packeta-${subOrder.id}`">Packeta</span></div>
+              <div class="mono sub" style="font-size:12px;margin-top:4px;overflow-wrap:anywhere" :data-testid="`guest-packeta-address-${subOrder.id}`" data-user-copy>{{ subOrder.packeta_address }}</div>
+            </template>
             <!-- Permanent on a cancelled row: it is the only record left on screen
                  of how big the called-off order was. -->
             <div
@@ -515,7 +553,18 @@ async function removeSubOrder(subOrder) {
       </div>
 
       <div v-else class="foot">
-        <span class="total">{{ formatPrice(subOrder.total) }}</span>
+        <!-- §UC-GP-004 — fee-inclusive, with the admin table's breakdown when a fee is
+             charged. A cancelled row's struck figure above stays `cancelledTotal()`
+             (items — the fee is not recomputed, resolved conflict 1). -->
+        <div style="display:flex;flex-direction:column;gap:2px;min-width:0">
+          <span class="total">{{ formatPrice(amountDue(subOrder)) }}</span>
+          <span
+            v-if="hasFee(subOrder)"
+            class="sub"
+            style="font-size:12px"
+            :data-testid="`guest-total-breakdown-${subOrder.id}`"
+          >({{ formatPrice(subOrder.total) }} + {{ formatPrice(subOrder.delivery_fee) }} doručenie)</span>
+        </div>
 
         <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
           <!-- The hand-over tick — the ONLY writer of `delivered` in the system
@@ -546,7 +595,10 @@ async function removeSubOrder(subOrder) {
                for the same reasons and cannot double-write. `.self` also cannot
                double-fire with the span: a click on the span makes the label a
                bubble ancestor, not the target. -->
+          <!-- 20 §UC-GP-008 rule 2 — NOT rendered on a Packeta row: there is nothing to
+               hand over. `PATCH …/delivered` itself is unchanged server-side. -->
           <label
+            v-if="!isPacketa(subOrder)"
             style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:700;font-size:13.5px;line-height:normal"
             @click.self="toggleDelivered(subOrder)"
           >

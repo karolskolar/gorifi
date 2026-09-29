@@ -1,5 +1,6 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD, TARGET_IS_LOCAL, NEEDS_LOCAL_TARGET } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // GSO-T10: lead capture (§UC-GSO-015, §Lead Capture, Decision 7).
 //
@@ -46,12 +47,14 @@ function uniquePhone() {
   return `09${phoneSeed}${String(++phoneSeq).padStart(2, '0')}`
 }
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 // A friend with a real per-friend Bearer session — the host identity the
 // guest-link endpoints require. Mirrors guest-status.spec.js.
@@ -500,12 +503,12 @@ test.describe('Lead capture UI', () => {
     await expect(cta, 'the low-key lead-capture CTA').toBeVisible()
     // ⚠ SANCTIONED SPEC UPDATE (06 §UC-GX-011 item 1, resolved conflict #2), the
     // only edit RD-GX-4 spends. The fold line moved from the shipped "Chcete si
-    // nabudúce objednať sami?" to the prototype's "Chcete si objednať sami?" — the
+    // nabudúce objednať sami?" to the prototype's "Chceš si objednávať priamo?" — the
     // word "nabudúce" now lives only in the unfolded body, which this assertion is
     // made before opening. Both wordings satisfy the CLAUDE.md GSO-T10 register pin
     // (vy-form, no reader-gendered participle); that pin is what this line exists to
     // protect, and the new regex still protects it.
-    await expect(cta).toContainText(/objednať sami/i)
+    await expect(cta).toContainText(/objednávať priamo/i)
 
     await page.getByTestId('invite-cta-open').click()
     // Prefilled from the sub-order the guest just created — name/phone/email carried over.

@@ -1,10 +1,15 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding, gotoCycle as portalGotoCycle } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 
 // The product-description face — Figtree, the body face (product decision,
 // 2026-08-18). This REPLACED the 2026-08-13 Noto Sans Condensed brief: the owner
 // asked for the typeface of the order screen's status banner ("Objednávky sú
-// uzamknuté…" — Figtree, bold lead-in + regular body) on these two lines.
+// uzavreté…" — GP-T7, ~~uzamknuté~~ — Figtree, bold lead-in + regular body) on these two lines.
 //
 // Two lines under the badges in a COFFEE product card:
 //   `description1` (the spec line)     → `.pspec`  Figtree 700, 14.5px, lh 1.25, --ink
@@ -116,9 +121,11 @@ async function gotoFriendCard(page) {
     friendId: friend.id, friendName: friend.name, token: friendToken,
     expiresAt: Date.now() + 24 * 60 * 60 * 1000,
   }))
-  await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
-  await page.getByRole('heading', { name: cycle.name, exact: true }).click()
+  // ⚠ PI-T3 · 18 §UC-PI-019 item 3 — the cycle CARDS are retired (§UC-PI-005), so
+  // `goto('/')` + a heading click is no longer a route to an order screen.
+  // `portalGotoCycle` (helpers/portal.js) is the ONE home of that navigation; it
+  // still enters cold and still proves state came back from the server.
+  await portalGotoCycle(page, cycle.id)
   await expect(page.locator('.pspec').first()).toBeVisible()
   await fontsReady(page)
 }

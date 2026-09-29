@@ -166,7 +166,8 @@ exact state).
   standalone credential of identical entropy (resolved conflict 2), so resolving it
   under a foreign link half grants nothing the canonical form does not.
 - **Regeneration keeps its whole purpose on the ORDERING surface:** `resolveLink()`
-  (guest.js:182-207) is untouched, so `/g/:oldToken` (listing) and
+  (guest.js:182-207; ~~untouched~~ rewritten as `resolveEntry()` by 19 §UC-GL-002 — a retired
+  token is still the uniform 404), so `/g/:oldToken` (listing) and
   `POST /:oldToken/orders` (new submits) still 404 after a regeneration — nobody new
   can order through a leaked link. Only links to *already-created* orders survive it.
 - **SPA route `/g/:token/o/:orderToken` stays registered** (router.js:25-29) and its
@@ -255,12 +256,15 @@ create-if-missing:
   row is returned untouched: ⚠ **the token is NEVER regenerated and `active` is
   NEVER written** by this route (see the non-capability below). An inactive existing
   link is returned with `active: 0` so the admin sees the state.
-- No link ⇒ INSERT via the existing `uniqueToken()` with `active = 1` ⇒
+- No link ⇒ INSERT via ~~the existing `uniqueToken()`~~ **`helpers/standing-link.js uniqueGuestToken()` —
+  guest-links.js's private `uniqueToken()` was REPLACED by it in GL-T1 (19 §UC-GL-001), because a link token
+  must now be unique across BOTH `guest_order_links.token` and `friends.guest_link_token`** with `active = 1` ⇒
   **201 `{ link, created: true }`**. The host sees it on their next dialog open
   (`GET /guest-links/cycle/:id` returns it) — no notification mechanism exists or is
   added.
 - No cycle-status gate, mirroring the host's own POST (guest-links.js:40-68 checks
-  only existence) — a link for a non-open cycle is inert anyway (`resolveLink` 410s).
+  only existence) — a link for a non-open cycle is inert anyway (~~`resolveLink` 410s~~ — since 19 §UC-GL-002
+  `resolveEntry`, formerly `resolveLink`, answers the pre-open page and a submit 409s `closed`).
 
 **Explicit NON-capability — ⚠ AMENDED 2026-08-31 (PO decision, D12; see UC-GR-012).**
 As originally written this paragraph said the admin has **no regenerate and no
@@ -580,7 +584,7 @@ PO sign-off pending, §OPEN):** two standing lines in the **link-exists** state:
 - The no-link state gains nothing (there is no link to mis-share yet).
 
 **Acceptance criteria:** both testids render in the link-exists state with the exact
-strings; the full `share-dialog.spec.js` passes UNMODIFIED; the strings render on
+strings; the full `share-dialog.spec.js` passes UNMODIFIED (**true for GR-T7; later SUPERSEDED — PI-T3 re-pointed its entry point and GL-T6b (19 §UC-GL-008) retargeted its `.copyrow`/`Kopírovať`/native-share pins**); the strings render on
 both entry points (one shared dialog — GSO-T2 rule).
 
 ---
@@ -666,7 +670,7 @@ the canonical form. The many direct `page.goto` pair URLs across this file and
 the pair page working) — do not "modernise" them; they are now the regression net for
 the legacy form.
 
-**8. `share-dialog.spec.js`: NO edits** — UC-GR-009's placement constraints exist
+**8. `share-dialog.spec.js`: NO edits** (true for GR-T7; SUPERSEDED — PI-T3 re-pointed its entry point and GL-T6b, 19 §UC-GL-008, retargeted its `.copyrow`/`Kopírovať`/native-share pins) — UC-GR-009's placement constraints exist
 precisely so this file passes unmodified. `share-dialog.spec.js:594-595` (the
 guest-links payload absence pin inside the dialog test) inverts with UC-GR-006;
 `:602` (the rendered dialog HTML never contains the order token) **stays** — the
@@ -727,6 +731,10 @@ rate-limit env vars raised and output piped to a file, never `| tail`.
 ---
 
 ## UC-GR-011 Guest order-confirmation e-mail on submit (Guest)
+
+> ⚠ **Amended by module 20 (`20-guest-packeta.md` §UC-GP-004, shipped GP-T1):** two additive kv rows —
+> `Doručenie Packetou: X.XX €` (fee > 0) and `Výdajné miesto: …` (address set); `Spolu`/`Suma` quote
+> `payment.amount`. A via_host mail is byte-identical to before. D10/D11 unchanged.
 
 *(Added by the same-session PO follow-up, after UC-GR-010 was drafted — hence the
 number; UC-GR-010 item 10 carries its e2e obligations.)*

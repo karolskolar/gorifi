@@ -36,6 +36,11 @@ function generateInviteCode() {
 // Generate a guest share-link token. 14 chars over the same CSPRNG alphabet
 // (~70 bits) — comfortably above the 12-char floor the guest-orders design
 // sets, because the token is the only thing protecting the link (SEC-S2).
+// ⚠ A LINK token (per-cycle `guest_order_links.token` or a host's standing
+// `friends.guest_link_token`) is minted through `helpers/standing-link.js
+// uniqueGuestToken()`, which checks BOTH spaces (19 §UC-GL-001) — never by calling
+// this with a one-table retry. `routes/guest.js`'s `uniqueOrderToken()` is the other
+// caller, for `guest_orders.order_token`, a different space.
 function generateGuestToken() {
   return randomCode(14);
 }
@@ -127,7 +132,10 @@ function initDb() {
       name TEXT NOT NULL,
       status TEXT DEFAULT 'open' CHECK (status IN ('planned', 'open', 'locked', 'completed')),
       shared_password TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      opens_at TEXT,
+      closes_at TEXT,
+      stage TEXT CHECK (stage IN ('ordered', 'arrived', 'ready'))
     )
   `);
 
@@ -198,6 +206,47 @@ function initDb() {
     db.run('DROP TABLE order_cycles');
     db.run('ALTER TABLE order_cycles_new RENAME TO order_cycles');
     db.run('PRAGMA foreign_keys = ON');
+  }
+
+  // Migration (CS-T1, 17 §UC-CS-001): the cycle STAGE model — the two planning
+  // dates (`opens_at` / `closes_at`, ISO `YYYY-MM-DD`, informational, never a
+  // scheduler) and `stage`, where a LOCKED cycle's coffee is.
+  //
+  // ⚠⚠ THESE THREE ALTERS MUST STAY **AFTER** THE `_check_test` RECREATE BLOCK
+  // ABOVE. That block rebuilds `order_cycles` from a HARD-CODED column list and an
+  // `INSERT ... SELECT` naming those same columns, so ANY column added before it is
+  // silently DROPPED on every database where it fires (an old one whose CHECK
+  // constraint still rejects 'planned'). The `CREATE TABLE IF NOT EXISTS` above
+  // carries them too — CLAUDE.md: a column on a table already in prod needs CREATE
+  // **and** ALTER — and on a fresh database the recreate never fires, so the pair is
+  // consistent in both directions.
+  //
+  // ⚠ RECORDED, NOT FIXED HERE: that recreate block also omits `parcel_enabled` /
+  // `parcel_fee`, a pre-existing latent defect on very old databases. It is
+  // explicitly out of this module's scope (17 §UC-CS-001) — do not "fix" it in
+  // passing.
+  //
+  // SQLite accepts a CHECK constraint in ADD COLUMN, so the enum is enforced at the
+  // storage layer too. The route still validates FIRST: a `SQLITE_CONSTRAINT_CHECK`
+  // throw is a 500, never an acceptable answer to a malformed body (§UC-CS-002).
+  // `helpers/cycle-stage.js CYCLE_STAGES` is the one home for the same three values.
+  //
+  // NO BACKFILL: existing locked cycles keep `stage = NULL`, and every reader treats
+  // NULL under `locked` as `ordered`.
+  try {
+    db.run('ALTER TABLE order_cycles ADD COLUMN opens_at TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+  try {
+    db.run('ALTER TABLE order_cycles ADD COLUMN closes_at TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+  try {
+    db.run("ALTER TABLE order_cycles ADD COLUMN stage TEXT CHECK (stage IN ('ordered', 'arrived', 'ready'))");
+  } catch (e) {
+    // Column already exists, ignore
   }
 
   db.run(`
@@ -347,6 +396,7 @@ function initDb() {
       paid INTEGER DEFAULT 0,
       total REAL DEFAULT 0,
       submitted_at DATETIME,
+      handed_over_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE,
       FOREIGN KEY (cycle_id) REFERENCES order_cycles(id) ON DELETE CASCADE
@@ -418,6 +468,21 @@ function initDb() {
 
   try {
     db.run('ALTER TABLE orders ADD COLUMN packed_at DATETIME');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Migration (DP-T1, 16 §UC-DP-002): stage 3 of the distribution pipeline — the
+  // moment the bag physically left the admin's hands. `packed_at` (above) is the
+  // ledger moment; this one is ledger-NEUTRAL by design and writes no
+  // `transactions` row, ever (the hand-over routes are DP-T3/DP-T4's).
+  //
+  // ⚠ CREATE *and* ALTER, the house rule for a column on a table that already
+  // exists in prod/staging, where `CREATE TABLE IF NOT EXISTS orders` is a no-op.
+  // There is deliberately NO `orders.stage` column beside it: the stage is DERIVED
+  // from `packed` + `handed_over_at` (§UC-DP-003), never stored twice.
+  try {
+    db.run('ALTER TABLE orders ADD COLUMN handed_over_at DATETIME');
   } catch (e) {
     // Column already exists, ignore
   }
@@ -778,6 +843,73 @@ function initDb() {
     db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_friends_invite_code ON friends(invite_code) WHERE invite_code IS NOT NULL');
   } catch (e) {}
 
+  // Migration: 18 §UC-PI-013 (PI-T9) — when this friend last acknowledged the
+  // „Ako to funguje" explainer. NULL ⇒ the first login after this deploy opens it
+  // once, pre-ticked.
+  //
+  // ⚠ NO BACK-FILL, AND THAT IS THE PRODUCT DECISION, NOT AN OVERSIGHT (§UC-PI-013's
+  // `OPEN:` resolved to "no back-fill"): the explainer exists because the EXISTING
+  // circle was never told how any of this works either. A
+  // `UPDATE friends SET explainer_seen_at = datetime('now') WHERE explainer_seen_at
+  // IS NULL` here would ship the feature to nobody who matters and look like tidying.
+  //
+  // ⚠ ALTER PLACEMENT — MEASURED, not inherited. CS-T1's trap is that `order_cycles`
+  // is RECREATED further down this file from a hard-coded column list, so an
+  // `ADD COLUMN` placed above that block is silently dropped. There is NO equivalent
+  // block for `friends`: `grep -n "_new " backend/src/db/schema.js` returns EIGHT
+  // lines — six that are the two recreates (`order_cycles_new` ×3 at ~188/200/202 and
+  // `order_items_new` ×3 at ~424/438/444), this comment, and the unrelated `is_new`
+  // COLUMN at ~1136 — and neither recreate touches this table. Counted, because
+  // „there is no such block" is exactly the kind of claim CS-T1 was bitten by
+  // assuming. So this ALTER is safe anywhere after the CREATE, and it
+  // sits at the END of the friends migrations, in chronological order with the other
+  // fifteen. ⚠ The column is deliberately NOT added to the `CREATE TABLE IF NOT
+  // EXISTS friends` above — that statement is the ORIGINAL 2024 shape and every
+  // column since `active` arrives by ALTER; a fresh database runs both and ends up
+  // identical either way, and splitting the convention per column is how the two
+  // paths start to disagree.
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN explainer_seen_at DATETIME');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Migration: 19 §UC-GL-001 (GL-T1) — the host's STANDING guest link, one
+  // cycle-independent `/g/:token` per host. NULL means „not minted yet": the token is
+  // minted lazily by the host's first `GET /api/guest-links/standing` (D1), so there is
+  // NO back-fill — a back-fill would mint a door for every friend who never shares.
+  //
+  // ⚠ ONE HOME for every write: `helpers/standing-link.js` (ensure + regenerate — the
+  // only two writers in backend/src). It is `invite_code`'s class: a credential of the
+  // public guest surface, stripped by `sanitizeFriend`, never selected by
+  // `routes/guest.js`'s LINK_SELECT.
+  //
+  // ⚠ ALTER ONLY, NOT ALSO IN THE `CREATE TABLE IF NOT EXISTS friends` ABOVE — the
+  // PI-T9 convention stated at `explainer_seen_at` just above (that CREATE is the
+  // original 2024 shape and every later column arrives by ALTER; a fresh database runs
+  // this ALTER too). 19 §UC-GL-001 says the same: „`friends` has no fresh CREATE path
+  // for it". `guest-standing-link.spec.js` §1 proves both the fresh and the
+  // pre-existing-database path.
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN guest_link_token TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // ⚠ Its OWN try/catch, deliberately NOT folded into the ALTER above (the GA-T1
+  // lesson at idx_friends_google_sub): on an already-migrated database the ALTER throws
+  // „duplicate column", and a shared catch would skip this CREATE INDEX — leaving the
+  // index on freshly created databases only. A bare ALTER cannot carry UNIQUE (19
+  // resolved conflict 4), so this index IS the storage-layer half of the uniqueness.
+  // SQLite unique indexes ignore NULLs, so unminted friends never collide. ⚠ The
+  // failure is LOGGED, not swallowed silently: a skipped unique index leaves the app's
+  // check as the only defence (the GA-T5 lesson), and that must be visible.
+  try {
+    db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_friends_guest_link_token ON friends(guest_link_token)');
+  } catch (e) {
+    console.error('Migration error (idx_friends_guest_link_token):', e.message);
+  }
+
   // Create invitations table
   db.run(`
     CREATE TABLE IF NOT EXISTS invitations (
@@ -973,10 +1105,64 @@ function initDb() {
       paid_at DATETIME,
       delivered INTEGER DEFAULT 0,
       delivered_at DATETIME,
+      handed_over_at DATETIME,
+      delivery_fee REAL DEFAULT 0,
+      packeta_address TEXT,
+      delivery_fee_paid REAL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (link_id) REFERENCES guest_order_links(id) ON DELETE CASCADE
     )
   `);
+
+  // ⚠ AND THE SAME COLUMN AS A MIGRATION — the same deliberate exception to the
+  // GSO-T2 "guest tables never touch migrations" rule that the two
+  // `guest_order_links` pickup columns above are, and for the same reason: this
+  // table already exists in prod and staging, where the CREATE is a no-op
+  // (DP-T1, 16 §UC-DP-002).
+  //
+  // ⚠ `handed_over_at` is NOT `delivered_at`. `delivered` / `delivered_at` stay
+  // HOST-owned and unchanged in meaning (`PATCH /guest-orders/:id/delivered`): a
+  // host may tick "delivered" before the admin records the hand-over. The
+  // hand-over stamp is ADMIN-owned and is the distribution pipeline's stage 3.
+  try {
+    db.run('ALTER TABLE guest_orders ADD COLUMN handed_over_at DATETIME');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Module 20 (GP-T1, 20 §UC-GP-001) — guest Packeta. CREATE above AND these ALTERs:
+  // `guest_orders` is in prod, where the CREATE is a no-op (the `handed_over_at` rule).
+  //
+  // - `delivery_fee`    the parcel fee charged for THIS sub-order, copied from
+  //                     `order_cycles.parcel_fee` through `roundMoney()` at write time;
+  //                     0 when not Packeta; NEVER part of `total` (product-only).
+  // - `packeta_address` the free-text point (≤ 160, trimmed); NULL when not Packeta.
+  //                     ⚠ THE Packeta marker: `packeta_address IS NOT NULL` ⇔ a Packeta
+  //                     bag. `delivery_fee > 0` is NOT (a fee of 0 is legal, and cancel
+  //                     zeroes the fee while KEEPING the address — UC-GP-006).
+  // - `delivery_fee_paid` the paid SNAPSHOT (orchestrator clarification of the PO
+  //                     decision 2026-09-19): ~~written ONLY by the admin paid toggle~~
+  //                     → SUPERSEDED (orchestrator 2026-09-23, pending PO; learnings 12
+  //                     §6): the fee part of what the guest was asked to pay, frozen at
+  //                     the FIRST of {paid, cancel} — TWO writers, `softCancelGuestOrder`
+  //                     and the admin paid toggle. Cancel zeroes the live fee, so the
+  //                     refund („items + fee") reads this column instead.
+  //                     No back-fill: NULL on every existing row (all of them via_host).
+  try {
+    db.run('ALTER TABLE guest_orders ADD COLUMN delivery_fee REAL DEFAULT 0');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+  try {
+    db.run('ALTER TABLE guest_orders ADD COLUMN packeta_address TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+  try {
+    db.run('ALTER TABLE guest_orders ADD COLUMN delivery_fee_paid REAL');
+  } catch (e) {
+    // Column already exists, ignore
+  }
 
   // Guest line items. `packed` mirrors order_items.packed — the persisted
   // per-item distribution checkbox.
@@ -993,6 +1179,50 @@ function initDb() {
       FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
     )
   `);
+
+  // The guest WAITLIST (19 §UC-GL-004) — „Dajte mi vedieť" contacts left on the
+  // pre-open page, one row per (host, phone). A NEW table, so CREATE only (the GSO-T2
+  // guest-tables rule); a later task adds a migration for it only for a column that is
+  // genuinely new once this table is in prod.
+  //
+  // Created by GL-T1 (inert then, so `waiting_count` counted the real table from day
+  // one); ~~no writer exists yet~~ — GL-T3 shipped them. Every statement that writes
+  // it lives in `helpers/guest-waitlist.js`: the public `POST /api/guest/:token/waitlist`
+  // (INSERT / re-arm UPDATE), the two purges (UC-GL-005: on order, after two
+  // completions), the admin DELETE (UC-GL-009). Module 21 is the ONLY writer of a
+  // `notified_at` timestamp (GL-T3 only resets it to NULL on re-signup).
+  //
+  // `cycle_id` = the LAST closed round at signup, the anchor of the two-round purge
+  // (PO 2026-09-19: as specified); NULL when no round existed yet. `phone` is as
+  // entered, `phone_e164` derived by `helpers/phone.js toE164()` (GL-T3) and NULL when
+  // it does not normalise. `whatsapp_opt_in` DEFAULTs to 1 at the storage layer, but
+  // the route writes it explicitly — an unticked consent is stored 0 (PO).
+  db.run(`
+    CREATE TABLE IF NOT EXISTS guest_waitlist (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      host_friend_id INTEGER NOT NULL,
+      cycle_id INTEGER,
+      name TEXT NOT NULL,
+      phone TEXT NOT NULL,
+      phone_e164 TEXT,
+      whatsapp_opt_in INTEGER NOT NULL DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      notified_at DATETIME,
+      FOREIGN KEY (host_friend_id) REFERENCES friends(id) ON DELETE CASCADE,
+      FOREIGN KEY (cycle_id) REFERENCES order_cycles(id) ON DELETE SET NULL
+    )
+  `);
+
+  // The idempotency key of the waitlist write (UC-GL-004 rule 4): one row per
+  // (host, phone_e164). PARTIAL, so rows whose phone does not normalise never collide —
+  // GL-T3 dedupes those on the raw string in the app. A partial index cannot live
+  // inside the CREATE TABLE, hence its own statement; own try/catch, LOGGED, for the
+  // same reason as idx_friends_guest_link_token above.
+  try {
+    db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_guest_waitlist_host_e164 ON guest_waitlist(host_friend_id, phone_e164) WHERE phone_e164 IS NOT NULL');
+  } catch (e) {
+    console.error('Migration error (idx_guest_waitlist_host_e164):', e.message);
+  }
 
   // ===================================================================
   // Coffee product catalog (module 12, PC-T1 — 12 §UC-PC-001). One row per
@@ -1105,6 +1335,79 @@ function initDb() {
   } catch (e) {
     // Column already exists, ignore
   }
+
+  // ===================================================================
+  // The notification OUTBOX (DP-T1, 16 §UC-DP-002). Column list copied
+  // VERBATIM from `docs/specification/01-architecture.md` §Roadmap October 2026
+  // additions — same names, same order, same three CHECK lists.
+  //
+  // ⚠ THIS ROW DECLARES THE TABLE AND NOTHING ELSE. There is no writer yet:
+  // DP-T3 (hand-over) is the first, and `body` / `phone_e164` are NULLABLE
+  // precisely because it writes them as NULL (§UC-DP-008). No index either —
+  // §UC-DP-002 requires none and module 21 may add one on (status, channel).
+  //
+  // ⚠ MODULE 21 (WA-T1) OWNS EVERY LATER COLUMN AND ADDS THEM WITH ITS OWN
+  // try/catch ALTERs — `sent_via`, its indexes, the partial unique
+  // `idx_notifications_queued_once`. It must NOT re-declare this CREATE: this
+  // table will already exist on every deployed database by then, so a second
+  // CREATE would be a silent no-op and the columns would exist only on fresh
+  // files (the exact trap the `handed_over_at` ALTERs above avoid).
+  //
+  // ⚠ AND THREE THINGS THAT ARE *NOT* ALTERs. Module 21's own table definition
+  // (`21-whatsapp-notifications.md` §Data model) differs from this CREATE in
+  // exactly three ways, and SQLite can express NONE of them as a plain
+  // `ALTER TABLE` on an existing column. Each one needs either the
+  // table-RECREATE pattern this file already uses (`order_items`,
+  // `order_cycles` — copy into a `_new` table, rename) or a concession from
+  // module 21. Enumerated here in full, at the point of statement, because a
+  // comment that exists to warn a future row is the worst possible place to
+  // list only one of three:
+  //
+  //   1. CHECK WIDENING — `recipient_kind` gains `'admin'` (the UC-WA-012 test
+  //      message). A CHECK list cannot be extended in place.
+  //   2. TWO COLUMNS MODULE 21 DECLARES **NOT NULL** AND THIS CREATE SHIPS
+  //      NULLABLE: `segment_key` and `body`. ⚠ The nullability is CORRECT and
+  //      spec-mandated, not an oversight: module 16 enqueues rows with
+  //      `body IS NULL` (16 §UC-DP-008 — the API renders nothing and sends
+  //      nothing; module 21's composer fills the text later), and those rows
+  //      exist in the database from DP-T3 onwards. So module 21 either keeps
+  //      them nullable and enforces NOT NULL in its own writer, or rebuilds the
+  //      table AFTER backfilling every module-16 row. A bare
+  //      `ALTER … ADD COLUMN … NOT NULL` does not apply to an existing column
+  //      at all.
+  //   3. THREE FOREIGN KEYS module 21 declares and this CREATE omits:
+  //      `cycle_id → order_cycles`, `order_id → orders`,
+  //      `guest_order_id → guest_orders`. An FK cannot be added to an existing
+  //      column — only a recreate can. They are omitted here deliberately: with
+  //      `foreign_keys = ON` an FK also decides CASCADE behaviour (does deleting
+  //      a cycle delete its outbox history?), which is module 21's call to make,
+  //      not a foundation row's.
+  //
+  // `recipient_id` stays FK-free permanently, and for a different reason from
+  // the three above: it is POLYMORPHIC (`friends.id` / `guest_orders.id` /
+  // `guest_waitlist.id`, and NULL for `'admin'`), so there is no single table it
+  // could point at. Module 21's own table agrees on that one.
+  // ===================================================================
+  db.run(`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      channel TEXT NOT NULL CHECK (channel IN ('whatsapp','email')),
+      template_key TEXT NOT NULL,
+      segment_key TEXT,
+      recipient_kind TEXT NOT NULL CHECK (recipient_kind IN ('friend','guest','waitlist')),
+      recipient_id INTEGER,
+      phone_e164 TEXT,
+      body TEXT,
+      status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','released','sent','failed','skipped')),
+      cycle_id INTEGER,
+      order_id INTEGER,
+      guest_order_id INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      released_at DATETIME,
+      sent_at DATETIME,
+      error TEXT
+    )
+  `);
 
 }
 

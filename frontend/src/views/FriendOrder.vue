@@ -11,6 +11,7 @@ import api, { getFriendsPassword, getFriendsAuthInfo, getFriendsToken } from '..
 // it. Nothing under `@/components/ui/` is imported here any more; keep it that
 // way (02 §UC-DS-004 rule 4 makes shadcn admin-only).
 import GuestShareDialog from '@/components/GuestShareDialog.vue'
+import { STANDING_GUEST_LINK } from '@/lib/features'
 import GuestSubOrders from '@/components/GuestSubOrders.vue'
 import BrandChrome from '@/components/neo/BrandChrome.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
@@ -20,21 +21,172 @@ import ProductImageModal from '@/components/ProductImageModal.vue'
 import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 import { snapTab } from '@/lib/snap-tab'
 import { itemsLabel } from '@/lib/plural'
-import { roundMoney } from '@/lib/money'
+// ⚠ Aliased to `kg` so the two `{{ kg(...) }}` bindings in the stock bar keep
+// their shipped spelling — the rule moved, the template did not (FUP-T24).
+import { kgLabel as kg } from '@/lib/kg'
+import { fmtEur } from '@/lib/money'
 import CartLineList from '@/components/CartLineList.vue'
+// 18 §UC-PI-007 — the MAPPING into `CartLineList`'s line shape moved out of this
+// file: the locked landing's own-order card and „Moje objednávky" (PI-T6) render
+// ordered lines this view's `cart` cannot describe. See `lib/order-lines.js`.
+import { cartLines as toCartLines, orderLines, deliveryExtras } from '@/lib/order-lines'
 import CatScrollArrow from '@/components/CatScrollArrow.vue'
+// 18 §UC-PI-014 — the two coffee sources have ONE home, shared with the explainer
+// (`components/PortalExplainer.vue`) and, from module 19, with the guest link
+// (`GuestRoastersLine.vue`). This view reads the badge CLASS and the popover's
+// label/text off it; it types neither.
+import { roasterFor } from '@/lib/roasters'
 import PaymentModal from '@/components/PaymentModal.vue'
-import { encode as bysquareEncode, PaymentOptions, CurrencyCode, Version } from 'bysquare'
+// 15 §UC-PL-004/D6 — THE PAYLOAD AND THE LINK HAVE ONE HOME, shared with
+// `PaymentModal.vue`. This screen has TWO payment surfaces for the same order (the
+// success modal below and the cart bar's „Zaplatiť“), and they were two hand-written
+// copies of one payload: the friend's FIRST QR — the one they see the second they
+// submit — was the one WITHOUT the variable symbol. The two library calls stay here,
+// because the error handling around them is this view's UI.
+import { payBySquarePayload, revolutLink } from '@/lib/payment-links'
+import { encode as bysquareEncode, Version } from 'bysquare'
 import QRCode from 'qrcode'
 
 const route = useRoute()
 const router = useRouter()
+
+// ---------------------------------------------------------------------------
+// 18 §UC-PI-005 — THE TWO MOUNTS OF THIS ONE COMPONENT (PI-T3).
+//
+// ⚠ THIS FILE IS THE ONE HOME OF THE ORDER SURFACE AND IS EXTENDED, NEVER FORKED.
+// The friend portal's landing IS the order screen now, so `FriendPortalSession.vue`
+// mounts this component inside its page column; `/cycle/:id` still mounts it as a
+// standalone route (§UC-PI-018). Copying any slice of it into a "landing" component
+// would be the second home the whole module exists to prevent — at 2400 lines it is
+// also the repo's biggest instance of that rule.
+//
+// The ONLY differences between the two mounts are the ones §UC-PI-005 enumerates:
+//   · `route` — `landing` takes its cycle and friend from PROPS, because the session
+//     already resolved both (`lib/portal-state.js`) and `/` carries no `:cycleId`;
+//   · CHROME — `landing` renders no `.app` root, no `BrandChrome` and no page column
+//     of its own: the session supplies all three. ⚠ `.cartbar` stays a THEME class
+//     (`:where(.app,.modal-layer) .cartbar`, a DESCENDANT selector), so it keeps its
+//     sticky footer nested inside the session's column. Moving it into this file's
+//     `<style scoped>` would break it silently — CLAUDE.md §Frontend;
+//   · the FATAL-ERROR button — „Skúsiť znova" (re-load) on the landing, where there
+//     is no list to go back to; „Späť na ponuku" on the deep link (§UC-PI-017).
+// Everything else — cart model, auto-save, dirty tracking, the four modals, the
+// leave guard, the tabgroup, the cartbar — is byte-identical in behaviour.
+// ---------------------------------------------------------------------------
+const props = defineProps({
+  // Overrides `route.params.cycleId`. The landing passes the resolver's
+  // `currentCycle.id`; the deep link passes nothing and the route wins.
+  cycleId: { type: [String, Number], default: null },
+  // Overrides the localStorage/in-memory restore below. The session already knows
+  // who is signed in, so the landing hands it over rather than re-deriving it.
+  friendId: { type: [String, Number], default: null },
+  // `'route'` (the shipped standalone screen) | `'landing'` (embedded in the
+  // session's page column).
+  mode: { type: String, default: 'route' },
+  // 18 §UC-PI-006 (PI-T4) — THE READ-ONLY CATALOGUE.
+  //
+  // ⚠ „`FriendOrder` in `landing` mode with `readonly: true` renders the grid this
+  // way … never a second card template." The closed landing shows the PREVIOUS
+  // round's catalogue „len na prezretie", and PI-T5 shows the locked round's the
+  // same way. Both are the same grid, the same cards, the same category strip —
+  // so they are this component with four things switched off, not a copy of it.
+  //
+  // What it switches off, each one a line of §UC-PI-006:
+  //   · the cards wrapper takes `.p2-ro` (opacity .55 + `pointer-events:none`);
+  //   · every stepper is `disabled` (belt AND braces: `pointer-events:none` is a
+  //     paint-level guard, `disabled` is the DOM one, and CLAUDE.md's rule that a
+  //     `disabled` attribute does not stop a DISPATCHED click is why the handlers
+  //     are guarded as well — see `editingLocked`);
+  //   · the stock bars are hidden — a fill measured against a finished round's
+  //     `remaining_g` is a number about the past;
+  //   · no `.cartbar`, ~~no tabgroup~~, no status/ok banners. ⚠ **„no tabgroup" is NO
+  //     LONGER a property of `readonly`** — PI-T5 split that question out: `hasTabs`
+  //     (`!isReadonly || colleaguesTab`, declared below) answers „may this friend reach
+  //     the Kolegovia panel?", and §UC-PI-007 KEEPS it on the LOCKED read-only landing
+  //     because hand-over ticks happen precisely then. A read-only mount has no tabs
+  //     unless its CALLER asks for them; the closed landing passes nothing.
+  // ⚠ The `.cat-tabs` strip stays INTERACTIVE (§UC-PI-006 resolved conflict 6:
+  // „only the CARDS are read-only/faded … every category is browsable"), which is
+  // why `.p2-ro` goes on the cards wrapper and not on the panel.
+  //
+  // ⚠ Ignored outside `landing` mode: `/cycle/:id` renders a completed round with
+  // the shipped locked treatment (04 §UC-FO-014) and §UC-PI-018 keeps it that way.
+  readonly: { type: Boolean, default: false },
+  // 18 §UC-PI-007 (PI-T5) — DOES THIS MOUNT STILL OFFER THE „Moja objednávka /
+  // Kolegovia" SWITCH?
+  //
+  // ⚠ IT IS A PROP AND NOT A DERIVATION, AND THAT IS THE WHOLE POINT OF THE SPLIT.
+  // PI-T4 gated the tabgroup on `readonly` alone, and recorded at the time that
+  // „the switch is `readonly` and not „the round is not open"" was this row's
+  // problem: §UC-PI-006's closed catalogue must NOT show it („no tabgroup"), while
+  // §UC-PI-007's locked landing MUST („the tabgroup STAYS — Kolegovia hand-over
+  // ticks happen precisely now", 05 §UC-KG-004). Both are handed a `locked` or
+  // `completed` round with `readonly: true`, so nothing this component can see
+  // tells the two apart — the difference is WHICH LANDING is mounting it, which
+  // only the caller knows.
+  //
+  // ⚠ It can only ever ADD the switch back to a `readonly` mount: `hasTabs` below
+  // is already true everywhere else, so no value of this prop can take the tabs off
+  // a `/cycle/:id` deep link (§UC-PI-018) or off the open landing. `false` by
+  // default, so PI-T4's closed catalogue keeps its behaviour by saying nothing.
+  colleaguesTab: { type: Boolean, default: false },
+})
+
+const isLanding = computed(() => props.mode === 'landing')
+
+/**
+ * The read-only catalogue (§UC-PI-006). Landing-only by construction — see the
+ * prop's note.
+ */
+const isReadonly = computed(() => isLanding.value && props.readonly)
+
+/**
+ * „May this friend still reach the Kolegovia panel from here?" — 18 §UC-PI-006 vs
+ * §UC-PI-007, the term PI-T4 left for this row to split.
+ *
+ * ⚠ IT IS A DIFFERENT QUESTION FROM `isReadonly`, which asks „may any quantity on
+ * this screen change?". They coincided while `readonly` had one consumer; they do
+ * not any more. A host's hand-over ticks happen while the round is LOCKED — i.e.
+ * on exactly the screen whose grid is inert — so a single flag could only be right
+ * for one of the two landings.
+ *
+ * Every non-landing mount (the `/cycle/:id` deep link, §UC-PI-018) keeps the
+ * tabgroup unconditionally, as shipped.
+ */
+const hasTabs = computed(() => !isReadonly.value || props.colleaguesTab)
+
+// ⚠ THE PAGE COLUMN IS THE SECOND (AND LAST) THING `landing` MODE DROPS.
+// `FriendPortalSession.vue` already renders the settled 760px column with its
+// 16/28px gutters (02 §UC-DS-005) and carries `data-testid="portal-landing"` on it;
+// a second column inside it would double the horizontal padding and put a 760px box
+// inside a 760px box. The three branches below therefore keep their FLEX layout and
+// lose only the geometry — one element tree, one `v-if` chain, no forked template.
+//
+// The strings are literal here so Tailwind's content scan still sees every utility.
+const FO_COLUMN = 'mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7'
+const loadingColumnClass = computed(() => (isLanding.value ? '' : FO_COLUMN))
+const errorColumnClass = computed(() => (isLanding.value
+  ? 'flex flex-col gap-[14px]'
+  : `${FO_COLUMN} flex flex-col gap-[14px]`))
+const bodyColumnClass = computed(() => (isLanding.value
+  ? 'flex flex-col gap-[14px]'
+  : `${FO_COLUMN} pb-2 sm:pb-2 flex flex-col gap-[14px] flex-1`))
 
 // Cycle/friend data
 const friend = ref(null)
 const cycle = ref(null)
 const products = ref([])
 const order = ref(null)
+// 18 §UC-PI-007 — THE SUBMITTED ORDER'S OWN ITEM ROWS, kept verbatim as the server
+// sent them.
+//
+// ⚠ They used to be consumed and thrown away (`loadOrderData` folded them into
+// `cart` and moved on). The locked landing's own-order card cannot read `cart`: on
+// that screen `readonly` clears it on purpose, and the card's whole job is to show
+// what was ordered. Keeping the rows is also what makes the card's prices the
+// SNAPSHOT ones — a price the admin edited after the round locked must not rewrite
+// what the friend is told they ordered.
+const orderItems = ref([])
 const cart = ref({}) // { productId-variant: quantity }
 const lastSubmittedCart = ref(null) // Snapshot of cart at last submission
 
@@ -57,7 +209,7 @@ const showSuccessModal = ref(false)
 // ⚠ `successModalMessage` ("Vaša objednávka bola úspešne odoslaná!" /
 // "…bola aktualizovaná!") is RETIRED, for the same reason `successMessage` was one
 // row earlier: 04 resolved conflict #4 gives the success modal ONE subtitle on both
-// paths — "Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia cyklu." —
+// paths — "Objednávka bola odoslaná. Môžete ju upraviť až do uzavretia objednávok." —
 // so the ref had a writer, a reader and no remaining variation to carry.
 // `wasAlreadySubmitted` in `doSubmitOrder()` went with it; nothing else read it.
 const showCancelModal = ref(false)
@@ -132,18 +284,68 @@ const pickupOptions = computed(() => [
 // Payment state
 const paymentIban = ref('')
 const paymentRevolutUsername = ref('')
+// The admin's account-holder name (15 §UC-PL-002), read beside the IBAN and the handle
+// from the same public settings call. `''` when unset — `lib/payment-links.js` then
+// falls back to the shipped `Gorifi` beneficiary and offers no PayMe link.
+const paymentCreditorName = ref('')
 const showPaymentModal = ref(false)
 const successQrDataUrl = ref(null)
 const hasPaymentSettings = computed(() => !!(paymentIban.value || paymentRevolutUsername.value))
+
+// 15 §UC-PL-003 item 3 — THE SERVER'S variable symbol, quoted from the last
+// GET/PUT/submit response and never derived here. The scheme (a friend order's VS IS
+// its order id) lives in `backend/src/helpers/payment.js` and nowhere else; a client
+// that recomputed it would be the second home the whole module exists to prevent.
+// `''` while there is no order — the server answers `payment: null` for exactly that
+// state, and a surface with no symbol renders the VS-less modal rather than a made-up
+// one (§UC-PL-007 business rules).
+//
+// ⚠ RECORDED, NOT INTRODUCED HERE (PL-T4 review): this view has NO watch on
+// `route.params.cycleId` — `loadOrderData()` runs from `onMounted` only, so every piece
+// of order state in this file, `order`/`cart`/`lastSubmittedCart` included, assumes the
+// component is re-created per cycle rather than re-pointed. `paymentVs` inherits exactly
+// that pre-existing lifetime assumption and adds no new one. If a route ever navigates
+// between two `/cycle/:id` without a remount, this ref is one of MANY that would need a
+// watch — fix the assumption, not this line.
+const paymentVs = ref('')
+
+/** Quotes the `payment` block off any order response (GET, PUT or submit). */
+function applyOrderPayment(response) {
+  paymentVs.value = response?.payment?.variable_symbol || ''
+}
+
 const paymentReference = computed(() => {
   const friendName = friend.value?.name || ''
   const cycleName = cycle.value?.name || ''
   return `${friendName} / ${cycleName}`
 })
 
-// Guest share link — all state/logic lives in GuestShareDialog, shared with
-// FriendPortal's cycle list so both entry points behave identically.
+// Guest share link — all state/logic lives in GuestShareDialog.
+//
+// ⚠ 18 §UC-PI-011: THIS IS THE ONE `GuestShareDialog` INSTANCE ON THE FRIEND
+// SURFACE, and „one" is the rule, not an observation. Module 03's cycle card
+// mounted a second one in `FriendPortalSession.vue`; PI-T3 retired the card, and
+// the drawer's „Zdieľať s kolegami" row now reaches THIS instance through the
+// `defineExpose`d `openShareDialog()` at the end of this file. Mounting a second
+// one beside it is how one of the two stops receiving updates (the dialog holds
+// its own `loadSeq`-guarded link state — 05 §UC-KG-006).
+//
+// Three triggers, one dialog: the Kolegovia panel's card (module 05), the
+// cartbar icon (§UC-PI-011), and the drawer row. ⚠ GL-T6c: the drawer row also
+// reaches the READ-ONLY mounts (closed catalogue, locked landing), whose dialog is
+// standing-only — see `shareCycleId`.
 const showShareModal = ref(false)
+
+/**
+ * §UC-PI-011 — the drawer's entry point into the one dialog. Exposed at the end of
+ * this file; the cartbar icon sets the same flag.
+ */
+function openShareDialog() {
+  // Parked standing link (`lib/features.js`): a read-only mount has no per-cycle
+  // section either, so the dialog would open EMPTY — refuse instead.
+  if (!STANDING_GUEST_LINK && !shareCycleId.value) return
+  showShareModal.value = true
+}
 
 // The product-photo lightbox (product decision 2026-08-20). Holds the PRODUCT,
 // not a boolean: the modal needs both the image and the name, and one ref keeps
@@ -152,6 +354,44 @@ const showShareModal = ref(false)
 // shared (`components/ProductImageModal.vue`); this is only the open/close state,
 // which each screen owns because each owns its own product list.
 const photoProduct = ref(null)
+
+// ---------------------------------------------------------------------------
+// 18 §UC-PI-014 — THE ROASTERY BADGE'S POPOVER (PI-T8).
+//
+// „Káva pochádza z dvoch zdrojov, podľa značky na karte produktu" — the explainer
+// says that, and this is where a friend can ask the card itself. Holds the ROASTER
+// ENTRY (`lib/roasters.js`), not a boolean and not the product: the modal needs the
+// label and the text, and one ref keeps „which roaster" and „is it open" from ever
+// disagreeing (the `photoProduct` precedent directly above).
+//
+// ⚠ ONE INSTANCE, `v-if`-MOUNTED, at the bottom of this template — never one per
+// card. A grid of twelve products would otherwise mount twelve dialogs, and the
+// standing rule on this shell is that an always-mounted modal's scrim swallows
+// clicks and its „Zavrieť" matches the unscoped locators three shipped guest specs
+// use.
+const roasterModal = ref(null)
+
+/**
+ * The card badge's click/Enter/Space target — and the ONLY thing that opens the
+ * popover.
+ *
+ * ⚠ IT IS A NO-OP FOR AN UNKNOWN ROASTERY, and the badge does not offer the
+ * affordance at all in that case (`role`/`tabindex` are bound to the same
+ * `roasterFor()` answer in the template). §UC-PI-014: „Unknown roastery ⇒ inert
+ * badge as today." An element that announces itself as a button and then does
+ * nothing is worse than a plain `span` — the admin types `products.roastery` as
+ * free text, so a roastery this library has never heard of is an ordinary case,
+ * not an error.
+ *
+ * ⚠ The guard here is not belt-and-braces over the template's: `disabled` (and, by
+ * the same token, an absent `role`) does NOT stop a dispatched click reaching a
+ * handler (CLAUDE.md §Frontend), so a gated action needs its JS guard too.
+ */
+function openRoaster(roastery) {
+  const roaster = roasterFor(roastery)
+  if (!roaster) return
+  roasterModal.value = roaster
+}
 
 // ---- top-level view switch: own order vs colleagues ---------------------------
 //
@@ -185,9 +425,53 @@ const mainTab = ref('own')
 // before the child's `watchEffect` has emitted.
 const guestSummary = ref({ count: 0, total: 0, pendingDelivery: 0, failed: false, rows: 0 })
 
-const cycleId = computed(() => route.params.cycleId)
+// The cycle this mount is about. The PROP wins (landing), else the route param
+// (deep link) — §UC-PI-005. Named `activeCycleId` rather than `cycleId` so that the
+// prop of that name and the resolved value can never be confused at a call site.
+const activeCycleId = computed(() => (props.cycleId != null && props.cycleId !== '' ? props.cycleId : route.params.cycleId))
 
 const isLocked = computed(() => cycle.value?.status === 'planned' || cycle.value?.status === 'locked' || cycle.value?.status === 'completed')
+
+/**
+ * 19 §UC-GL-008 / GL-T6c — the round THE share dialog is about, or `null`.
+ *
+ * `null` ⇒ the dialog renders its STANDING section only (the per-cycle label and
+ * section are `v-if="cycleId"` inside `GuestShareDialog.vue`, source-pinned in
+ * `guest-standing-link.spec.js`). A per-cycle link is an invitation to ORDER into
+ * this round, so it is offered only on a mount a friend can order on: 05
+ * §UC-KG-002's „a round that is not open offers no per-cycle share" is kept — what
+ * GL-T6c adds is the cycle-INDEPENDENT link on the two read-only landings.
+ *
+ * ⚠ TWO terms, and the first is the one the landing relies on. `isReadonly` is a
+ * PROP (synchronous, known before any load), and the two mounts that reach this
+ * dialog while the round is not open — the closed catalogue and the locked landing
+ * — are exactly the two `readonly` ones. `isLocked` reads the LOADED cycle, so on its
+ * own it would hand the dialog the round's id until the order GET lands (and forever,
+ * if it fails). It stays as the deep link's half: `/cycle/:id` on a locked round has
+ * no trigger today (every Kolegovia share control is `!isLocked`), and this keeps it
+ * standing-only if one is ever added.
+ */
+const shareCycleId = computed(() => (isReadonly.value || isLocked.value ? null : activeCycleId.value))
+
+/**
+ * „no quantity on this screen may change", the JS half.
+ *
+ * ⚠ `isReadonly` is a SUPERSET of nothing and a subset of `isLocked` TODAY — the
+ * closed landing's `catalogCycle` is always `locked`/`completed` (`resolveLanding`)
+ * and PI-T5's is `locked` — so every guard below would already refuse. It is named
+ * anyway, and used anyway, because „today the two coincide" is not a guard: a
+ * future caller that hands this component an OPEN cycle to display read-only (a
+ * preview, an admin impersonation) would otherwise get a live cart on a screen
+ * whose cards are painted at 55 % opacity and whose cartbar does not exist.
+ * CLAUDE.md: a `disabled` attribute does not stop a dispatched click, so the
+ * refusal has to exist in JS regardless of what the DOM says.
+ *
+ * ⚠ MEASURED, and recorded rather than implied: removing `isReadonly` from this
+ * computed reds NOTHING (mutation M12, three spec files) — precisely because of the
+ * coincidence above. It is defence in depth, exactly like the share-count sequence
+ * guard one row earlier; today the `isLocked` half is what carries it.
+ */
+const editingLocked = computed(() => isLocked.value || isReadonly.value)
 const isSubmitted = computed(() => order.value?.status === 'submitted')
 const markupRatio = computed(() => cycle.value?.markup_ratio || 1.0)
 const isBakery = computed(() => cycle.value?.type === 'bakery')
@@ -286,35 +570,97 @@ const cartItems = computed(() => {
 // list on every screen (product decision 2026-08-12), and the grouping it does
 // reverses 04 resolved conflict #10's flat list.
 //
-// Only the MAPPING is this view's business: `lineSize` is the shipped
-// `variant_label` / 'ks' / raw-variant-key rule (04 §UC-FO-009) and `item.total` is
-// already marked up by `cartItems`.
-const cartLines = computed(() => cartItems.value.map((item) => ({
-  key: item.key,
-  name: item.product_name,
-  purpose: item.purpose,
-  size: lineSize(item),
-  quantity: item.quantity,
-  amount: item.total,
-})))
+// ⚠ HOISTED (18 §UC-PI-007, PI-T5): the mapping and the `lineSize` rule now live in
+// `lib/order-lines.js`, because two screens that are NOT this view's cart render the
+// same lines — the locked landing's own-order card below and „Moje objednávky"
+// (PI-T6). Behaviour is unchanged; the rule simply stopped being private.
+const cartLines = computed(() => toCartLines(cartItems.value))
 
 // `orders.delivery_fee` is a field ON the order and never an `order_items` line
 // (CLAUDE.md 2026-05-01), so it is an EXTRA rather than an item: no purpose header,
 // no quantity, no size — just a name and an amount in the same column.
-const cartExtraLines = computed(() => (
-  order.value?.delivery_fee
-    ? [{ key: 'delivery', name: 'Doručenie Packetou', amount: order.value.delivery_fee }]
-    : []
-))
+const cartExtraLines = computed(() => deliveryExtras(order.value?.delivery_fee))
 
-// The cart line's size label — the shipped logic verbatim (04 §UC-FO-009):
-// `variant_label` when the snapshot carries one (bakery variants), 'ks' for the
-// zero-gram `'unit'` variant, else the raw variant key ('250g', '20pc5g', …),
-// which is what the pre-redesign template printed inline.
-function lineSize(item) {
-  if (item.variant_label) return item.variant_label
-  return item.variant === 'unit' ? 'ks' : item.variant
-}
+// ── 18 §UC-PI-007 — THE SUBMITTED ORDER, AS THE OWN-ORDER CARD READS IT ───────
+//
+// ⚠ ONE LOADER, TWO READINGS. §UC-PI-007's business rule is „`own-order-card`
+// renders from FriendOrder's loaded `order` (no second loader)", so the card is fed
+// from THIS mount through `defineExpose` rather than from a fetch of its own in
+// `FriendPortalSession.vue`. Everything below is a projection of `order` /
+// `orderItems`; nothing here calls the API.
+
+/** The submitted lines, in `CartLineList`'s shape (`lib/order-lines.js`). */
+const submittedLines = computed(() => orderLines(orderItems.value))
+
+/** The submitted lines' sum — goods only, the Packeta fee is added by `paymentTotal`. */
+const submittedItemsTotal = computed(() => submittedLines.value.reduce((sum, line) => sum + line.amount, 0))
+
+/** The server's `pickup` block from the last order GET (`{id, note, name}` or null). */
+const orderPickup = ref(null)
+
+/**
+ * The party's delivery target for the pickup badge — EXACTLY ONE of the three
+ * (CLAUDE.md §Money & data: „exactly one of `pickup_location_id`/
+ * `pickup_location_note`", and both writers clear `packeta_address` when they write
+ * either, while `POST …/submit` clears the pickup columns when it writes Packeta).
+ *
+ * ⚠ The precedence is written out anyway rather than trusted: if the invariant were
+ * ever broken by a data repair, a badge that silently showed two targets — or one
+ * chosen by DOM order — would be worse than one that names a rule. Packeta first
+ * (it is the only one that changes what the friend must pay), then the location's
+ * NAME, then the free-text note.
+ *
+ * ⚠ The name comes from the SERVER's `pickup` block (`helpers/pickup.js pickupOf`),
+ * never from this view's `pickupLocations` list: that list is the public, ACTIVE-only
+ * picker feed, so a location soft-deleted after this order chose it would leave the
+ * badge blank on a party whose pickup is perfectly well defined.
+ *
+ * ⚠ `{ text, data }`, NOT one string (PI-T11 review, the drawer `historySub` shape):
+ * `text` is APP copy („Packeta · " or nothing) and `data` is what a PERSON typed — the
+ * Packeta address, the admin's location name, the free-text note. The session renders
+ * `data` in its own `data-user-copy` span (FUP-T22 / 18 §UC-PI-017), so the vocabulary
+ * sweep reads the app half and never the typed one. `data === ''` ⇒ no target yet.
+ */
+const orderPickupText = computed(() => {
+  const row = order.value
+  if (!row) return { text: '', data: '' }
+  if (row.packeta_address) return { text: 'Packeta · ', data: row.packeta_address }
+  if (orderPickup.value?.pickup_location_name) return { text: '', data: orderPickup.value.pickup_location_name }
+  return { text: '', data: orderPickup.value?.pickup_location_note || row.pickup_location_note || '' }
+})
+
+/**
+ * WHAT THE SESSION MAY RENDER AS „Vaša objednávka" (§UC-PI-007 item 2).
+ *
+ * `null` until the order is loaded and only for a SUBMITTED order — a draft is not
+ * an objednávka (the same rule §UC-PI-009 states for the history list), and the
+ * landing only mounts this branch when the cycles payload already says `hasOrder`.
+ *
+ * ⚠ `paid` IS READ-ONLY HERE. Writing it is the admin's alone (CLAUDE.md Money:
+ * „`delivered` is host-only, `paid` admin-only"), and this whole surface writes NO
+ * `transactions` row of any kind — those come only from the friend paid toggle and
+ * pack/unpack.
+ */
+// ⚠ DEFINED FOR READ-ONLY MOUNTS ONLY, and the guard is deliberate (PI-T5 review).
+// `lines`/`extras` come from the last GET (`orderItems`, refreshed only in
+// `loadOrderData`), while `total` is `paymentTotal`, which on an EDITABLE mount follows
+// the LIVE cart. On the open landing with a submitted order and an unsaved edit those two
+// describe different carts, so the projection would be internally incoherent. Nothing
+// reads it there today — which is exactly why it is closed off now, before PI-T6/PI-T7
+// inherit the mismatch through a „published seam".
+const ownOrder = computed(() => {
+  if (!isReadonly.value) return null
+  if (!order.value || order.value.status !== 'submitted') return null
+  return {
+    lines: submittedLines.value,
+    extras: cartExtraLines.value,
+    purposeOrder: availablePurposes.value,
+    total: paymentTotal.value,
+    paid: !!order.value.paid,
+    pickup: orderPickupText.value,
+    canPay: hasPaymentSettings.value,
+  }
+})
 
 const cartTotal = computed(() => {
   return cartItems.value.reduce((sum, item) => sum + item.total, 0)
@@ -323,8 +669,11 @@ const cartTotal = computed(() => {
 // Total including delivery fee (for payment).
 //
 // ⚠ THIS SUM IS DELIBERATELY *NOT* ROUNDED HERE, and that is a decision, not an
-// oversight — `roundMoney` is applied at each of the two places the value leaves the
-// app for a bank (`generateSuccessQr` below, and `PaymentModal.generateQr`).
+// oversight — `roundMoney` is applied where the value leaves the app for a bank.
+// ⚠ AMENDED — 15 §UC-PL-004 (PL-T4): that used to be TWO hand-written encode sites
+// (`generateSuccessQr` below and `PaymentModal.generateQr`); both now compose their
+// payload with `lib/payment-links.js payBySquarePayload()`, which owns the round. ONE
+// place instead of two — and still not this computed.
 //
 // Two reasons. (1) LAYERING: this is an ADDITION performed in the browser and it can
 // drift even when the server's columns are perfectly clean — `cartTotal` is the
@@ -338,9 +687,20 @@ const cartTotal = computed(() => {
 //
 // Every DISPLAY of this value goes through `.toFixed(2)`, so it is unaffected either
 // way — which is exactly why a real user's banking app was the first to see the bug.
+//
+// ⚠ 18 §UC-PI-007 (PI-T5) — WHICH LINES IT SUMS IS NOW A BRANCH, AND IT HAS TO BE.
+// In `readonly` the cart is deliberately EMPTY (PI-T4's fix: the stored order must
+// not appear in faded, disabled steppers), so `cartTotal` there is `0` and would
+// bill the friend for the delivery fee alone. The submitted order's own lines are
+// what that screen is about — see `submittedLines` below. ONE `paymentTotal` still:
+// the cartbar, the success modal, the QR, `PaymentModal` and the own-order card all
+// read this computed, and a second „what does this order cost" is exactly what the
+// module has spent the week collapsing.
+const payableItemsTotal = computed(() => (isReadonly.value ? submittedItemsTotal.value : cartTotal.value))
+
 const paymentTotal = computed(() => {
   const deliveryFee = order.value?.delivery_fee || 0
-  return cartTotal.value + deliveryFee
+  return payableItemsTotal.value + deliveryFee
 })
 
 const groupedProducts = computed(() => {
@@ -414,12 +774,8 @@ function coffeeVariants(product) {
 }
 
 // Grams → the prototype's kg copy (04 §UC-FO-006, resolved conflict #6: repo gram
-// MATH, kg DISPLAY). Up to 2 decimals, trailing zeros stripped, dot decimal:
-// 250 → "0.25 kg", 1000 → "1 kg", 1250 → "1.25 kg". `Number#toString` gives the
-// stripping and the dot for free; `toFixed(2)` would render "1.00 kg".
-function kg(grams) {
-  return `${Math.round((grams || 0) / 10) / 100} kg`
-}
+// MATH, kg DISPLAY) — `lib/kg.js kgLabel`, imported as `kg` at the top of this
+// block. It used to be declared here, and in three other files (FUP-T24).
 
 // The bar's fill. Deliberately derived from `getRemainingGrams` — i.e. it INCLUDES
 // the friend's own uncommitted cart, exactly as the shipped bar did — so emptying
@@ -488,8 +844,12 @@ watch(availablePurposes, (purposes) => {
 const STORAGE_KEY = 'gorifi_friend_auth'
 
 onMounted(async () => {
-  // Check if authenticated (token or password)
-  if (!getFriendsToken() && !getFriendsPassword()) {
+  // ⚠ The auth-restore bounce is a DEEP-LINK concern only (§UC-PI-018: „a deep link
+  // is opened cold"). On the landing this component is a child of
+  // `FriendPortalSession.vue`, which the parent mounts only in the `authenticated`
+  // state — so the credential store is populated by construction, and a `router.push('/')`
+  // from here would be a navigation to the page we are already on.
+  if (!isLanding.value && !getFriendsToken() && !getFriendsPassword()) {
     // Try to restore from localStorage
     const stored = localStorage.getItem(STORAGE_KEY)
     if (!stored) {
@@ -522,13 +882,18 @@ onMounted(async () => {
     pickupLocations.value = locations
     paymentIban.value = paymentSettings.paymentIban || ''
     paymentRevolutUsername.value = paymentSettings.paymentRevolutUsername || ''
+    paymentCreditorName.value = paymentSettings.paymentCreditorName || ''
   } catch (e) {
     // Non-critical, proceed without locations/payment
   }
 })
 
-// Set page title
+// Set page title.
+// ⚠ ROUTE MODE ONLY. `document.title` belongs to the SCREEN, and on the landing the
+// screen is the portal (03 §UC-FL-001 owns that title) — an embedded component that
+// rewrote it would make „/" announce itself as a cycle name.
 watchEffect(() => {
+  if (isLanding.value) return
   document.title = cycle.value?.name ? `${cycle.value.name} - Objednávka` : 'Objednávka'
 })
 
@@ -539,8 +904,14 @@ async function loadOrderData() {
   try {
     // Get friend info from localStorage or in-memory auth
     let friendId = null
-    const stored = localStorage.getItem(STORAGE_KEY)
-    if (stored) {
+    // §UC-PI-005: on the landing the SESSION already knows who is signed in and hands
+    // the id over, so this view never has to re-derive an identity the component tree
+    // above it is keyed on. The restore below stays the deep link's path, untouched.
+    if (props.friendId != null && props.friendId !== '') friendId = props.friendId
+    const stored = friendId ? null : localStorage.getItem(STORAGE_KEY)
+    if (friendId) {
+      // Handed over by the session — nothing to restore.
+    } else if (stored) {
       const parsed = JSON.parse(stored)
       friendId = parsed.friendId
     } else {
@@ -564,13 +935,19 @@ async function loadOrderData() {
     }
 
     // Get order data
-    const orderData = await api.getOrderByFriend(cycleId.value, friendId)
+    const orderData = await api.getOrderByFriend(activeCycleId.value, friendId)
     order.value = orderData.order
+    // 18 §UC-PI-007 — the rows are KEPT, not only folded into `cart` below. See the
+    // `orderItems` ref's note: the own-order card reads them on a screen where the
+    // cart is deliberately empty.
+    orderItems.value = Array.isArray(orderData.items) ? orderData.items : []
+    orderPickup.value = orderData.pickup || null
+    applyOrderPayment(orderData)
     cycle.value = orderData.cycle
     friend.value = orderData.friend
 
     // Get products and availability
-    products.value = await api.getProducts(cycleId.value)
+    products.value = await api.getProducts(activeCycleId.value)
     await loadAvailability(friendId)
 
     // Populate cart from existing order items
@@ -578,6 +955,16 @@ async function loadOrderData() {
     for (const item of orderData.items) {
       cart.value[`${item.product_id}-${item.variant}`] = item.quantity
     }
+
+    // ⚠ READ-ONLY IGNORES THE ORDER — §UC-PI-006 says the GET still fires („its `order`
+    // is ignored in `readonly`") and until the PI-T4 review nothing enforced that half.
+    // Consequence if left: a friend who ordered in the CATALOGUE round saw their old
+    // quantities rendered in the faded, disabled steppers of „Minulá ponuka" — a grid that
+    // looks like a cart with items and has no cartbar to act on. ⚠ No test could catch it:
+    // every closed-landing fixture used a FRESH friend with no order on that cycle, so
+    // `cart` was always empty there by accident. It also propagates to PI-T5's locked
+    // read-only grid, where the friend almost always DOES have an order.
+    if (isReadonly.value) cart.value = {}
 
     // If order is already submitted, store snapshot for change detection
     if (orderData.order?.status === 'submitted') {
@@ -604,7 +991,7 @@ async function loadOrderData() {
 
 async function loadAvailability(friendId) {
   try {
-    const data = await api.getProductAvailability(cycleId.value, friendId)
+    const data = await api.getProductAvailability(activeCycleId.value, friendId)
     const map = {}
     for (const item of data) {
       map[item.product_id] = item
@@ -668,6 +1055,30 @@ function cancelLeave() {
   pendingNavigation.value = null
 }
 
+/**
+ * „I am finished here — go to `/`, and do not ask about unsaved changes."
+ * The ONE home of that act: the success modal's close and the cancel confirm both
+ * mean it, and both used to write `leaveConfirmed = true` inline.
+ *
+ * ⚠⚠ THE ARMING IS CONDITIONAL, AND ON THE LANDING THAT IS THE WHOLE POINT.
+ * `leaveConfirmed` is a ONE-SHOT bypass that only `onBeforeRouteLeave` disarms. On
+ * `/cycle/:id` the push below really leaves the route, the guard runs and consumes
+ * it. On the LANDING we are already at `/`, so `router.push('/')` is a no-op: the
+ * component never unmounts, the guard never runs, and the flag would stay ARMED —
+ * silently disarming the NEXT navigation. Measured before the fix: submit → close
+ * the modal → step a product → open the drawer ⇒ the cart was discarded with no
+ * „Neuložené zmeny" prompt at all, which is exactly what §UC-PI-005's „the drawer's
+ * `router.push` is a route leave" forbids.
+ *
+ * So the bypass is armed only when this call is actually going somewhere. A guard
+ * that is armed by something that did not navigate is armed for the wrong departure.
+ */
+function leaveToOffer() {
+  if (route.path === '/') return
+  leaveConfirmed.value = true // consumed by `onBeforeRouteLeave` below
+  router.push('/')
+}
+
 // Navigation guard - warn when leaving with unsaved changes
 onBeforeRouteLeave((to, from, next) => {
   if (leaveConfirmed.value) {
@@ -691,7 +1102,7 @@ function getQuantity(productId, variant) {
 }
 
 function setQuantity(productId, variant, quantity) {
-  if (isLocked.value) return
+  if (editingLocked.value) return
   const key = getCartKey(productId, variant)
   if (quantity <= 0) {
     delete cart.value[key]
@@ -702,14 +1113,14 @@ function setQuantity(productId, variant, quantity) {
 }
 
 function increment(productId, variant) {
-  if (isLocked.value) return
+  if (editingLocked.value) return
   if (!canIncrement(productId, variant)) return
   const current = getQuantity(productId, variant)
   setQuantity(productId, variant, current + 1)
 }
 
 function decrement(productId, variant) {
-  if (isLocked.value) return
+  if (editingLocked.value) return
   const current = getQuantity(productId, variant)
   if (current > 0) {
     setQuantity(productId, variant, current - 1)
@@ -721,7 +1132,7 @@ let autoSaveTimeout = null
 const autoSaving = ref(false)
 
 async function saveCart(silent = false) {
-  if (isLocked.value) return
+  if (editingLocked.value) return
   if (!friend.value) return
 
   if (!silent) saving.value = true
@@ -736,8 +1147,9 @@ async function saveCart(silent = false) {
       quantity: item.quantity
     }))
 
-    const result = await api.updateOrderByFriend(cycleId.value, friend.value.id, items)
+    const result = await api.updateOrderByFriend(activeCycleId.value, friend.value.id, items)
     order.value = result.order
+    applyOrderPayment(result)
   } catch (e) {
     error.value = e.message
   } finally {
@@ -755,7 +1167,7 @@ watch(cart, () => {
   // Skip auto-save during initial load, when locked, when order is already submitted,
   // or when there's no existing order (don't auto-create orders, only auto-save existing drafts)
   // New orders are only created when user explicitly submits
-  if (!initialLoadComplete.value || isLocked.value || !friend.value || isSubmitted.value || !order.value) return
+  if (!initialLoadComplete.value || editingLocked.value || !friend.value || isSubmitted.value || !order.value) return
 
   // Clear previous timeout
   if (autoSaveTimeout) clearTimeout(autoSaveTimeout)
@@ -767,7 +1179,7 @@ watch(cart, () => {
 }, { deep: true })
 
 function cancelOrder() {
-  if (isLocked.value) return
+  if (editingLocked.value) return
   showCancelModal.value = true
 }
 
@@ -787,15 +1199,13 @@ async function confirmCancelOrder() {
   // This prevents the "unsaved changes" warning from showing
   lastSubmittedCart.value = {}
 
-  // Mark as confirmed to bypass navigation guard
-  leaveConfirmed.value = true
-
-  // Redirect back to cycle list
-  router.push('/')
+  // Bypass the navigation guard and go back to the offer — but only if that is a
+  // real departure (see `leaveToOffer`: on the landing it is not).
+  leaveToOffer()
 }
 
 async function submitOrder() {
-  if (isLocked.value) return
+  if (editingLocked.value) return
   if (cartItems.value.length === 0) {
     error.value = 'Košík je prázdny'
     return
@@ -863,8 +1273,9 @@ async function doSubmitOrder() {
           pickup_location_id: selectedPickupLocationId.value || null,
           pickup_location_note: selectedPickupLocationId.value ? null : (pickupLocationNote.value || null)
         }
-    const result = await api.submitOrderByFriend(cycleId.value, friend.value.id, pickupData)
+    const result = await api.submitOrderByFriend(activeCycleId.value, friend.value.id, pickupData)
     order.value = result.order
+    applyOrderPayment(result)
     // Store snapshot of submitted cart for change detection
     lastSubmittedCart.value = { ...cart.value }
     showSuccessModal.value = true
@@ -879,38 +1290,39 @@ async function doSubmitOrder() {
 async function generateSuccessQr() {
   if (!paymentIban.value) return
   try {
-    const today = new Date()
-    const dateStr = today.getFullYear().toString()
-      + (today.getMonth() + 1).toString().padStart(2, '0')
-      + today.getDate().toString().padStart(2, '0')
-
-    const qrString = bysquareEncode({
-      invoiceId: '',
-      payments: [{
-        type: PaymentOptions.PaymentOrder,
-        // ⚠ Rounded HERE, and this is the only place it happens — `paymentTotal` is
-        // deliberately RAW (see its own comment at :325, and do not "tidy" that), so
-        // this is the last line before money leaves the app for a bank.
-        // `bysquare` serialises the number verbatim (no formatting of any kind), so
-        // this is the single place where float noise becomes `Nesprávna suma` in
-        // someone's banking app. Belt and braces on a payment payload is cheap.
-        amount: roundMoney(paymentTotal.value),
-        currencyCode: CurrencyCode.EUR,
-        paymentDueDate: dateStr,
-        variableSymbol: '',
-        constantSymbol: '',
-        specificSymbol: '',
-        originatorsReferenceInformation: '',
-        paymentNote: paymentReference.value || '',
-        bankAccounts: [{ iban: paymentIban.value.replace(/\s/g, ''), bic: '' }],
-        beneficiary: { name: 'Gorifi', street: '', city: '' }
-      }]
-    }, { version: Version['1.0.0'] })
+    // ⚠ THE PAYLOAD IS THE SHARED BUILDER'S (15 §UC-PL-004). It is the same object
+    // `PaymentModal` encodes for the same order — including the `roundMoney` that used
+    // to live on the line below, which is deliberate: `paymentTotal` stays RAW (see its
+    // own comment, and do not "tidy" that), `bysquare` serialises a number verbatim, and
+    // a real user's bank refused `26.189999999999998` while her screen read `26.19 EUR`.
+    // The rule now sits at the payload, where it holds for every caller.
+    // ⚠ The DATE derivation moved with it (`todayCompact()` in the builder) — same
+    // `YYYYMMDD` string this function composed by hand.
+    const qrString = bysquareEncode(payBySquarePayload({
+      amount: paymentTotal.value,
+      iban: paymentIban.value,
+      variableSymbol: paymentVs.value,
+      reference: paymentReference.value,
+      creditorName: paymentCreditorName.value
+    }), { version: Version['1.0.0'] })
     successQrDataUrl.value = await QRCode.toDataURL(qrString, { errorCorrectionLevel: 'M', width: 256, margin: 2 })
   } catch (e) {
     console.error('QR generation failed:', e)
   }
 }
+
+// The success modal's Revolut shortcut, composed by the SAME builder the Platba modal
+// uses — so the two surfaces of one order can never offer two different links.
+//
+// ⚠ GATED ON THE HREF, not on `paymentRevolutUsername`: `revolutLink()` returns `''` for
+// a whitespace-only handle, and the shipped gate would then have rendered `href=""` —
+// a link to the current URL, which reloads the page. Same one-predicate reasoning as
+// `PaymentModal`'s, and the amount label reads the href for the same reason (the
+// `REVOLUT_AMOUNT_LINK` fallback then needs no second place to remember).
+const successRevolutHref = computed(() => revolutLink(paymentRevolutUsername.value, paymentTotal.value))
+const successRevolutAmountLabel = computed(() =>
+  (successRevolutHref.value.includes('?amount=') ? `(${fmtEur(paymentTotal.value)})` : '')
+)
 
 async function confirmPickupAndSubmit() {
   // Optionally save Packeta address to profile
@@ -929,8 +1341,7 @@ async function confirmPickupAndSubmit() {
 
 function handleSuccessModalClose() {
   showSuccessModal.value = false
-  leaveConfirmed.value = true // Bypass navigation guard
-  router.push('/')
+  leaveToOffer()
 }
 
 function formatPrice(price) {
@@ -941,6 +1352,42 @@ function applyMarkup(price) {
   if (!price) return null
   return Math.round(price * markupRatio.value * 100) / 100
 }
+
+/**
+ * §UC-PI-005 — the landing's fatal-error recovery. On `/cycle/:id` the button is
+ * „Späť na ponuku" (there IS somewhere to go); on the landing there is no list to
+ * return to, so the same button re-runs the load it failed.
+ */
+async function retryOrderData() {
+  await loadOrderData()
+}
+
+// ---------------------------------------------------------------------------
+// 18 §UC-PI-005/011 — what the SESSION may reach on the embedded instance.
+//
+// ⚠ Two entries, and both exist so that the session does NOT hold a copy of
+// something this component owns:
+//   · `openShareDialog` — §UC-PI-011's „the session view opens it through a
+//     `defineExpose`d `openShareDialog()`". The alternative (a second
+//     `GuestShareDialog` in the session) is the two-instance bug that rule names.
+//   · `cartTotal` — §UC-PI-004 item 1's „ · v košíku {fmtEur(cartTotal)}" clause.
+//     The CART lives here; a second cart model in the drawer would be a second
+//     home for „what is in the basket".
+//   · `ownOrder` / `openPaymentModal` — §UC-PI-007's own-order card, which renders
+//     ABOVE this component in the session's page column and must therefore live
+//     there, while its DATA („FriendOrder's loaded `order`, no second loader") and
+//     its `PaymentModal` mount live here. A second `PaymentModal` for the same
+//     order is the defect this expose prevents; a second GET would be the other one.
+// A `computed` travels through `defineExpose` unwrapped (Vue's `proxyRefs`), so the
+// reader stays reactive without the session storing a value of its own.
+// ---------------------------------------------------------------------------
+
+/** §UC-PI-007 item 2's „Zaplatiť {total}" — THE one payment surface for this order. */
+function openPaymentModal() {
+  showPaymentModal.value = true
+}
+
+defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
 </script>
 
 <template>
@@ -962,8 +1409,33 @@ function applyMarkup(price) {
        the long note on the bar itself, near the end of this template.
 
        `flex flex-col` + the theme's `min-height:100vh` is the prototype's root
-       layout, and it is what lets the page column take `flex-1`. -->
-  <div class="app flex flex-col">
+       layout, and it is what lets the page column take `flex-1`.
+
+       ⚠ 18 §UC-PI-005 — IN `landing` MODE THIS WRAPPER IS `display:contents`.
+       `FriendPortalSession.vue` is already inside the parent's ONE `.app` root, so a
+       second `.app` here would nest the token block, re-apply `min-height:100vh` in
+       the middle of a page and — worst — put a fresh `.app > *` stacking rule between
+       the session's page column and this subtree. The wrapper ELEMENT stays (one
+       element tree, one set of `v-if` branches, no fork) but generates NO BOX.
+
+       ⚠⚠ `display:contents` RATHER THAN A BARE UNSTYLED DIV, AND IT IS LOAD-BEARING,
+       NOT TIDINESS — measured at 378×420 before it was added. `.cartbar` is
+       `position:sticky; bottom:0`, and a sticky element may never be shifted ABOVE
+       its containing block's top edge. With a real wrapper box the containing block
+       started at the bar's own subtree (y=281 on that viewport), so the bar clamped
+       at 435 against a 420px fold — i.e. the friend's landing lost the sticky footer
+       that `/cycle/:id` has, silently and only on short screens. With no box, the
+       containing block is the session's page column (y=124) and the bar reaches the
+       viewport bottom exactly as it does on the deep link. `order-cartbar.spec.js`'s
+       „THE LANDING VARIANT" test pins both halves.
+
+       `.cartbar` itself reaches its theme rule through the DESCENDANT selector
+       `:where(.app,.modal-layer) .cartbar` from any depth — that part never changed. -->
+  <div
+    :class="isLanding ? '' : 'app flex flex-col'"
+    :style="isLanding ? 'display:contents' : null"
+    :data-fo-mode="mode"
+  >
     <!-- Brand chrome (UC-FO-001): appbar + hazard tape + ticker, full-bleed, NOT
          sticky — it scrolls away and `.cat-tabs` owns the top edge alone.
 
@@ -977,16 +1449,21 @@ function applyMarkup(price) {
 
          The back chevron carries the house zero-pixel ARIA layer (role + tabindex
          + Enter/Space): it is a bare `<span>` in the prototype, and it is the only
-         in-page route back to the cycle list — the control it replaced was a real
+         in-page route back to the landing (`/`) — the control it replaced was a real
          `<button>`, so leaving it pointer-only would be a regression. Its label is
-         "Späť", NOT "Späť na zoznam cyklov": the fatal-error state renders a button
-         with that exact text, and Playwright matches accessible names as a
-         case-insensitive SUBSTRING unless `exact: true`. -->
+         exactly "Späť", NOT the fatal-error button's "Späť na ponuku" (18
+         §UC-PI-017/018): that button's text CONTAINS "Späť", and Playwright matches
+         accessible names as a case-insensitive SUBSTRING unless `exact: true`. -->
+    <!-- ⚠ ROUTE MODE ONLY (§UC-PI-005: „no `.app` root, no `BrandChrome`"). The
+         landing's chrome is the portal's own appbar + drawer (§UC-PI-003/004), one
+         instance across all three auth states — a second `BrandChrome` beneath it
+         would render a second wordmark, a second ticker and a second lock chip. -->
     <BrandChrome
+      v-if="!isLanding"
       :title="cycle?.name || ''"
       :subtitle="friend?.name || ''"
       :ticker="isLocked
-        ? '+++ OBJEDNÁVKY UZAMKNUTÉ +++ DRŽ JAZYK ZA ZUBAMI +++'
+        ? '+++ OBJEDNÁVKY UZAVRETÉ +++ DRŽ JAZYK ZA ZUBAMI +++'
         : '+++ OBJEDNÁVKY OTVORENÉ +++ NEHOVOR O TOM NAHLAS +++'"
     >
       <template #leading>
@@ -1003,7 +1480,7 @@ function applyMarkup(price) {
         </span>
       </template>
       <template #trailing>
-        <span v-if="isLocked" class="chip" title="Objednávky sú uzamknuté">
+        <span v-if="isLocked" class="chip" title="Objednávky sú uzavreté">
           <NeoIcon name="lock" />
         </span>
         <span v-else class="chip acc">Otvorené</span>
@@ -1011,18 +1488,28 @@ function applyMarkup(price) {
     </BrandChrome>
 
     <!-- Loading -->
-    <div v-if="loading" class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7">
+    <div v-if="loading" :class="loadingColumnClass">
       <div class="sub" style="text-align:center;padding:32px 0">Načítavam...</div>
     </div>
 
     <!-- Fatal error (no friend loaded at all) -->
-    <div v-else-if="error && !friend" class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7 flex flex-col gap-[14px]">
+    <div v-else-if="error && !friend" :class="errorColumnClass">
       <div class="banner danger" role="alert">
         <span class="dot"></span>
         <div style="min-width:0"><b>Chyba:</b> {{ error }}</div>
       </div>
+      <!-- ⚠ TWO BUTTONS, ONE STATE (18 §UC-PI-005 / §UC-PI-017).
+           · deep link — „Späť na ponuku" (was „Späť na zoznam cyklov"; the list is
+             gone, §UC-PI-017's copy table). It keeps containing „Späť", which the
+             appbar chevron's `aria-label` also is — Playwright matches accessible
+             names as a case-insensitive SUBSTRING, so a spec that wants the chevron
+             alone must pass `exact: true`. That hazard is unchanged by the re-word.
+           · landing — „Skúsiť znova", because there is no list to go back to and `/`
+             is already the current URL: `goBack()` there would be a no-op that looks
+             like a dead button. It RE-RUNS the load that failed. -->
       <div>
-        <button type="button" class="btn" @click="goBack">Späť na zoznam cyklov</button>
+        <button v-if="isLanding" type="button" class="btn" @click="retryOrderData">Skúsiť znova</button>
+        <button v-else type="button" class="btn" @click="goBack">Späť na ponuku</button>
       </div>
     </div>
 
@@ -1041,19 +1528,25 @@ function applyMarkup(price) {
          It is documented where it belongs, in `FriendPortalSession.vue`. Here
          `p-4` would be perfectly legal (UC-DS-004 rule 2 lists it as an allowed
          layout utility); the axis form is kept for consistency, not for a pin. -->
-    <div v-else class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7 pb-2 sm:pb-2 flex flex-col gap-[14px] flex-1">
+    <div v-else :class="bodyColumnClass">
       <!-- Status banner. Exactly one of the two, in the shipped priority order.
            ⚠ The green one now YIELDS while unsent changes exist — the prototype's
            `submitted && !dirty && lines > 0`, whose repo equivalent is
            `hasUnsubmittedChanges`. The cartbar warning carries that state instead
            (RD-FO-3). A handoff UX change, in contract (UC-FO-002). -->
-      <div v-if="isLocked" class="banner warn">
+      <!-- ⚠ NEITHER RENDERS IN `readonly` (18 §UC-PI-006: „no `.cartbar`, no
+           tabgroup, no status/ok banners"). The closed landing already says
+           „Objednávky sú zatvorené." in its own `.banner.warn.slim` above the
+           catalogue, and the friend has no order in a round they are only looking
+           at — a second lock banner would be the same sentence twice and a green
+           „bola odoslaná!" would be about a DIFFERENT round. -->
+      <div v-if="isLocked && !isReadonly" class="banner warn">
         <span class="dot"></span>
-        <div style="min-width:0"><b>Objednávky sú uzamknuté.</b> Už nie je možné meniť objednávku.</div>
+        <div style="min-width:0"><b>Objednávky sú uzavreté.</b> Už nie je možné meniť objednávku.</div>
       </div>
-      <div v-else-if="isSubmitted && cartItems.length > 0 && !hasUnsubmittedChanges" class="banner ok">
+      <div v-else-if="!isReadonly && isSubmitted && cartItems.length > 0 && !hasUnsubmittedChanges" class="banner ok">
         <span class="dot"></span>
-        <div style="min-width:0"><b>Vaša objednávka bola odoslaná!</b> Stále ju môžete upraviť až do uzamknutia.</div>
+        <div style="min-width:0"><b>Vaša objednávka bola odoslaná!</b> Stále ju môžete upraviť až do uzavretia.</div>
       </div>
 
       <!-- Messages. Page-level, so they sit ABOVE the switch: the order can be
@@ -1104,7 +1597,16 @@ function applyMarkup(price) {
            `.tab` globally (the purpose strip must keep its canon metrics) — and it
            cannot be a Tailwind utility: `.tabgroup .tab` is `(0,2,0)` and
            `friends-theme.css` loads after Tailwind, so it needs a scoped block. -->
-      <div class="tabgroup" role="tablist" aria-label="Objednávka alebo kolegovia">
+      <!-- ⚠ ABSENT in `readonly` (§UC-PI-006). The Kolegovia panel is where a host
+           manages sub-orders of a LIVE round; on a catalogue the friend is only
+           browsing there is nothing to manage, and `GuestSubOrders` inside it would
+           fire a `GET /guest-links/cycle/:id` for a finished round on every landing.
+           ⚠ PI-T5 SPLIT THE TERM. The gate is `hasTabs` — „may this friend still
+           reach the Kolegovia panel?" — and NOT `isReadonly`, which asks whether a
+           quantity may change. §UC-PI-007's LOCKED landing keeps the switch on an
+           inert grid („the tabgroup STAYS — Kolegovia hand-over ticks happen
+           precisely now"), and the caller says which landing it is. -->
+      <div v-if="hasTabs" class="tabgroup" role="tablist" aria-label="Objednávka alebo kolegovia">
         <span
           class="tab"
           :class="{ on: mainTab === 'own' }"
@@ -1151,6 +1653,7 @@ function applyMarkup(price) {
            the component boundary. `v-show` writes inline `display:none`, which
            beats the `flex` class — order-shell.spec.js reads that inline value. -->
       <div
+        v-if="hasTabs"
         v-show="mainTab === 'guests'"
         id="panel-guests"
         role="tabpanel"
@@ -1232,7 +1735,7 @@ function applyMarkup(price) {
              session in onMounted, which runs AFTER a child's setup, so fetching any
              earlier would 401 on a fresh load of /cycle/:id. -->
         <GuestSubOrders
-          :cycle-id="cycleId"
+          :cycle-id="activeCycleId"
           :cycle-locked="isLocked"
           :ready="!!friend"
           @summary="guestSummary = $event"
@@ -1240,11 +1743,20 @@ function applyMarkup(price) {
       </div>
 
       <!-- ============ panel: own order ============ -->
+      <!-- ⚠ Where the tabgroup above is GONE (§UC-PI-006's closed catalogue), this
+           stops being a tabpanel: `role="tabpanel"` + `aria-labelledby="tab-own"`
+           would point at an element that does not exist and announce a tab
+           interface with no tabs. Vue drops a `null` attribute entirely, so every
+           mount that KEEPS the tabs — the deep link, the open landing and
+           §UC-PI-007's locked landing — keeps the shipped markup byte for byte.
+           ⚠ Three bindings on `hasTabs`, never on `isReadonly`: the locked landing
+           is read-only AND a tab interface, which is the whole reason PI-T5 split
+           the term. -->
       <div
-        v-show="mainTab === 'own'"
+        v-show="!hasTabs || mainTab === 'own'"
         id="panel-own"
-        role="tabpanel"
-        aria-labelledby="tab-own"
+        :role="hasTabs ? 'tabpanel' : null"
+        :aria-labelledby="hasTabs ? 'tab-own' : null"
         class="flex flex-col gap-[14px]"
       >
         <!-- Category strip (UC-FO-004). Purposes are DATA-DERIVED — `availablePurposes`
@@ -1274,6 +1786,21 @@ function applyMarkup(price) {
           role="tablist"
           aria-label="Kategórie produktov"
         >
+          <!-- ⚠ `data-user-copy` (FUP-T22 / 18 §UC-PI-017) — EIGHT of them in this file,
+               and they are one rule, not eight decisions: the category tab; the bakery
+               card's name block; a tasting note (`description1`); a composition; the
+               coffee photo (its `alt`/`aria-label` carry the product name); the coffee
+               card's name block (name, roast type, roastery); and, in the pickup modal,
+               a location's name (not the trailing app-copy „Iné") and its address. All
+               are free text a PERSON typed. (The deep link's appbar cycle name and
+               friend name are marked in `BrandChrome.vue`'s fallback, not here.)
+               `e2e/helpers/copy-sweep.js` drops these
+               subtrees before `portal-vocabulary.spec.js` asserts what the APP calls
+               things, because this suite's own fixtures create cycles named „… cyklus"
+               and a sweep that reddens on DATA gets „repaired" by narrowing the regex —
+               the one forbidden repair. Mark the interpolation, never the copy beside
+               it: „Zloženie", the stock bar's labels and every button here are app copy
+               and must stay readable to the sweep. -->
           <span
             v-for="purpose in availablePurposes"
             :key="purpose"
@@ -1285,6 +1812,7 @@ function applyMarkup(price) {
             @click="(e) => { snapTab(e); activeTab = purpose }"
             @keydown.enter.prevent="activeTab = purpose"
             @keydown.space.prevent="activeTab = purpose"
+            data-user-copy
           >{{ purpose }}</span>
           <!-- Scroll affordance. The theme's own signal is the 28px `::after`
                fade, which reads as a soft edge rather than "there is more" — the
@@ -1329,7 +1857,12 @@ function applyMarkup(price) {
              needs a call-site `line-height:normal`, and A10's selector list must
              NOT grow for this row — measured against the current build, which
              already carries RD-FL-8b's `.vbox`/`.stepper` additions. -->
-        <div class="flex flex-col gap-4">
+        <!-- ⚠ `.p2-ro` (opacity .55 + `pointer-events:none`, A13's canon port) goes
+             on THIS wrapper and not on the panel: §UC-PI-006 resolved conflict 6 —
+             „only the CARDS are read-only/faded; the category strip stays
+             interactive so every category is browsable". The strip is a SIBLING
+             above, so it keeps its clicks. -->
+        <div class="flex flex-col gap-4" :class="{ 'p2-ro': isReadonly }" data-testid="product-grid">
           <div
             v-for="product in activeProducts"
             :key="product.id"
@@ -1359,7 +1892,7 @@ function applyMarkup(price) {
                      the canon exactly — 20 and 181.
                      The COFFEE card needs nothing: its `<h3>` is block-level, so
                      no strut is involved (measured: zero delta on both cards). -->
-                <div class="min-w-0" style="overflow-wrap:anywhere;line-height:normal">
+                <div class="min-w-0" style="overflow-wrap:anywhere;line-height:normal" data-user-copy>
                   <!-- `<h3>`, not the spec block's `span`: 04 §UC-FO-015 pins the
                        product name as `getByRole('heading', …)` for
                        `guest-host-view.spec.js`, and that pin outranks the element
@@ -1381,11 +1914,11 @@ function applyMarkup(price) {
                 >{{ product._variants[0].weight_grams }} g</span>
               </div>
 
-              <div v-if="product.description1" class="sub" style="font-size:13px;margin-top:6px">{{ product.description1 }}</div>
+              <div v-if="product.description1" class="sub" style="font-size:13px;margin-top:6px" data-user-copy>{{ product.description1 }}</div>
 
               <details v-if="product.composition" style="margin-top:8px">
                 <summary class="sub" style="cursor:pointer;font-size:13px">Zloženie</summary>
-                <div class="sub" style="font-size:13px;margin-top:4px">{{ product.composition }}</div>
+                <div class="sub" style="font-size:13px;margin-top:4px" data-user-copy>{{ product.composition }}</div>
               </details>
 
               <!-- Column rule and the 368px floor: see the coffee grid below. -->
@@ -1411,7 +1944,7 @@ function applyMarkup(price) {
                   </div>
                   <NeoStepper
                     :model-value="getQuantity(v.id, 'unit')"
-                    :disabled="isLocked"
+                    :disabled="editingLocked"
                     :inc-disabled="!canIncrement(v.id, 'unit')"
                     @update:model-value="(q) => onQty(v.id, 'unit', q)"
                   />
@@ -1453,6 +1986,7 @@ function applyMarkup(price) {
                   :src="product.image"
                   :alt="product.name"
                   :aria-label="`Zobraziť fotku: ${product.name}`"
+                  data-user-copy
                   role="button"
                   tabindex="0"
                   class="w-[58px] sm:w-[70px] shrink-0 self-start"
@@ -1472,11 +2006,36 @@ function applyMarkup(price) {
                      `description1`/`description2` are equally free text. Same class
                      of hole RD-FL-4 closed on `plan_note`; pinned with a long
                      unbreakable fixture name in `order-product-card.spec.js`. -->
-                <div class="flex-1 min-w-0" style="overflow-wrap:anywhere">
+                <div class="flex-1 min-w-0" style="overflow-wrap:anywhere" data-user-copy>
                   <h3 class="display text-[19px] sm:text-[21px]" style="line-height:.95">{{ product.name }}</h3>
                   <div v-if="product.roast_type || product.roastery" class="flex flex-wrap gap-[6px] mt-2">
                     <span v-if="product.roast_type" class="badge" style="font-size:11px;padding:2px 7px">{{ product.roast_type }}</span>
-                    <span v-if="product.roastery" class="badge acc-o" style="font-size:11px;padding:2px 7px">{{ product.roastery }}</span>
+                    <!-- 18 §UC-PI-014 — the roastery badge, now a POPOVER TRIGGER
+                         when (and only when) `lib/roasters.js` recognises the name.
+                         · class: the library's `badgeClass` (Goriffee plain, Robo
+                           `acc-o`); an UNKNOWN roastery keeps today's `acc-o`, so
+                           nothing about the shipped grid changes for it.
+                         · `role="button" tabindex="0"` ONLY on a match — an element
+                           that announces itself as a button and does nothing is
+                           worse than a plain `span`, and a free-text roastery the
+                           admin invented is an ordinary case.
+                         ⚠ The handler is bound unconditionally and guards itself
+                         (`openRoaster`): a missing `role` does not stop a
+                         dispatched click, so the JS guard is the real one.
+                         ⚠ `.prevent` on Space keeps the key from scrolling the
+                         grid, the NeoCheckbox/NeoModal `×` idiom. -->
+                    <span
+                      v-if="product.roastery"
+                      class="badge"
+                      :class="roasterFor(product.roastery)?.badgeClass ?? 'acc-o'"
+                      style="font-size:11px;padding:2px 7px"
+                      :style="roasterFor(product.roastery) ? 'cursor:pointer' : null"
+                      :role="roasterFor(product.roastery) ? 'button' : null"
+                      :tabindex="roasterFor(product.roastery) ? 0 : null"
+                      @click="openRoaster(product.roastery)"
+                      @keydown.enter.prevent="openRoaster(product.roastery)"
+                      @keydown.space.prevent="openRoaster(product.roastery)"
+                    >{{ product.roastery }}</span>
                   </div>
                   <!-- Fixed field mapping (04 §UC-FO-005): `description1` is the
                        spec line, `description2` the tasting notes. The old
@@ -1510,7 +2069,11 @@ function applyMarkup(price) {
                    sold-out signal is the danger-red "Vypredané" LABEL (repo
                    state, kept), never a bar colour — so the old amber/red bar
                    tinting goes. -->
-              <div v-if="availability[product.id]" class="flex items-center gap-[10px] mt-3" data-testid="stock-bar">
+              <!-- ⚠ HIDDEN in `readonly` (§UC-PI-006: „stock bars hidden,
+                   `[data-testid="stock-bar"]` count 0"): the fill is measured
+                   against `remaining_g` of a round that is over, so it would be a
+                   live-looking number about the past. -->
+              <div v-if="availability[product.id] && !isReadonly" class="flex items-center gap-[10px] mt-3" data-testid="stock-bar">
                 <div style="flex:1;height:10px;border:2px solid var(--nb-ink);border-radius:6px;overflow:hidden;background:#fff">
                   <div
                     data-testid="stock-fill"
@@ -1603,7 +2166,7 @@ function applyMarkup(price) {
                        cannot exceed the limit. Both, not either. -->
                   <NeoStepper
                     :model-value="getQuantity(product.id, v.variant)"
-                    :disabled="isLocked"
+                    :disabled="editingLocked"
                     :inc-disabled="!canIncrement(product.id, v.variant)"
                     @update:model-value="(q) => onQty(product.id, v.variant, q)"
                   />
@@ -1641,7 +2204,10 @@ function applyMarkup(price) {
          Rendered under the SAME condition as the page column (neither loading nor
          the fatal-error branch): a bar with no cycle, no products and no friend has
          nothing to submit and would only add chrome to a spinner. -->
-    <div v-if="!loading && !(error && !friend)" class="cartbar" data-testid="cartbar">
+    <!-- ⚠ NEVER in `readonly` (§UC-PI-006 / §UC-PI-007: „no `.cartbar`"). It is
+         also what removes the share icon from a non-open round, which 05
+         §UC-KG-002 requires and `portal-landing.spec.js` §3 pins. -->
+    <div v-if="!loading && !(error && !friend) && !isReadonly" class="cartbar" data-testid="cartbar">
       <!-- 1. not-yet-submitted notice, and 2. the dirty warning. At most one of the
            two, neither when locked — the shipped `v-if`/`v-else-if` priority,
            unchanged. Both moved INSIDE the bar per the prototype.
@@ -1720,6 +2286,43 @@ function applyMarkup(price) {
            Zaplatiť opens `PaymentModal` with its pinned props; the modal's internals
            belong to module 06 and are untouched by this row. -->
       <div v-if="!isLocked" class="actions">
+        <!-- 18 §UC-PI-011 — the cartbar share icon, the LEADING control of the row.
+             `flex:0 0 52px; padding:0` overrides the theme's `.cartbar .actions .btn
+             { flex:1 }` so it stays a square glyph while the three shipped buttons
+             keep sharing the rest of the row equally.
+
+             ⚠ Icon only, so its accessible name has to be the `aria-label` — and it
+             is the SAME string as the drawer row's `.lab` („Zdieľať s kolegami"),
+             because §UC-PI-011 names both triggers with one name. Both set
+             `showShareModal`; there is exactly one dialog.
+
+             ⚠ `state === 'open'` only: this whole `.actions` row is already
+             `v-if="!isLocked"`, which is the same condition expressed on the cycle
+             (04 §UC-FO-014 treats planned/locked/completed alike), so a locked or
+             closed round carries ~~no share affordance~~ no CARTBAR share icon (and
+             no per-cycle link — see `shareCycleId`; the drawer row still opens the
+             standing-only dialog, GL-T6c) — 05 §UC-KG-002.
+
+             ⚠⚠ LANDING ONLY, AND THAT IS NOT A SIMPLIFICATION — it is what two
+             IMMUTABLE specs require. `guest-host-view.spec.js:890,929` and
+             `share-dialog.spec.js`'s mount-seam test both assert an UNSCOPED
+             `getByRole('button', { name: /Zdieľať/ })` on `/cycle/:id`:
+             `toHaveCount(0)` on the „Moja objednávka" tab and `toHaveCount(1)` on
+             „Kolegovia". An always-visible cartbar icon named „Zdieľať s kolegami"
+             would make the first 1 and the second 2 — a strict-mode violation in
+             specs this row is not allowed to edit. §UC-PI-005 introduces the icon
+             under „Landing composition", and §UC-PI-011 calls the two triggers „the
+             cartbar icon + the drawer item", both of which are landing surfaces; the
+             deep link keeps module 05's Kolegovia share card as its entry point. -->
+        <button
+          v-if="isLanding"
+          type="button"
+          class="btn"
+          aria-label="Zdieľať s kolegami"
+          data-testid="cartbar-share"
+          style="flex:0 0 52px;padding:0"
+          @click="openShareDialog"
+        ><NeoIcon name="share" /></button>
         <button
           type="button"
           class="btn danger sm"
@@ -1812,11 +2415,16 @@ function applyMarkup(price) {
          needs is in the sentence that survived: the order can still be edited until
          the lock.
 
-         ⚠ NO payment-reference row here. The reference (`Meno / Cyklus`) lives ONLY
-         in the Platba modal (`PaymentModal`, module 06 / RD-GX-2) — README §Screens
-         item 8, applied to the friend side identically. It is deliberately not a
-         copy-row on this screen even though `paymentReference` is computed right
-         above: one home for the string the friend must type into their bank.
+         ⚠ NO payment-reference row here, AND NO VARIABLE-SYMBOL ROW. The reference
+         (`Meno / Cyklus`) lives ONLY in the Platba modal (`PaymentModal`, module 06 /
+         RD-GX-2) — README §Screens item 8, applied to the friend side identically. It
+         is deliberately not a copy-row on this screen even though `paymentReference` is
+         computed right above: one home for the string the friend must type into their
+         bank. ⚠ AMENDED — 15 §UC-PL-007 item 1 (PL-T4): the variable symbol joins that
+         rule rather than breaking it. This modal is a CONFIRMATION with a shortcut (the
+         sum, the Revolut link, the QR that now carries the symbol); the two things a
+         friend TYPES — the reference and the VS — have their one home in the Platba
+         modal, which „Zaplatiť“ in the cart bar opens. No PayMe button here either.
 
          ⚠ CLOSING BY ANY ROUTE NAVIGATES TO THE PORTAL. `@close` is NeoModal's one
          event for ×, scrim and Esc, and the OK button calls the same handler, so all
@@ -1830,7 +2438,7 @@ function applyMarkup(price) {
     <NeoModal
       v-if="showSuccessModal"
       title="Hotovo!"
-      subtitle="Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia cyklu."
+      subtitle="Objednávka bola odoslaná. Môžete ju upraviť až do uzavretia objednávok."
       @close="handleSuccessModalClose"
     >
       <!-- Payment block only when the admin configured payment settings at all;
@@ -1858,15 +2466,20 @@ function applyMarkup(price) {
              navigates off-site, wearing `.btn.block`. `fill:currentColor` + the
              white `color` is what tints the glyph. -->
         <a
-          v-if="paymentRevolutUsername"
+          v-if="successRevolutHref"
           class="btn block"
           style="background:#0075EB;color:#fff;border-color:#0a0a0a"
-          :href="`https://revolut.me/${paymentRevolutUsername}`"
+          :href="successRevolutHref"
           target="_blank"
           rel="noopener noreferrer"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M20.1 6.8c-.3-1.2-1-2.2-2-2.9-.9-.7-2.1-1-3.3-1H6.2L4 20.1h4.1l1-5.5h3.7c1.6 0 3-.5 4.1-1.4 1.1-.9 1.9-2.2 2.2-3.8l.5-2.6zM16 9.2l-.2 1c-.2.9-.6 1.5-1.2 2-.6.5-1.4.7-2.3.7H9.1l1-5.5h3.2c.7 0 1.2.2 1.6.6.4.4.5.9.4 1.5l-.3 1.7z"/></svg>
+          <!-- ⚠ The accessible name still STARTS with the shipped string, so every
+               `getByRole('link', { name: 'Zaplatiť cez Revolut' })` (Playwright matches
+               substrings) keeps resolving. The amount is a nested `.mono` span — money
+               renders in Courier Prime (02 §UC-DS-012). -->
           Zaplatiť cez Revolut
+          <span v-if="successRevolutAmountLabel" class="mono">{{ successRevolutAmountLabel }}</span>
         </a>
 
         <!-- The REAL scannable code inside the neo frame (02 §UC-DS-012): `.qr` is
@@ -1889,21 +2502,34 @@ function applyMarkup(price) {
       </template>
     </NeoModal>
 
-    <!-- Payment Modal (for footer button) -->
+    <!-- Payment Modal (for footer button) — THE full payment surface for this order:
+         the Revolut link, the PayMe deep link on a phone, the QR, the reference AND the
+         variable-symbol copy row. The success modal above is a confirmation with a
+         shortcut, which is why it carries neither the VS row nor PayMe (§UC-PL-007
+         item 1).
+         ⚠ `variableSymbol` is the SERVER's, quoted from the last order response; this
+         view derives no symbol of its own. -->
     <PaymentModal
       :open="showPaymentModal"
       :amount="paymentTotal"
       :reference="paymentReference"
       :iban="paymentIban"
       :revolut-username="paymentRevolutUsername"
+      :variable-symbol="paymentVs"
+      :creditor-name="paymentCreditorName"
       @close="showPaymentModal = false"
     />
 
-    <!-- Share with colleagues (guest link) — shared with FriendPortal -->
+    <!-- Share with colleagues (guest link) — THE one friend-surface instance.
+         ⚠ GL-T6c: `shareCycleId`, not `activeCycleId` — `null` on the read-only
+         landings (closed catalogue, locked round), where the drawer row now reaches
+         this instance and the dialog shows the STANDING link only. The name goes with
+         the id: a dialog that shows no per-cycle section must not name a round in its
+         subtitle either. -->
     <GuestShareDialog
       :open="showShareModal"
-      :cycle-id="cycleId"
-      :cycle-name="cycle?.name || ''"
+      :cycle-id="shareCycleId"
+      :cycle-name="shareCycleId ? (cycle?.name || '') : ''"
       @update:open="showShareModal = $event"
     />
 
@@ -2113,7 +2739,12 @@ function applyMarkup(price) {
                "Lego domaDúbravka". Without a newline the same node condenses to a
                single space and is KEPT, which is what the prototype's JSX does. -->
           <span style="min-width:0;font-size:14px;line-height:normal">
-            <b>{{ opt.label }}</b> <span v-if="opt.sub" class="sub">{{ opt.sub }}</span>
+            <!-- ⚠ `data-user-copy` (FUP-T22 / 18 §UC-PI-017): a location's name and
+                 address are admin free text. The trailing „Iné" row (`value: null`) is
+                 APP copy and stays readable to the sweep — hence the conditional. The
+                 DELIVERY-method rows above („Osobný odber", „Doručenie Packetou") are
+                 app literals from `deliveryMethodOptions` and are NOT marked. -->
+            <b :data-user-copy="opt.value === null ? null : ''">{{ opt.label }}</b> <span v-if="opt.sub" class="sub" data-user-copy>{{ opt.sub }}</span>
           </span>
         </label>
         <!-- The note is a SIBLING of the "Iné" row, not a child of its label
@@ -2137,11 +2768,25 @@ function applyMarkup(price) {
         data-testid="packeta-section"
       >
         <label class="field-lbl" for="fo-packeta-address">Adresa výdajného miesta *</label>
+        <!-- ⚠ `maxlength` MIRRORS `friends.packeta_address`'s 160 (18 §UC-PI-015,
+             PI-T10 — CLAUDE.md's mirror convention). THIS FIELD IS THE COLUMN'S SECOND
+             CLIENT WRITER and it is the quiet one: `confirmPickupAndSubmit()` PATCHes
+             the profile inside a `catch {}` that proceeds with the order on purpose
+             (saving a default must never cost the friend their order), so a server
+             refusal here has NO surface at all. Without the mirror, an address over
+             160 chars would make „uložiť ako predvolenú" silently stop working — a
+             regression PI-T10's own bound would have introduced.
+             ⚠ RECORDED, NOT FIXED: `orders.packeta_address` — the address that
+             actually reaches the distribution sheet — is bounded by `routes/orders.js`
+             on TYPE and non-emptiness only, with no length rule, so the per-order
+             address stays unbounded while the profile default is capped. That
+             asymmetry is a PI-T11 / guest-delivery-row decision, not this one. -->
         <input
           id="fo-packeta-address"
           v-model="packetaAddress"
           class="inp"
           type="text"
+          maxlength="160"
           placeholder="napr. Z-BOX Hlavná 15, Bratislava"
         />
         <!-- Save-as-default. DEFAULT UNCHECKED (resolved conflict #11) — see the
@@ -2193,6 +2838,26 @@ function applyMarkup(price) {
       :name="photoProduct.name"
       @close="photoProduct = null"
     />
+
+    <!-- 18 §UC-PI-014 — THE ONE ROASTER POPOVER. Title = the roaster's label,
+         body = its text, footer = „Zavrieť" (the shell's standing footer label).
+         Both strings come from `lib/roasters.js`; nothing is typed here, so the
+         card and the explainer's „Kto sme a odkiaľ je káva" cards cannot drift
+         apart — `portal-explainer.spec.js` §3 asserts them EQUAL against the
+         module's own exports.
+
+         ⚠ `v-if` on the mount, like every modal on this shell. -->
+    <NeoModal
+      v-if="roasterModal"
+      :title="roasterModal.label"
+      data-testid="roaster-modal"
+      @close="roasterModal = null"
+    >
+      <div class="sub" style="font-size:14px;line-height:1.45">{{ roasterModal.text }}</div>
+      <template #footer>
+        <button type="button" class="btn" @click="roasterModal = null">Zavrieť</button>
+      </template>
+    </NeoModal>
   </div>
 </template>
 

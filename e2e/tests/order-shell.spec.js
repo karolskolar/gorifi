@@ -1,5 +1,11 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding, gotoCycle as portalGotoCycle } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // RD-FO-1 — the friend order screen's SHELL (04 §UC-FO-001..004).
 //
@@ -54,20 +60,22 @@ let host = null
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
 const TICKER_OPEN = '+++ OBJEDNÁVKY OTVORENÉ +++ NEHOVOR O TOM NAHLAS +++'
-const TICKER_LOCKED = '+++ OBJEDNÁVKY UZAMKNUTÉ +++ DRŽ JAZYK ZA ZUBAMI +++'
+const TICKER_LOCKED = '+++ OBJEDNÁVKY UZAVRETÉ +++ DRŽ JAZYK ZA ZUBAMI +++'
 
 // Enough purposes to overflow a phone strip, in the shipped order (Espresso,
 // Filter, Kapsule first, then encounter order) so the rendered sequence is
 // predictable — `availablePurposes` is data-derived (resolved conflict #2).
 const PURPOSES = ['Espresso', 'Filter', 'Kapsule', 'Filter Special', 'Brew Bags', 'Nespresso']
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-    timeout: TIMEOUT,
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+  timeout: TIMEOUT,
+})
 
 async function makeCycle(label, over = {}) {
   const name = `E2E RDFO1 ${label} ${uniq}`
@@ -149,10 +157,11 @@ async function signIn(page) {
 // `FriendPortal` (04 §UC-FO-001 business rules; this row must not "fix" it).
 // Entering through the portal is how a real friend gets here.
 async function gotoCycle(page, cycle) {
-  await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
-  await page.getByRole('heading', { name: cycle.name, exact: true }).click()
-  await expect(page).toHaveURL(new RegExp(`/cycle/${cycle.id}$`))
+  // ⚠ PI-T3 · 18 §UC-PI-019 item 3 — the cycle CARDS are retired (§UC-PI-005), so
+  // `goto('/')` + a heading click is no longer a route to an order screen.
+  // `portalGotoCycle` (helpers/portal.js) is the ONE home of that navigation; it
+  // still enters cold and still proves state came back from the server.
+  await portalGotoCycle(page, cycle.id)
   await expect(page.locator('.app .appbar')).toBeVisible()
 }
 
@@ -191,7 +200,8 @@ test.describe('UC-FO-001 — brand chrome', () => {
     // Back chevron — a bare span in the prototype, given the house zero-pixel ARIA
     // layer here because it is the only in-page route back. `exact: true` matters:
     // Playwright matches accessible names as a case-insensitive SUBSTRING, and the
-    // fatal-error state renders a "Späť na zoznam cyklov" button.
+    // fatal-error state renders a "Späť na ponuku" button (18 §UC-PI-017; was
+    // "Späť na zoznam cyklov").
     const back = page.getByRole('button', { name: 'Späť', exact: true })
     await expect(back).toBeVisible()
     await expect(back.locator('svg')).toHaveCount(1)
@@ -232,7 +242,7 @@ test.describe('UC-FO-001 — brand chrome', () => {
     const ticker = page.locator('.app .ticker span')
     const tickerText = await ticker.textContent()
     expect(tickerText.split(TICKER_OPEN).length - 1, 'the open-cycle ticker, 3×').toBe(3)
-    expect(tickerText).not.toContain('UZAMKNUTÉ')
+    expect(tickerText).not.toContain('UZAVRETÉ')
   })
 
   test('a LOCKED cycle: the lock chip and the locked ticker', async ({ page }) => {
@@ -343,7 +353,7 @@ test.describe('UC-FO-002 — status banners', () => {
 
     const green = page.locator('.app .banner.ok').filter({ hasText: 'Vaša objednávka bola odoslaná!' })
     await expect(green).toBeVisible()
-    await expect(green).toContainText('Stále ju môžete upraviť až do uzamknutia.')
+    await expect(green).toContainText('Stále ju môžete upraviť až do uzavretia.')
     // Theme contract: every `.banner` carries its `span.dot` as the first child.
     expect(await green.evaluate((el) => el.firstElementChild.className)).toBe('dot')
     expect(await green.evaluate((el) => getComputedStyle(el).borderTopWidth), 'full banner, not `.slim`').toBe('3px')
@@ -393,7 +403,7 @@ test.describe('UC-FO-002 — status banners', () => {
 
     const warn = page.locator('.app .banner.warn')
     await expect(warn).toBeVisible()
-    await expect(warn).toContainText('Objednávky sú uzamknuté.')
+    await expect(warn).toContainText('Objednávky sú uzavreté.')
     await expect(warn).toContainText('Už nie je možné meniť objednávku.')
     expect(await warn.evaluate((el) => el.firstElementChild.className)).toBe('dot')
     await expect(

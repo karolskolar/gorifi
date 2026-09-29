@@ -118,9 +118,8 @@ const googleButtonEl = ref(null)
 //     request that decides whether the token is good (see `beginSession`). The
 //     session view seeds its list from it, so a login stays at ONE cycles
 //     request rather than two.
-//   · `subscriptions` — the type filter behind that list, awaited in the
-//     handshake for the same reason it always was: the gear must not be
-//     openable before it has landed, or the modal prefills "everything".
+//   · ~~`subscriptions`~~ — RETIRED by PI-T3 (18 §UC-PI-016): the gear and its
+//     modal are gone, so nothing prefills. The table and both routes stay.
 //   · `mustChangePassword` + `currentPassword` — UC-FL-012's gate and the
 //     plaintext password the friend just logged in with. The password stays on
 //     THIS side of the boundary because it is a login credential — the two form
@@ -354,30 +353,61 @@ async function beginSession({
   // linked, stacked on ML-T6's magic prompt. Do not "tidy" these two into defaults.
   googleLinked,
   googlePromptDismissed,
+  // ⚠ 18 §UC-PI-013 (PI-T9) — THE FIRST-LOGIN EXPLAINER GATE, and the default is
+  // `false` rather than absent on purpose. Unlike the two Google fields above,
+  // "this handshake did not say" and "this handshake said no" mean the SAME thing
+  // here: do not open the gate. There is no consumer that has to tell them apart,
+  // and a tri-state would only create a way to get it wrong.
+  //
+  // ⚠ SET BY THE THREE LOGIN PATHS ONLY (`authenticate`, `authenticatePersonal`,
+  // `onGoogleCredential`), each as the literal `result.friend?.explainer_seen_at ===
+  // null`. A SESSION RESTORE IS NOT A LOGIN (§UC-PI-013, inheriting 10 §UC-GA-006's
+  // precedent), so neither restore path passes it — a friend who has not acknowledged
+  // the explainer must not be dragged into it by every reload, only by a fresh login.
+  // `hydrateCurrentFriend()` later learns the real value from `GET /:id/profile`;
+  // nothing may re-derive the gate from it.
+  //
+  // ⚠ `=== null`, never `!result.friend?.explainer_seen_at`. The truthy form opens the
+  // gate on `undefined` too — i.e. on any response from a backend older than this
+  // migration, and on the magic-link path if someone ever plumbs it — which is the
+  // `googleLinked` trap one comment up, in the other direction.
+  explainerPending = false,
+  // ⚠ 18 §UC-PI-015 + PO 2026-09-19 clarification (c) (PI-T10) — „THIS HANDSHAKE IS A
+  // LOGIN", the trigger for the profile modal's auto-open.
+  //
+  // ⚠ It is a FLAG, not the phone number, and that is deliberate: `phone` is in NONE
+  // of the login payloads and PI-T9 pinned that set (four payloads, six fields). The
+  // session view combines this flag with the phone it learns from
+  // `hydrateCurrentFriend()`'s `GET /:id/profile` — which is also what puts the
+  // auto-open LAST in the precedence chain, since that fetch settles after the gates.
+  //
+  // ⚠ SET BY THE THREE LOGIN PATHS ONLY, exactly like `explainerPending` above, and
+  // for the same reason stated there in as many words: A SESSION RESTORE IS NOT A
+  // LOGIN. `FriendPortal.vue` restores on EVERY document load, so a session-mount
+  // trigger would put this modal in front of a phone-less friend on every reload and
+  // every deep link they open — the behaviour §UC-PI-013 rejected for the explainer
+  // („must not be dragged into it by every reload, only by a fresh login"). A magic
+  // link and the onboarding registration arrive through the restore path and so do
+  // not carry it either, matching the explainer gate's shipped boundary.
+  freshLogin = false,
 } = {}) {
   const cycles = await api.getFriendsCycles(selectedFriendId.value)
 
-  // ⚠ Fetched HERE rather than on the child's mount, and the ordering is the
-  // point: it is what decides which cycles the list is allowed to show, so the
-  // subscription modal must never be openable before it has landed. Awaiting it
-  // in the handshake is also exactly what the pre-extraction `loadCycles()` did
-  // — same two sequential requests, same "resolved before the authenticated
-  // paint" guarantee. Failure is non-fatal (it only prefills a modal) and must
-  // never take the session down with it.
-  let subscriptions = []
-  try {
-    subscriptions = (await api.getSubscriptions(selectedFriendId.value)).types || []
-  } catch {
-    // non-critical
-  }
+  // ⚠ The `subscriptions` fetch that used to sit HERE is RETIRED (18 §UC-PI-016,
+  // PI-T3). Its only consumer was the „Nastavenia odberu" modal's prefill, and that
+  // modal is gone; `GET/PUT /api/subscriptions/friend/:id`, the table and the
+  // SERVER-side filter in `GET /friends/cycles` are all untouched. A login is one
+  // request lighter as a result, which is the visible half of the change.
 
   // ⚠ Bumped HERE, one statement before the payload it keys. Every fresh
   // handshake re-creates the session view; see `sessionSeq`'s declaration.
   sessionSeq.value++
   entry.value = {
-    cycles, subscriptions, mustChangePassword, currentPassword, needsCredentialSetup,
+    cycles, mustChangePassword, currentPassword, needsCredentialSetup,
     viaMagicLink, magicPromptDismissed,
     googleLinked, googlePromptDismissed,
+    explainerPending,
+    freshLogin,
   }
   authState.value = 'authenticated'
 
@@ -491,6 +521,11 @@ async function authenticate(silent = false) {
       // Admin reset this friend's password → force them to set a new one now.
       mustChangePassword: !!result.mustChangePassword,
       currentPassword: result.mustChangePassword ? password.value : '',
+      // 18 §UC-PI-013 — login 1 of 3. See `beginSession`'s parameter comment for why
+      // this is the literal `=== null` and why no restore path passes it.
+      explainerPending: result.friend?.explainer_seen_at === null,
+      // 18 §UC-PI-015 (PI-T10) — login 1 of 3 of the profile auto-open. See `beginSession`.
+      freshLogin: true,
     })
 
     // UC-FC-009: the auth payload carries no phone/email — hydrate them for THIS
@@ -562,6 +597,10 @@ async function authenticatePersonal() {
       // field (a pre-GA-T4 backend) into a definite `false` and open the prompt on it.
       googleLinked: result.googleLinked,
       googlePromptDismissed: result.googlePromptDismissed,
+      // 18 §UC-PI-013 — login 2 of 3.
+      explainerPending: result.friend?.explainer_seen_at === null,
+      // 18 §UC-PI-015 (PI-T10) — login 2 of 3 of the profile auto-open. See `beginSession`.
+      freshLogin: true,
     })
 
     // UC-FC-009: same as the shared-password path above — `/friends/auth`
@@ -699,6 +738,12 @@ async function onGoogleCredential(response) {
       // §UC-GA-006's prompt must not trigger on it. `true !== false` already shuts
       // the prompt; see `beginSession`'s enumeration for the full reasoning.
       googleLinked: true,
+      // 18 §UC-PI-013 — login 3 of 3. A Google sign-in is a login like the other two;
+      // a friend whose FIRST login is a Google one meets the explainer exactly once,
+      // which is the whole rule.
+      explainerPending: result.friend?.explainer_seen_at === null,
+      // 18 §UC-PI-015 (PI-T10) — login 3 of 3 of the profile auto-open. See `beginSession`.
+      freshLogin: true,
       // ⚠ NO `currentPassword`, and it must stay absent: a Google login never handled
       // one. `submitForcedPasswordChange()` sends `entry?.currentPassword || ''` and
       // the backend skips the current-password check while `must_change_password` is
@@ -962,18 +1007,49 @@ function switchUser() {
   authState.value = 'login'
 }
 
-// The two appbar controls that act on the session view. Calling exposed methods
-// rather than owning `showProfileModal`/`showInviteModal` here is the point: a
-// pair of "is this dialog open" booleans in the parent is exactly the session
-// state this split exists to keep out of it (and `showProfileModal` surviving a
-// logout was one of RD-FL-6's findings).
-function openProfile() {
-  session.value?.openProfileModal()
-}
-
+// The appbar controls that act on the session view. Calling exposed methods
+// rather than owning `showProfileModal`/`showInviteModal`/`menuOpen` here is the
+// point: a pair of "is this dialog open" booleans in the parent is exactly the
+// session state this split exists to keep out of it (and `showProfileModal`
+// surviving a logout was one of RD-FL-6's findings).
+//
+// ⚠ `openProfile()` is GONE with the `.titles` action and the pencil that shared
+// it (18 §UC-PI-003) — the profile is a DRAWER row now, and the drawer calls
+// `openProfileModal()` from inside the session. `openProfileModal` stays exposed
+// because that is still the session's own public opener.
 function openInvite() {
   session.value?.openInviteModal()
 }
+
+// 18 §UC-PI-003 — the drawer's opener, on exactly the same argument as the two
+// above: `menuOpen` is SESSION state (§UC-PI-001), so it lives in the child and
+// this is only the appbar's request.
+function openMenu() {
+  session.value?.openMenu()
+}
+
+// The explainer view's back chevron. Routing on the authenticated surface has one
+// home and it is the session (see `backHome` there).
+function backHome() {
+  session.value?.backHome()
+}
+
+// ⚠ THE APPBAR'S PER-VIEW CHROME IS READ OUT OF THE SESSION, NEVER STORED HERE.
+//
+// `BrandChrome` is ONE instance across all three auth states (UC-FL-001 — it must
+// not remount on login/logout), so it lives in this component; but the subtitle,
+// the ticker and the lock chip are functions of the ROUTE and of the resolved
+// round, i.e. session data (18 §UC-PI-001: "every new piece of state this module
+// adds … lives in `FriendPortalSession.vue` or its children, never in
+// `FriendPortal.vue`"). A ref here would survive the logout that unmounts the
+// session and greet the next person with the previous one's chrome.
+//
+// So this is a `computed` over the exposed session object: it holds no value of
+// its own, and the moment `authState` leaves `authenticated` the session is gone,
+// `session.value` is null, and the login chrome is what renders. That is also why
+// `route.meta` is NOT read here — the source pin in `portal-shell.spec.js`
+// forbids it, and `view` has exactly one home (the session's `view` computed).
+const appbar = computed(() => (authState.value === 'authenticated' ? session.value?.appbar || null : null))
 
 // ⚠ `getStatusVariant` / `getStatusText` / `formatPrice` were deleted with the
 // shadcn cycle cards they served (RD-FL-4); `getCurrentFriendLoginName` was
@@ -1011,52 +1087,80 @@ const dropdownFriends = computed(() => {
          (UC-DS-005/006). One instance — the state only swaps its slot contents
          and the ticker copy, so the chrome never remounts on login/logout.
 
-         AUTHENTICATED APPBAR (UC-FL-004, row RD-FL-3): titles block → profile,
-         pencil BETWEEN `.titles` and `.grow` via the `#after-titles` slot that
-         RD-DS-5 added for exactly this, rotated "Pozvať" chip → invite, logout
-         glyph → switchUser(). The tap targets are plain spans in the prototype;
-         `.titles`, the chip and the logout glyph carry the house zero-pixel ARIA
-         layer (role + tabindex + Enter/Space) so the bar is operable without a
-         mouse — same enhancement as NeoCheckbox, NeoModal's `.m-x` and the login
-         eye toggle. The chip's accessible name is its own visible text
-         ("Pozvať"), never an aria-label that would contradict it.
+         ⚠ THE AUTHENTICATED BAR IS 18 §UC-PI-003's, AS OF PI-T2, AND IT IS A
+         SUPERSESSION, NOT AN ADDITION (03 §UC-FL-004 → the supersession map in
+         `18-portal-information-architecture.md`). Four controls became three
+         slots:
 
-         ⚠ The pencil is the ONE control that does NOT get that layer: it is
-         `aria-hidden`, pointer-only. That enhancement exists for controls that
-         are the ONLY route to their action (NeoCheckbox, `.m-x`, the eye
-         toggle); the pencil is not one — it is an immediately-adjacent
-         duplicate of `.titles`, same handler, and its name would have to be
-         "Upraviť profil" too. Exposing it gave the bar two consecutive tab
-         stops both announcing "Upraviť profil, button" — 50% redundancy on a
-         four-control bar. UC-FL-004 asks for a span with `title` only, and
-         `portal.jsx:101` is a bare span; keyboard users reach the action via
-         `.titles`, and "tapping name or pencil opens the profile modal" still
-         holds literally for pointer input. -->
+           · `#leading`  — the hamburger (`p2-icobtn` + `NeoIcon menu`) in the
+             `shop | history | balance` views, and the back chevron in
+             `explainer`, which pushes `/`. There is no menu button in the
+             explainer (prototype `portal2.jsx`:309).
+           · `.titles`   — the wordmark plus the VIEW SUBTITLE. It is no longer
+             the friend's NAME (that moved into the drawer header, where it is the
+             only identity on screen — §16: a friend never needs to see their uid,
+             and the name in a 12px uppercase appbar line was never a control
+             either), and `titlesAction` is now EMPTY IN EVERY STATE: no role, no
+             tabindex, no aria-label, no cursor. The login state's opt-out became
+             the rule (§UC-PI-003), so the profile is reached from the drawer.
+           · `#after-titles` — GONE. The pencil is retired with `.titles`'s action:
+             it was an aria-hidden, pointer-only duplicate of a handler that no
+             longer exists here.
+           · `#trailing` — the Pozvať chip STAYS (roadmap Q2.a, decided
+             2026-09-06: it is the one control worth an always-visible tap
+             target), followed by the decorative lock chip whenever the round is
+             not open. The LOGOUT GLYPH IS GONE — „Odhlásiť sa" is the drawer's
+             footer button now.
+
+         The chip keeps the house zero-pixel ARIA layer (role + tabindex +
+         Enter/Space) because it is the only route to the invite modal; so does
+         the hamburger, for the same reason. Exactly ONE `.chip.acc` remains in
+         the bar — the lock chip is `.chip.p2-lock`, never `.acc`, so the shipped
+         `.appbar .chip.acc` locator keeps resolving to Pozvať. -->
     <BrandChrome
-      :ticker="authState === 'authenticated'
-        ? '+++ ČLENSKÝ OKRUH +++ PRE TÝCH, ČO VEDIA +++'
+      :ticker="appbar
+        ? appbar.ticker
         : '+++ VSTUP LEN PRE SVOJICH +++ HESLO NEDÁVAJ ĎALEJ +++'"
-      :titles-action="authState === 'authenticated' ? 'Upraviť profil' : ''"
-      @titles-click="openProfile"
     >
-      <template #titles>
-        <span class="t">Pod<span style="color:var(--accent)">pult</span>ovka</span>
-        <span class="s">{{ authState === 'authenticated' ? currentFriendName : 'Členský vstup' }}</span>
-      </template>
-      <template #after-titles>
+      <template #leading>
         <span
-          v-if="authState === 'authenticated'"
-          data-testid="profile-pencil"
-          aria-hidden="true"
-          title="Upraviť profil"
-          style="opacity:.75;display:flex;cursor:pointer"
-          @click="openProfile"
+          v-if="appbar && appbar.menu"
+          class="p2-icobtn"
+          role="button"
+          tabindex="0"
+          aria-label="Menu"
+          @click="openMenu"
+          @keydown.enter.prevent="openMenu"
+          @keydown.space.prevent="openMenu"
         >
-          <NeoIcon name="pencil" />
+          <NeoIcon name="menu" />
+        </span>
+        <!-- ⚠ BOTH classes, and it is a recorded reconciliation. §UC-PI-003 names
+             „the existing `span.back`" (03's class, `opacity:.9` and nothing else),
+             while the prototype `portal2.jsx`:309 renders this chevron as a
+             `p2-icobtn` like the hamburger it replaces — which is what gives it the
+             44×44 hit target UC-DS-005 requires. Carrying both satisfies the spec's
+             selector and the prototype's geometry; dropping `p2-icobtn` would ship a
+             sub-minimum touch target on the one control the explainer view has. -->
+        <span
+          v-else-if="appbar"
+          class="back p2-icobtn"
+          role="button"
+          tabindex="0"
+          aria-label="Späť"
+          @click="backHome"
+          @keydown.enter.prevent="backHome"
+          @keydown.space.prevent="backHome"
+        >
+          <NeoIcon name="back" />
         </span>
       </template>
+      <template #titles>
+        <span class="t">Pod<span style="color:var(--accent)">pult</span>ovka</span>
+        <span class="s">{{ appbar ? appbar.subtitle : 'Členský vstup' }}</span>
+      </template>
       <template #trailing>
-        <template v-if="authState === 'authenticated'">
+        <template v-if="appbar">
           <span
             class="chip acc"
             role="button"
@@ -1067,18 +1171,15 @@ const dropdownFriends = computed(() => {
             @keydown.enter.prevent="openInvite"
             @keydown.space.prevent="openInvite"
           ><NeoIcon name="invite" /> Pozvať</span>
+          <!-- Decorative: the lock STATE is spoken by the landing's banner, so a
+               second announcement here would be noise. `title` only, per
+               §UC-PI-003. -->
           <span
-            role="button"
-            tabindex="0"
-            aria-label="Odhlásiť sa"
-            title="Odhlásiť sa"
-            style="opacity:.85;display:flex;cursor:pointer"
-            @click="switchUser"
-            @keydown.enter.prevent="switchUser"
-            @keydown.space.prevent="switchUser"
-          >
-            <NeoIcon name="logout" />
-          </span>
+            v-if="appbar.lock"
+            class="chip p2-lock"
+            aria-hidden="true"
+            :title="appbar.lock"
+          ><NeoIcon name="lock" /></span>
         </template>
         <span v-else class="chip acc">Len pre svojich</span>
       </template>
@@ -1593,6 +1694,7 @@ const dropdownFriends = computed(() => {
       @token="onToken"
       @forced-complete="onForcedComplete"
       @magic-prompt-dismissed="onMagicPromptDismissed"
+      @logout="switchUser"
     />
   </div>
 </template>

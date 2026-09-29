@@ -1,4 +1,9 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 
 // RD-FL-2 — the redesigned MODERN login (03 §UC-FL-002) and the forced
@@ -292,7 +297,7 @@ test.describe('Modern login — the redesigned card (UC-FL-002)', () => {
     await freshVisit(page)
     await loginAs(page, cleanFriend, { viaEnter: true })
 
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
     // The pinned session shape is written on every successful login — the box's state
     // no longer decides that (09 §UC-ML-007 / resolved conflict #1). Comment corrected
     // with ML-T4; the assertions below are unchanged and still pass.
@@ -315,7 +320,7 @@ test.describe('Modern login — the redesigned card (UC-FL-002)', () => {
     await freshVisit(page)
     await loginAs(page, cleanFriend)
 
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('gorifi_friend_auth') || 'null'))
     expect(stored, 'the in-memory-only fallback is retired').not.toBeNull()
     const horizon = stored.expiresAt - Date.now()
@@ -437,14 +442,14 @@ test.describe('Forced password change — the non-dismissable NeoModal gate (UC-
     await gate.getByLabel(/^potvrdiť nové heslo$/i).press('Enter')
 
     await expect(gate).toHaveCount(0)
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
     // The scroll lock is released and the body's inline overflow restored.
     expect(await page.evaluate(() => document.body.style.overflow)).toBe('')
 
     // The new password really took: a fresh login with it needs no gate.
     await freshVisit(page)
     await loginAs(page, { ...friend, password: 'novéHeslo123' })
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
     await expect(page.getByTestId('forced-password-change')).toHaveCount(0)
   })
 })

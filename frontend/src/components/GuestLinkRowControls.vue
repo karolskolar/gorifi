@@ -45,7 +45,7 @@ const props = defineProps({
 defineEmits(['copy', 'create', 'regenerate', 'open-confirm', 'close-confirm'])
 
 // A link under a DEACTIVATED host 410s for every guest even while `active = 1`
-// (routes/guest.js `resolveLink`), so the marker has to answer BOTH halves —
+// (routes/guest.js `resolveEntry`, formerly `resolveLink`), so the marker has to answer BOTH halves —
 // otherwise the admin forwards a URL that is dead for a reason the row never said.
 const isDead = computed(() => !props.link || !props.link.active || !props.link.host_active)
 

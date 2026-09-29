@@ -226,7 +226,12 @@ router.post('/:id/resolve', (req, res) => {
 
   if (action === 'accept') {
     // Create adjustment transaction with +voucher_amount
-    const note = `Voucher z cyklu ${voucher.cycle_name}`;
+    // ⚠ VOCABULARY (18 §UC-PI-017). Not a 4xx, but app copy all the same: this note
+    // is written into `transactions.note` and RENDERS on the friend's „Zostatok a
+    // platby" view (`FriendTransactionList.vue`'s `tx-meta` line). Rows written
+    // before this change keep their old text — a note is a stored value, not a
+    // template — which is why the rendered sweep excludes the meta line as DATA.
+    const note = `Voucher za objednávku ${voucher.cycle_name}`;
     const txResult = db.prepare(`
       INSERT INTO transactions (friend_id, type, amount, note)
       VALUES (?, 'adjustment', ?, ?)

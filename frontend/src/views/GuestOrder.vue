@@ -10,9 +10,17 @@ import PaymentModal from '@/components/PaymentModal.vue'
 import GuestProductGrid from '@/components/GuestProductGrid.vue'
 import GuestInviteRequest from '@/components/GuestInviteRequest.vue'
 import CartLineList from '@/components/CartLineList.vue'
+import GuestSteps from '@/components/GuestSteps.vue'
+import GuestRoastersLine from '@/components/GuestRoastersLine.vue'
+import { GUEST_WAITLIST } from '@/lib/features'
+import GuestDeliveryChoice from '@/components/GuestDeliveryChoice.vue'
+import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 import { fmtEur } from '@/lib/money'
+import { EMAIL_SHAPE } from '@/lib/email-shape'
+import { deliveryExtras } from '@/lib/order-lines'
 import { purposeOrder } from '@/lib/purposes'
 import { itemsLabel } from '@/lib/plural'
+import { fmtDay, inWeeksText } from '@/lib/cycle-stages'
 import {
   availabilityMap,
   cartLines,
@@ -27,7 +35,9 @@ import {
 // Same product-card layout as FriendOrder.vue (incl. bakery variant grouping),
 // stripped of everything that needs an account: no login, no delivery/pickup
 // modal, no drafts, no auto-save. Checkout is name + mobile (+ optional email)
-// and one submit; the sub-order is created only by that submit.
+// and one submit; the sub-order is created only by that submit. Since GP-T3 (20
+// §UC-GP-003) a round that sends parcels also offers the delivery choice inside the
+// checkout modal (`GuestDeliveryChoice.vue`); a parcel-off round shows none of it.
 //
 // The grid itself lives in `components/GuestProductGrid.vue` and the cart maths in
 // `lib/guest-cart.js` (GSO-T4), shared with the status/edit screen at
@@ -41,8 +51,10 @@ import {
 // ⚠ THE SUBMIT IS UNTOUCHED BY THE RESTYLE. `api.js guestRequest()` sends NO auth
 // headers on any guest call — the URL token IS the credential (GSO-T3) — and the
 // payload below is byte-identical to the shipped one: trimmed name/phone, email
-// only when non-empty, `itemsPayload(cartItems)`. The GSO-T3 input bounds are
-// mirrored as `maxlength` on the three inputs and must stay.
+// only when non-empty, `itemsPayload(cartItems)` — plus, ONLY for a Packeta choice,
+// `use_parcel_delivery: true` + the trimmed point (GP-T3). The GSO-T3 input bounds are
+// mirrored as `maxlength` on the three inputs (and the point's 160 on its own, inside
+// the component) and must stay.
 //
 // The confirmation (g-confirm) was restyled by RD-GX-2 and no longer holds a
 // payment-reference row: the reference moved into the Platba modal (§UC-GX-005,
@@ -57,6 +69,10 @@ const GUEST_STORAGE_KEY = 'gorifi_guest_orders'
 
 const loading = ref(true)
 const unavailable = ref(null) // { status, reason, message } when the link is dead
+// 19 §UC-GL-003 — the pre-open payload (`page: 'preopen'`) when nothing is orderable
+// through this token: a standing link with no open round, or a per-cycle link whose
+// cycle is not open. `null` in every other state.
+const preopen = ref(null)
 const cycle = ref(null)
 const host = ref(null)
 const products = ref([])
@@ -65,12 +81,50 @@ const availability = ref({})
 const cart = ref({}) // { `${productId}-${variant}`: quantity }
 const activeTab = ref('')
 
+// 19 §UC-GL-007 item 2 — the open hero's „Viac o tom, ako to funguje" fold. Collapsed
+// on every load; deliberately NOT persisted (no storage, no query param).
+const showHow = ref(false)
+
 const showCheckout = ref(false)
 const submitting = ref(false)
 const checkoutError = ref('')
 const guestName = ref('')
 const guestPhone = ref('')
 const guestEmail = ref('')
+
+// ——— 20 §UC-GP-003 — the delivery choice (GP-T3) ———
+// `cycle.parcel_enabled` (0/1) and `cycle.parcel_fee` (already rounded) ride on the
+// listing since GP-T1. The server re-reads both at submit — these are DISPLAY only.
+// `GuestDeliveryChoice` renders nothing when parcels are off, so a parcel-off round's
+// checkout modal is element-for-element today's.
+const parcelEnabled = computed(() => Number(cycle.value?.parcel_enabled) === 1)
+const parcelFee = computed(() => {
+  const n = Number(cycle.value?.parcel_fee)
+  return Number.isFinite(n) ? n : 0
+})
+const deliveryMethod = ref('via_host') // 'via_host' | 'packeta'
+const packetaAddress = ref('')
+// ⚠ Guarded on `parcelEnabled` too, so a stale 'packeta' can never reach a payload
+// or a label on a round that does not offer it.
+const isPacketa = computed(() => parcelEnabled.value && deliveryMethod.value === 'packeta')
+// The subtitle's amount — cart + fee. ⚠ The CARTBAR stays product-only (PO 2026-09-19):
+// it is the cart, not the invoice; the modal subtitle is where the charge is stated.
+const checkoutFee = computed(() => (isPacketa.value ? parcelFee.value : 0))
+
+// 19 §UC-GL-007 / GL-T4's seam — step 3's „…, alebo si ju nechajte poslať cez Packetu."
+// is true exactly when the guest could choose Packeta here. ONE computed for all three
+// `GuestSteps` mounts so none can drift. ~~⚠ The PRE-OPEN page has no round to read a
+// parcel flag from … the clause stays off there~~ → GP-T7 (PO decision (3) 2026-09-24):
+// the pre-open card ALWAYS shows the clause (PO: Packeta in ~all future rounds) —
+// EXCEPT the stale `open_elsewhere` variant, which follows that OPEN round's real
+// `next.parcel_enabled` (orchestrator decision 2026-09-25: a PLANNED round's flag is
+// the column default 0, never a decision, so it is not read). The open page keeps
+// reading the live round's `parcel_enabled`.
+function preopenParcelAllowed(next) {
+  if (next?.kind === 'open_elsewhere') return Number(next.parcel_enabled) === 1
+  return true
+}
+const stepsPacketa = computed(() => (preopen.value ? preopenParcelAllowed(preopen.value.next) : parcelEnabled.value))
 
 // Confirmation state (§UC-GSO-003)
 const confirmation = ref(null) // { order, items, payment, status_url }
@@ -95,6 +149,13 @@ const guestCartLines = computed(() => cartItems.value.map((item) => ({
   amount: item.total,
 })))
 
+// 20 §UC-GP-004 — g-confirm's fee line: an EXTRA after the items (`lib/order-lines.js`
+// — the fee is never an item), from the SERVER's stored `delivery_fee`, never from the
+// cart. `0`/absent ⇒ no line at all, so a via_host confirmation is today's list.
+const confirmationExtras = computed(() => deliveryExtras(confirmation.value?.order?.delivery_fee)
+  .map((extra) => ({ ...extra, testid: 'confirm-delivery-fee' })))
+const confirmationPoint = computed(() => confirmation.value?.order?.packeta_address || '')
+
 const confirmationLines = computed(() => (confirmation.value?.items || []).map((item) => ({
   key: item.id,
   name: item.product_name,
@@ -110,6 +171,11 @@ const confirmationLines = computed(() => (confirmation.value?.items || []).map((
 const purposes = computed(() => purposeOrder(products.value))
 
 watchEffect(() => {
+  // 19 §UC-GL-006 item 7 — the pre-open state has its own title (DRAFT, en dash).
+  if (preopen.value) {
+    document.title = 'Objednávky sú zatvorené – Podpultovka'
+    return
+  }
   document.title = cycle.value?.name ? `${cycle.value.name} - Objednávka` : 'Objednávka'
 })
 
@@ -118,15 +184,22 @@ onMounted(load)
 async function load() {
   loading.value = true
   unavailable.value = null
+  preopen.value = null
   try {
     const data = await api.getGuestOrderPage(token.value)
+    if (data?.page === 'preopen') {
+      preopen.value = data
+      waitlistDone.value = readWaitlistMemory()
+      return
+    }
     cycle.value = data.cycle
     host.value = data.host
     products.value = data.products || []
     availability.value = availabilityMap(data.availability)
   } catch (e) {
-    // 404 = no such link, 410 = deactivated or cycle closed. Both dead ends, but
-    // they need different wording.
+    // 404 = no such link, 410 = deactivated (link or host). Both dead ends, but
+    // they need different wording. (A closed cycle is no longer a 410 — it is the
+    // pre-open payload above, 19 §UC-GL-002.)
     unavailable.value = {
       status: e.status || 0,
       reason: e.reason || null,
@@ -144,9 +217,12 @@ async function load() {
 // "Odkaz už nie je aktívny" was the server's own sentence repeated as its own
 // explanation.
 //
-// ⚠ The three variants are safe to discriminate HERE and nowhere else. The server
-// names the reason explicitly on this route (404 unknown / 410 `inactive` / 410
-// `closed`, GSO-T3), so the page is reading a fact, not guessing. GSO-T10's "the
+// ⚠ The variants are safe to discriminate HERE and nowhere else. The server
+// names the reason explicitly on this route (404 unknown / 410 `inactive`, GSO-T3),
+// so the page is reading a fact, not guessing. ~~410 `closed`~~ — the third variant
+// is REMOVED (19 §UC-GL-006 business rules): the listing never answers it any more,
+// a non-open cycle renders the pre-open state instead, so its copy and its branch
+// were dead code. GSO-T10's "the
 // page cannot distinguish a lock from a dead link" is about the STATUS page, whose
 // payload only clears `editable` — and that page correspondingly never routes to a
 // dead card, it shows the read-only banner (§UC-GX-006).
@@ -159,29 +235,173 @@ const unavailableTitle = computed(() => {
   if (!unavailable.value) return ''
   if (unavailable.value.status === 404) return 'Odkaz neexistuje'
   if (unavailable.value.reason === 'inactive') return 'Odkaz už nie je aktívny'
-  if (unavailable.value.reason === 'closed') return 'Objednávanie je uzavreté'
   return 'Objednávka nie je dostupná'
 })
 
 const unavailableText = computed(() => {
   if (!unavailable.value) return ''
-  if (unavailable.value.status === 404) return 'Tento odkaz sme nenašli. Skontrolujte, či je skopírovaný celý.'
+  if (unavailable.value.status === 404) return 'Tento odkaz sme nenašli. Skontroluj, či je skopírovaný celý.'
   if (unavailable.value.reason === 'inactive') return 'Kolega, ktorý objednávku organizuje, tento odkaz deaktivoval.'
-  if (unavailable.value.reason === 'closed') return 'Cyklus sa medzičasom uzamkol — objednávky už neprijímame.'
   return unavailable.value.message
 })
 
+// ================= pre-open (19 §UC-GL-006) — `GLink2 Zatvorené`, transcribed (GL-T5) =================
+// GL-T2 shipped a minimal placeholder here; GL-T5 REPLACES it with the prototype's
+// whole closed state and KEEPS `preopen-hero`. Source order = the prototype's card
+// order: hero (badge, split headline, host + next sentence, roasters line) → „Ako to
+// funguje" (the FULL `GuestSteps`) → „Dajte mi vedieť" (only when the SERVER says
+// `waitlist.available` — an affordance the server would refuse is never on screen)
+// → the faded read-only preview (`GuestProductGrid readonly`, never a fork).
+// No cartbar, no checkout, no invite CTA (item 6): the page has nothing to order.
+//
+// DRAFT copy (19 §OPEN → PO sign-off on staging), vy-form, no „kolo"/„cyklus" —
+// reproduce, never improve. The stale sentence names the host in the nominative
+// („Požiadajte Janka") exactly as 19 drafts it — a PO question, not a fix here.
+//
+// The `planned_date` date is module 17's LONG form (`fmtDay`, „3. októbra"); the
+// parenthesis is ~~`lib/plural.js weeksAwayLabel(daysUntil(opens_at))` — 19's own
+// draft register („už tento týždeň" under a week)~~ → GP-T7 (PO decision (4)
+// 2026-09-24): `lib/cycle-stages.js inWeeksText(opens_at)`, the friend register
+// („o 3 dni", 17 O6) — ONE home. It is `null` for TODAY and a past `opens_at`, and
+// `null` omits the parenthesis (never an empty „()").
+const preopenStale = computed(() => preopen.value?.next?.kind === 'open_elsewhere')
+const preopenTitle = computed(() => (preopenStale.value
+  ? { lead: 'Táto objednávka je už', hl: 'uzavretá' }
+  : { lead: 'Objednávky sú', hl: 'zatvorené' }))
+const preopenHost = computed(() => preopen.value?.host?.first_name || '')
+// { kind, date, away, note } — the template lays the pieces out (the date is bold).
+const preopenNext = computed(() => {
+  const next = preopen.value?.next
+  if (next?.kind === 'planned_date') {
+    const date = fmtDay(next.opens_at)
+    if (date) return { kind: 'date', date, away: inWeeksText(next.opens_at) }
+  }
+  if (next?.kind === 'planned_note' && next.plan_note) return { kind: 'note', note: next.plan_note }
+  return { kind: 'unknown' }
+})
+const waitlistAvailable = computed(() => preopen.value?.waitlist?.available === true)
+// A preview with no products renders nothing at all — never the grid's empty banner
+// (whose shipped copy says „cykle", and a closed round with no catalogue has nothing
+// to show anyway).
+const preview = computed(() => {
+  const p = preopen.value?.preview
+  return p && Array.isArray(p.products) && p.products.length > 0 ? p : null
+})
+const previewTab = ref('')
+// The read-only grid still takes the cart as a two-way model; it never writes it.
+const PREVIEW_CART = Object.freeze({})
+
+// ——— „Dajte mi vedieť" (19 §UC-GL-004 via `api.joinGuestWaitlist`) ———
+// The server bounds are mirrored as `maxlength` (120 / 32). The button is disabled
+// while pending or while either field is blank — and `joinWaitlist()` re-checks both,
+// because a `disabled` attribute does not stop a dispatched click (CLAUDE.md).
+const waitlistName = ref('')
+const waitlistPhone = ref('')
+const waitlistConsent = ref(true) // default CHECKED (§UC-GL-006 item 4)
+const waitlistPending = ref(false)
+const waitlistError = ref('')
+// `null` = show the form; `{ whatsapp_opt_in }` = show the banner (which of the two).
+const waitlistDone = ref(null)
+const waitlistReady = computed(() => Boolean(waitlistName.value.trim() && waitlistPhone.value.trim()))
+
+async function joinWaitlist() {
+  if (!GUEST_WAITLIST || waitlistPending.value || !waitlistReady.value || !waitlistAvailable.value) return
+  waitlistPending.value = true
+  waitlistError.value = ''
+  const optIn = waitlistConsent.value === true
+  try {
+    await api.joinGuestWaitlist(token.value, {
+      name: waitlistName.value.trim(),
+      phone: waitlistPhone.value.trim(),
+      whatsapp_opt_in: optIn
+    })
+    waitlistDone.value = { whatsapp_opt_in: optIn }
+    rememberWaitlist(optIn)
+  } catch (e) {
+    // 409 `open`: the round opened while the guest was reading — there is nothing to
+    // wait for any more, so the page re-reads itself into the live listing (GL-T3's
+    // seam). Every other refusal (400 with `field`, 404/410, 429) is the server's own
+    // sentence in the card's danger banner; the typed values stay.
+    if (e.status === 409 && e.reason === 'open') {
+      load()
+      return
+    }
+    waitlistError.value = e.message || 'Nepodarilo sa odoslať. Skús to znova.'
+  } finally {
+    waitlistPending.value = false
+  }
+}
+
+// Per-viewer convenience ONLY (19 §UC-GL-006 item 4) — never a source of truth; the
+// server's (host, phone) idempotency is. Every access is try/catch'd: private mode or
+// blocked storage must never break the page.
+//
+// ⚠ DEVIATION, recorded (GL-T5): 19 writes the value as a bare ISO string. It is an
+// object `{ at, whatsapp_opt_in, cycle_id }` instead, for two reasons the bare string
+// cannot carry: (1) the reload must show the SAME one of the two banners the submit
+// showed; (2) the memory must expire with the round — `cycle_id` is the preview's
+// round (= the server row's `cycle_id`, `lastClosedCycle()` at signup), so once a new
+// round has opened and closed (and the row has been notified or purged) the form
+// comes back instead of a banner that is no longer true. The token lives only in
+// storage, never in the DOM.
+const WAITLIST_STORAGE_KEY = 'gorifi_guest_waitlist'
+
+function readWaitlistStore() {
+  try {
+    const raw = localStorage.getItem(WAITLIST_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : {}
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch (e) {
+    return {}
+  }
+}
+
+function readWaitlistMemory() {
+  const entry = readWaitlistStore()[token.value]
+  if (!entry || typeof entry !== 'object') return null
+  const round = preopen.value?.preview?.cycle?.id ?? null
+  if ((entry.cycle_id ?? null) !== round) return null
+  return { whatsapp_opt_in: entry.whatsapp_opt_in === true }
+}
+
+function rememberWaitlist(optIn) {
+  try {
+    const store = readWaitlistStore()
+    store[token.value] = {
+      at: new Date().toISOString(),
+      whatsapp_opt_in: optIn,
+      cycle_id: preopen.value?.preview?.cycle?.id ?? null
+    }
+    localStorage.setItem(WAITLIST_STORAGE_KEY, JSON.stringify(store))
+  } catch (e) {
+    // The banner is already on screen; losing the memory costs one re-render of the form.
+  }
+}
+
 function openCheckout() {
   checkoutError.value = ''
+  // 20 §UC-GP-003 item 7 — every open starts at the default method with an empty
+  // point (guests have no profile to prefill from; name/phone/e-mail keep the
+  // shipped behaviour and survive a close/reopen).
+  deliveryMethod.value = 'via_host'
+  packetaAddress.value = ''
   showCheckout.value = true
 }
 
 // Decision 7: name + mobile required (>= 9 digits), email optional. The server
 // validates the same rule — this is only so the guest finds out immediately.
 function validateIdentity() {
-  if (!guestName.value.trim()) return 'Zadajte svoje meno.'
+  if (!guestName.value.trim()) return 'Zadaj svoje meno.'
   const digits = guestPhone.value.replace(/\D/g, '')
-  if (digits.length < 9) return 'Zadajte telefónne číslo (aspoň 9 číslic).'
+  if (digits.length < 9) return 'Zadaj telefónne číslo (aspoň 9 číslic).'
+  // 20 §UC-GP-003 item 4 — Packeta only, in this position; the server re-checks
+  // (GP-T1: the same three rules, the mailer's `EMAIL_SHAPE` mirrored in `lib/`).
+  if (isPacketa.value) {
+    if (!packetaAddress.value.trim()) return 'Zadaj výdajné miesto Packety.'
+    const email = guestEmail.value.trim()
+    if (!email) return 'Pri doručení Packetou zadaj e-mail.'
+    if (!EMAIL_SHAPE.test(email)) return 'Zadaj platný e-mail.'
+  }
   return ''
 }
 
@@ -206,6 +426,14 @@ async function submitOrder() {
     }
     const email = guestEmail.value.trim()
     if (email) payload.guest_email = email
+    // 20 §UC-GP-003 item 5 — the delivery keys ONLY for Packeta. A via_host submit
+    // sends NEITHER key, so its payload stays byte-identical to the shipped one
+    // (`guest-order.spec.js` request-shape pins) — even after Packeta was chosen,
+    // typed into and switched away from.
+    if (isPacketa.value) {
+      payload.use_parcel_delivery = true
+      payload.packeta_address = packetaAddress.value.trim()
+    }
 
     const result = await api.submitGuestOrder(token.value, payload)
     const statusUrl = `${window.location.origin}${result.status_path}`
@@ -285,9 +513,10 @@ function goToStatus() {
        is a uniform `--bg` everywhere. -->
   <div class="app flex flex-col">
     <!-- ======================= g-dead (§UC-GX-010) =======================
-         Dead link: unknown, deactivated (link or host), or a cycle that is no
-         longer open. Three copy variants off the SERVER's own reason code, plus
-         the shipped fallback — see the `unavailableText` note in the script.
+         Dead link: unknown, or deactivated (link or host). Two copy variants off
+         the SERVER's own reason code, plus the shipped fallback — see the
+         `unavailableText` note in the script. (A cycle that is no longer open is
+         the pre-open state below since 19 §UC-GL-002, not a dead card.)
 
          The card FLOATS: the zone takes `flex-1` and centres on both axes, so on
          a tall viewport the card sits in the middle of the halftone background
@@ -328,8 +557,150 @@ function goToStatus() {
           <span class="badge danger" style="font-size:13px;padding:6px 14px;transform:rotate(-2deg);display:inline-flex;align-items:center;gap:4px"><NeoIcon name="lock" /><span>Slepá ulička</span></span>
           <h1 class="h-screen text-[32px] sm:text-[38px]">{{ unavailableTitle }}</h1>
           <div class="sub" style="font-size:14px">{{ unavailableText }}</div>
-          <div class="sub" style="font-size:13.5px">Ak ste odkaz dostali od kolegu, požiadajte ho o nový.</div>
+          <div class="sub" style="font-size:13.5px">Ak máš odkaz od kolegu, požiadaj ho o nový.</div>
         </div>
+      </div>
+    </template>
+
+    <!-- ======================= pre-open (19 §UC-GL-006) =======================
+         `GLink2 Zatvorené`, transcribed — see the script note. The page column is the
+         prototype's (max 760, padding 16/28, gap 14). `line-height:normal` on every
+         UNCLASSED text wrapper (A10 is a class list and cannot reach them); where the
+         canon DECLARES a line-height (the headline 1.12, the host sentence 1.45, the
+         `.display` 22px title 1) that value is used (the PI-T12 rule). -->
+    <template v-else-if="preopen">
+      <GuestBrandHeader subtitle="Objednávka cez odkaz" closed />
+
+      <div
+        class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7 pb-2 sm:pb-2 flex flex-col gap-[14px] flex-1"
+        data-testid="preopen-page"
+      >
+        <!-- ① Hero. ⚠ Nothing new in here may carry `.badge` or `.mono`: shipped pins
+             strict-resolve `preopen-hero .badge` (GL-T4 rule) — the roasters line uses
+             its own scoped classes for exactly that reason. -->
+        <div class="card hl" data-testid="preopen-hero" style="padding:16px;display:flex;flex-direction:column;gap:12px;line-height:normal">
+          <span class="badge" style="align-self:flex-start">Zatvorené</span>
+          <!-- The prototype breaks the last word onto its own highlighted line. The
+               space before `<br>` is load-bearing: it keeps the headline's TEXT a
+               sentence („Objednávky sú zatvorené") for every reader of textContent. -->
+          <h1 class="h-screen text-[30px] sm:text-[38px]" style="line-height:1.12">{{ preopenTitle.lead }} <br /><span class="hl" style="display:inline-block;line-height:.95;margin-top:4px">{{ preopenTitle.hl }}</span></h1>
+          <div v-if="preopenStale" class="sub" style="font-size:14.5px;line-height:1.45;overflow-wrap:anywhere" data-testid="preopen-next">
+            <span data-user-copy>{{ preopenHost }}</span> má práve otvorenú novú objednávku. Požiadaj <span data-user-copy>{{ preopenHost }}</span> o aktuálny odkaz.
+          </div>
+          <div v-else class="sub" style="font-size:14.5px;line-height:1.45;overflow-wrap:anywhere">
+            <b style="color:var(--ink)" data-user-copy>{{ preopenHost }}</b> ťa pozýva do spoločnej objednávky výberovej kávy.
+            <span data-testid="preopen-next">
+              <template v-if="preopenNext.kind === 'date'">Ďalšia objednávka sa otvorí približne <b style="color:var(--ink)">{{ preopenNext.date }}</b><template v-if="preopenNext.away"> ({{ preopenNext.away }})</template>.</template>
+              <template v-else-if="preopenNext.kind === 'note'">Ďalšia objednávka: <span data-user-copy style="white-space:pre-line" data-testid="preopen-plan-note">{{ preopenNext.note }}</span></template>
+              <template v-else>O ďalšej objednávke dáme vedieť.</template>
+            </span>
+          </div>
+          <GuestRoastersLine />
+        </div>
+
+        <!-- ② „Ako to funguje" — the FULL `GuestSteps` (GL-T4's component, its default
+             layout). `packeta` = `stepsPacketa`, like the two open-page mounts (GP-T3) —
+             ~~which is false on this branch: no round, no parcel flag~~ → GP-T7: ON on
+             this branch, except `open_elsewhere` follows the open round's flag (see its note). -->
+        <div class="card" style="padding:16px" data-testid="preopen-steps">
+          <div class="field-lbl" style="margin-bottom:12px">Ako to funguje</div>
+          <GuestSteps :host-name="preopenHost" :packeta="stepsPacketa" />
+        </div>
+
+        <!-- ③ „Dajte mi vedieť" — only when the server says the signup is possible
+             (`waitlist.available`, 19 §UC-GL-003 rule 3). Success REPLACES the card
+             with the ok banner (one of two, by the consent the guest sent). -->
+        <!-- Parked while `GUEST_WAITLIST` is off (lib/features.js, PO 2026-09-29). -->
+        <template v-if="GUEST_WAITLIST && waitlistAvailable">
+          <div v-if="waitlistDone" class="banner ok" data-testid="waitlist-done" role="status">
+            <span class="dot"></span>
+            <div style="min-width:0;overflow-wrap:anywhere;line-height:normal">
+              <template v-if="waitlistDone.whatsapp_opt_in"><b>Dáme vedieť.</b> Keď sa objednávka otvorí, príde ti správa na WhatsApp s odkazom od <span data-user-copy>{{ preopenHost }}</span>.</template>
+              <template v-else><b>Dáme vedieť.</b> Keď sa objednávka otvorí, <span data-user-copy>{{ preopenHost }}</span> ti pošle odkaz.</template>
+            </div>
+          </div>
+          <div v-else class="card" style="padding:16px;display:flex;flex-direction:column;gap:12px" data-testid="waitlist-form">
+            <div style="line-height:normal">
+              <div class="display" style="font-size:22px;line-height:1">Daj mi vedieť</div>
+              <div class="sub" style="margin-top:4px">Pošleme jednu správu, keď sa objednávka otvorí. Nič viac.</div>
+            </div>
+            <div>
+              <label class="field-lbl" for="waitlist-name">Meno</label>
+              <input
+                id="waitlist-name"
+                v-model="waitlistName"
+                class="inp"
+                type="text"
+                data-testid="waitlist-name"
+                placeholder="Meno a priezvisko"
+                autocomplete="name"
+                maxlength="120"
+                required
+              />
+            </div>
+            <div>
+              <label class="field-lbl" for="waitlist-phone">Mobil</label>
+              <input
+                id="waitlist-phone"
+                v-model="waitlistPhone"
+                class="inp"
+                type="text"
+                data-testid="waitlist-phone"
+                placeholder="09xx xxx xxx"
+                inputmode="tel"
+                autocomplete="tel"
+                maxlength="32"
+                required
+              />
+            </div>
+            <!-- The three-zone checkbox row (02 §UC-DS-009 — the shipped call sites'
+                 pattern): the box has its own handler, the text its `@click`, the gap
+                 `@click.self`. `min-height:44px` makes the whole row the ≥44px tap
+                 target §UC-GL-006 asks for (the box itself is the canon's 24px). -->
+            <label
+              data-testid="waitlist-consent"
+              style="display:flex;align-items:center;gap:10px;font-size:13.5px;line-height:normal;cursor:pointer;min-height:44px"
+              @click.self="waitlistConsent = !waitlistConsent"
+            >
+              <NeoCheckbox v-model="waitlistConsent" aria-label="Súhlasím so správou cez WhatsApp" />
+              <span @click="waitlistConsent = !waitlistConsent">Súhlasím so správou cez WhatsApp</span>
+            </label>
+            <div v-if="waitlistError" class="banner danger slim" role="alert">
+              <span class="dot"></span><span style="min-width:0;overflow-wrap:anywhere" data-testid="waitlist-error">{{ waitlistError }}</span>
+            </div>
+            <button
+              type="button"
+              class="btn accent block"
+              data-testid="waitlist-submit"
+              :disabled="waitlistPending || !waitlistReady"
+              @click="joinWaitlist"
+            >Chcem vedieť, keď sa otvorí</button>
+          </div>
+        </template>
+
+        <!-- ④ The faded preview of the last round (item 5): only with products. The
+             `.p2-ro` wrapper (A13's canon port: opacity .55 + pointer-events none;
+             `user-select:none` is this view's scoped addition, per 19) covers the tab
+             strip AND the cards, as in the prototype. The grid is the SHIPPED one in
+             `readonly` — no steppers, no stock bars, no lightbox, no tab stops. Cards
+             beyond the server's 12 do not exist; there is no „zobraziť viac". -->
+        <template v-if="preview">
+          <div
+            data-testid="preopen-preview-head"
+            style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-top:6px;line-height:normal"
+          >
+            <span class="field-lbl" style="margin:0;min-width:0;overflow-wrap:anywhere">Minulá ponuka · <span data-user-copy>{{ preview.cycle?.name }}</span></span>
+            <span class="sub mono" style="white-space:nowrap;font-size:12px">len na prezretie</span>
+          </div>
+          <div class="p2-ro gx-ro" data-testid="preopen-preview">
+            <GuestProductGrid
+              :model-value="PREVIEW_CART"
+              v-model:active-tab="previewTab"
+              :products="preview.products"
+              readonly
+            />
+          </div>
+        </template>
       </div>
     </template>
 
@@ -398,8 +769,16 @@ function goToStatus() {
                "bare `toFixed(2)`, the heading states the unit" rule is superseded, and
                `line-height:normal` moved into the component, which needs it for its
                own non-A10 column classes. -->
-          <CartLineList :items="confirmationLines" />
+          <CartLineList :items="confirmationLines" :extras="confirmationExtras" />
         </div>
+        <!-- 20 §UC-GP-004 — where the bag goes, below the card, only for a Packeta order.
+             The point is person-typed ⇒ `data-user-copy` (FUP-T22); the label is ours. -->
+        <div
+          v-if="confirmationPoint"
+          class="sub"
+          style="margin-top:-4px;overflow-wrap:anywhere;line-height:normal"
+          data-testid="confirm-packeta-address"
+        >Balík ti doručí Packeta: <span data-user-copy>{{ confirmationPoint }}</span></div>
 
         <!-- Shipped gate kept (§UC-GX-004 item 3): with neither IBAN nor Revolut
              there is nothing for the modal to open onto — the reference alone is a
@@ -426,7 +805,7 @@ function goToStatus() {
              link token) but is now undocumented on screen, deliberately. Do not
              "restore" it without asking — it was cut on purpose. -->
         <div>
-          <label class="field-lbl">Na tomto odkaze uvidíte stav objednávky - uložte si ho!</label>
+          <label class="field-lbl">Na tomto odkaze uvidíš stav objednávky - ulož si ho!</label>
           <NeoCopyRow :value="confirmation.status_url" data-testid="guest-status-url" />
         </div>
 
@@ -489,15 +868,49 @@ function goToStatus() {
               <NeoIcon name="cal" />
               <span>Objednávka do: {{ cycle.expected_date }}</span>
             </div>
+            <!-- 19 §UC-GL-007 (GL-T4) — the 3-step strip, the roasters row and the
+                 „Viac o tom, ako to funguje" toggle: below the „Spoločná objednávka ·
+                 organizuje" line (and its deadline, which belongs to it) and ABOVE the
+                 badge row (PO: the open-state chrome and the badge row stay as SHIPPED,
+                 19 D6). The 12px steps are the prototype's `gap:12` hero rhythm,
+                 written as margins because the shipped hero is a block, not a flex
+                 column. The detail is `v-if` (collapsed by default, not persisted) — a
+                 closed toggle leaves no second step list in the DOM. -->
+            <GuestSteps compact :host-name="host?.first_name || ''" :packeta="stepsPacketa" data-testid="guest-steps-compact" style="margin-top:12px" />
+            <div class="flex flex-wrap items-center justify-between gap-2" style="margin-top:12px">
+              <GuestRoastersLine />
+              <button
+                type="button"
+                class="btn ghost sm"
+                style="color:var(--accent);font-weight:700;padding:0"
+                data-testid="guest-steps-toggle"
+                :aria-expanded="showHow ? 'true' : 'false'"
+                :aria-controls="showHow ? 'guest-steps-detail' : null"
+                @click="showHow = !showHow"
+              >{{ showHow ? 'Skryť' : 'Viac o tom, ako to funguje' }}</button>
+            </div>
+            <div
+              v-if="showHow"
+              id="guest-steps-detail"
+              data-testid="guest-steps-detail"
+              style="border-top:2px solid rgba(10,10,10,0.12);padding-top:12px;margin-top:12px"
+            >
+              <GuestSteps :host-name="host?.first_name || ''" :packeta="stepsPacketa" />
+            </div>
             <div class="flex flex-wrap gap-[6px] mt-3">
               <span class="badge acc">Login netreba</span>
               <span class="badge">Platba prevodom</span>
               <span class="badge acc-o">Tovar odovzdá {{ host?.first_name }}</span>
+              <!-- 20 §UC-GP-003 item 6 (PO 2026-09-19: YES) — a FOURTH badge, only when the
+                   round sends parcels; `portal2.jsx:160`'s „+{eur(fee)}" wording (a badge
+                   is not a line, so EUR — the explainer's badge reads the same). A
+                   parcel-off round keeps the shipped three (`guest-order-shell.spec.js`). -->
+              <span v-if="parcelEnabled" class="badge acc-o" data-testid="guest-hero-packeta">Packeta +{{ fmtEur(parcelFee) }}</span>
             </div>
             <!-- Prototype copy, replacing the shipped "Účet netreba. Vyberte si
                  tovar, na konci zadajte meno a telefón." — "Účet netreba" now lives
                  in the appbar chip, so repeating it here would be twice. -->
-            <div class="sub" style="margin-top:10px;font-size:13px">Vyberte si tovar, na konci zadáte len meno a telefón.</div>
+            <div class="sub" style="margin-top:10px;font-size:13px">Vyberieš si tovar, na konci zadáš len meno a telefón.</div>
             <!-- Admin-entered copy: the prototype is silent on it, but dropping it
                  would be a behaviour regression, so it is retained as one more
                  `.sub` line (§UC-GX-001 item 4, last bullet). -->
@@ -584,7 +997,8 @@ function goToStatus() {
          spec-verbatim "Zavrieť" footer buttons. Nothing in this footer may be
          named as a substring of another control in the same dialog either.
 
-         The three inputs keep the GSO-T3 bounds as `maxlength` (120 / 32 / 160) —
+         The three inputs keep the GSO-T3 bounds as `maxlength` (120 / 32 / 160 — and
+         the Packeta point, inside `GuestDeliveryChoice`, its own 160) —
          the server re-validates, but a silently truncated 200 000-char name is what
          the mirror prevents. -->
     <NeoModal
@@ -592,7 +1006,10 @@ function goToStatus() {
       title="Dokončiť objednávku"
       @close="showCheckout = false"
     >
-      <template #subtitle>Suma na úhradu: <b class="mono" style="color:var(--ink)">{{ fmtEur(cartTotal) }}</b>. Platba prevodom, tovar vám odovzdá {{ host?.first_name }}.</template>
+      <!-- 20 §UC-GP-003 item 3 — the amount is cart + fee; the tail names who hands the
+           goods over. ⚠ ONE LINE: the two branches are `<template>`s so a via_host
+           subtitle stays byte-identical to the shipped one. -->
+      <template #subtitle>Suma na úhradu: <b class="mono" style="color:var(--ink)">{{ fmtEur(cartTotal + checkoutFee) }}</b>. Platba prevodom, <template v-if="isPacketa">balík ti doručí Packeta.</template><template v-else>tovar ti odovzdá {{ host?.first_name }}.</template></template>
 
       <!-- `.m-body` is itself a 12px-gap flex column, so each field is a bare
            wrapper with a native `label.field-lbl` (no `ui/label`) — the same
@@ -622,8 +1039,17 @@ function goToStatus() {
           maxlength="32"
         />
       </div>
+      <!-- 20 §UC-GP-003 item 1 — below Mobil, above E-mail (whose label depends on it).
+           Renders NOTHING on a parcel-off round. -->
+      <GuestDeliveryChoice
+        v-model="deliveryMethod"
+        v-model:packeta-address="packetaAddress"
+        :host-first-name="host?.first_name || ''"
+        :parcel-fee="parcelFee"
+        :parcel-enabled="parcelEnabled"
+      />
       <div>
-        <label class="field-lbl" for="guest-email">E-mail (nepovinné)</label>
+        <label class="field-lbl" for="guest-email">{{ isPacketa ? 'E-mail *' : 'E-mail (nepovinné)' }}</label>
         <input
           id="guest-email"
           v-model="guestEmail"
@@ -634,6 +1060,11 @@ function goToStatus() {
           inputmode="email"
           maxlength="160"
         />
+        <!-- 20 §UC-GP-003 item 2 (roadmap §19, recast) — only while Packeta is chosen. -->
+        <div v-if="isPacketa" class="field-help" data-testid="guest-email-help">Packeta ti naň pošle informácie o zásielke.</div>
+        <!-- PO 2026-09-29: what the OPTIONAL e-mail buys — the UC-GR-011 confirmation mail
+             carrying the status link. The Packeta branch keeps its own line above. -->
+        <div v-else class="field-help" data-testid="guest-email-confirm-help">Pošleme ti naň potvrdenie s odkazom, kde uvidíš stav objednávky.</div>
       </div>
 
       <!-- Client-side messages verbatim (§UC-GX-003); server errors keep the
@@ -667,6 +1098,8 @@ function goToStatus() {
       :reference="confirmation.payment.reference"
       :iban="confirmation.payment.iban"
       :revolut-username="confirmation.payment.revolut_username"
+      :variable-symbol="confirmation.payment.variable_symbol"
+      :creditor-name="confirmation.payment.creditor_name"
       @close="showPaymentModal = false"
     />
   </div>
@@ -755,6 +1188,14 @@ function goToStatus() {
   padding: 6px 2px;
   font-size: 14.5px;
   color: var(--ink);
+}
+
+/* 19 §UC-GL-006 item 5 — the preview's third property. The theme's `.p2-ro` (A13)
+   carries the canon's opacity + pointer-events; `user-select:none` is 19's addition,
+   kept here rather than edited into the canon port. */
+.gx-ro {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 @media (max-width: 400px) {

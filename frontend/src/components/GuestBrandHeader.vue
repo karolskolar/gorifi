@@ -17,20 +17,36 @@
 //     caller can fork it.
 //
 // Only `subtitle` varies per screen ("Objednávka cez odkaz", "Objednávka
-// odoslaná", "Vaša objednávka", "Úprava objednávky"), which is why it is the
-// component's only prop. The default is the prototype's own
+// odoslaná", "Vaša objednávka", "Úprava objednávky"), which is why it ~~is the
+// component's only prop~~ was its only prop until GL-T5's boolean `closed` (below). The default is the prototype's own
 // (`sub || "Spoločná objednávka"`).
 //
 // ⚠ NO leading slot / back chevron: a guest arrived from a chat message, not from
 // a list inside this app, so there is nowhere in-app to go back to.
+//
+// ── `closed` (19 §UC-GL-006 item 1, GL-T5) ──────────────────────────────────────
+// The pre-open page (`GLink2 Zatvorené`) is the ONE guest screen whose chrome says
+// something different: the „Bez účtu" chip becomes the lock chip (`.chip.p2-lock`,
+// the friend appbar's own class — `friends-theme.css` A13 — glyph only, `title`
+// „Objednávky sú zatvorené") and the ticker switches to `GUEST_TICKER_CLOSED`.
+// ⚠ Still NO free-text ticker prop: a BOOLEAN picks between two module constants,
+// so no caller can fork the ticker (06 §UC-GX-001's intent survives, 19 resolved
+// conflict 2). The prototype's „ĎALŠIA OBJEDNÁVKA O 4 TÝŽDNE" is demo data — a
+// constant cannot carry a count, and the date lives in the hero. The lock chip is
+// `aria-hidden` like the friend one (`FriendPortal.vue`): the hero's „Zatvorené"
+// badge and headline already say it, so a second announcement would be noise.
+// DRAFT copy (19 §OPEN, PO staging sign-off).
 
 import BrandChrome from '@/components/neo/BrandChrome.vue'
+import NeoIcon from '@/components/neo/NeoIcon.vue'
 
 defineProps({
-  subtitle: { type: String, default: 'Spoločná objednávka' }
+  subtitle: { type: String, default: 'Spoločná objednávka' },
+  closed: { type: Boolean, default: false }
 })
 
 const GUEST_TICKER = '+++ KÁVA POD PULTOM +++ BEZ ÚČTU · BEZ REČÍ +++ POŠLI ODKAZ ĎALEJ +++'
+const GUEST_TICKER_CLOSED = '+++ OBJEDNÁVKY ZATVORENÉ +++ DÁME VEDIEŤ, KEĎ SA OTVORÍ +++'
 
 // `BrandChrome` is itself multi-root (appbar + hazard + ticker), so this wrapper
 // is multi-root too and Vue has no single node to put fallthrough attrs on. The
@@ -40,13 +56,14 @@ defineOptions({ inheritAttrs: false })
 </script>
 
 <template>
-  <BrandChrome :ticker="GUEST_TICKER">
+  <BrandChrome :ticker="closed ? GUEST_TICKER_CLOSED : GUEST_TICKER">
     <template #titles>
       <span class="t">Pod<span style="color:var(--accent)">pult</span>ovka</span>
       <span class="s">{{ subtitle }}</span>
     </template>
     <template #trailing>
-      <span class="chip acc">Bez účtu</span>
+      <span v-if="closed" class="chip p2-lock" aria-hidden="true" title="Objednávky sú zatvorené"><NeoIcon name="lock" /></span>
+      <span v-else class="chip acc">Bez účtu</span>
     </template>
   </BrandChrome>
 </template>

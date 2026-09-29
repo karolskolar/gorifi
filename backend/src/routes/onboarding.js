@@ -402,6 +402,23 @@ router.post('/onboarding/:token', abuseLimiter, (req, res) => {
   // supports it and nothing else needs to change.
   const session = createFriendSession(friendId);
 
+  // ⚠ 18 §UC-PI-013 (PI-T9) — THIS PAYLOAD CARRIES NO `explainer_seen_at`, AND THAT
+  // IS A DECISION, NOT AN OVERSIGHT. §UC-PI-013 names FOUR login payloads (both
+  // /friends/auth branches, Google, magic-link); this fifth mint site is not one of
+  // them because it does not return a `friend` object at all — `OnboardingPage.vue`
+  // writes `gorifi_friend_auth` from these four fields and routes to the portal, so
+  // the friend arrives by the localStorage RESTORE path, which §UC-PI-013 explicitly
+  // says is not a login. A freshly registered friend therefore does NOT meet the
+  // explainer on the visit they registered in; they meet it at their next ordinary
+  // login, with the stamp still NULL (it is never written here).
+  //
+  // That is the same conclusion magic-link.js:417 reaches by the same rule, and it is
+  // worth being uncomfortable about here: a registration is the most newcomer-ish
+  // moment the app has, and the gate exists for newcomers. Growing the field into
+  // this payload would NOT fix it — it would make every RELOAD re-open the gate,
+  // which is what the restore rule forbids. If the product wants the explainer on
+  // the registration visit, the fix is a ROUTE (land on `/ako-to-funguje` from
+  // `OnboardingPage.vue`), not a field. Recorded so the next reader does not plumb it.
   res.status(201).json({
     token: session.token,
     expiresAt: session.expiresAt,

@@ -1,5 +1,11 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding, gotoCycle as portalGotoCycle } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // RD-FO-3 — the sticky cart footer `.cartbar` (04 §UC-FO-009) and the behaviour
 // contract it must not regress (§UC-FO-008).
@@ -65,13 +71,15 @@ let host = null
 
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-    timeout: TIMEOUT,
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+  timeout: TIMEOUT,
+})
 
 async function makeCycle(label, over = {}) {
   const name = `E2E RDFO3 ${label} ${uniq}`
@@ -151,10 +159,11 @@ async function signIn(page) {
 // A cold deep-link to /cycle/:id bounces to `/` even with a valid stored session —
 // `FriendOrder.vue`'s onMounted delegates restore to `FriendPortal`.
 async function gotoCycle(page, cycle) {
-  await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
-  await page.getByRole('heading', { name: cycle.name, exact: true }).click()
-  await expect(page).toHaveURL(new RegExp(`/cycle/${cycle.id}$`))
+  // ⚠ PI-T3 · 18 §UC-PI-019 item 3 — the cycle CARDS are retired (§UC-PI-005), so
+  // `goto('/')` + a heading click is no longer a route to an order screen.
+  // `portalGotoCycle` (helpers/portal.js) is the ONE home of that navigation; it
+  // still enters cold and still proves state came back from the server.
+  await portalGotoCycle(page, cycle.id)
   await expect(page.locator('.app .cartbar')).toBeVisible()
 }
 
@@ -267,6 +276,62 @@ test.describe('UC-FO-009 — `.cartbar` is a direct child of `.app`', () => {
     })
     expect(atEnd.bottom, 'still on the viewport bottom when scrolled to the end').toBe(atEnd.vh)
     expect(atEnd.below, 'no layout gap left behind by the removed spacer').toBe(0)
+  })
+
+  test('⚠ THE LANDING VARIANT: nested one level, it is STILL sticky / 0 / 50', async ({ page }) => {
+    // PI-T3 · 18 §UC-PI-005: „`.cartbar` stays a THEME class
+    // (`:where(.app,.modal-layer) .cartbar`), so it keeps its sticky footer whether it
+    // is a direct child of `.app` or nested one level."
+    //
+    // ⚠ THIS IS THE ASSERTION THE TEST ABOVE CANNOT MAKE. That one pins
+    // `parentIsApp === true`, which is the deep link's shape and is the shape this
+    // row moves AWAY from on `/`: on the landing the bar lives inside
+    // `FriendPortalSession.vue`'s page column, two elements down. If the geometry
+    // were ever re-stated as a Tailwind utility (or moved into `FriendOrder`'s
+    // `<style scoped>`) it would keep working on `/cycle/:id` and silently un-stick on
+    // the landing — which is the whole screen a friend now lands on.
+    await page.setViewportSize({ width: 378, height: 420 })
+    await signIn(page)
+    await page.goto('/')
+    await expectLanding(page)
+    // The landing's round is the newest OPEN one, which this file's fixtures make
+    // this very cycle — asserted, because the whole test is about the wrong screen
+    // otherwise.
+    await expect(page.getByTestId('portal-landing')).toHaveAttribute('data-landing-state', 'open')
+    await expect(page.locator('[data-fo-mode="landing"]')).toHaveCount(1)
+
+    const geom = await page.evaluate(() => {
+      const el = document.querySelector('.cartbar')
+      const app = document.querySelector('.app')
+      const cs = getComputedStyle(el)
+      return {
+        parentIsApp: el.parentElement === app,
+        insideApp: app.contains(el),
+        depthFromApp: (() => { let n = 0, e = el; while (e && e !== app) { n += 1; e = e.parentElement } return n })(),
+        position: cs.position,
+        bottom: cs.bottom,
+        zIndex: cs.zIndex,
+        borderTop: `${cs.borderTopWidth} ${cs.borderTopStyle} ${cs.borderTopColor}`,
+        boxShadow: cs.boxShadow,
+        rectBottom: Math.round(el.getBoundingClientRect().bottom),
+        vh: window.innerHeight,
+        scrollable: document.documentElement.scrollHeight - window.innerHeight,
+      }
+    })
+
+    expect(geom.insideApp, 'the theme rule is a DESCENDANT selector').toBe(true)
+    expect(geom.parentIsApp, 'on the landing it is NOT a direct child — that is the point').toBe(false)
+    expect(geom.depthFromApp, 'nested inside the session page column').toBeGreaterThan(1)
+
+    // …and every computed value is byte-identical to the deep link's.
+    expect(geom.position).toBe('sticky')
+    expect(geom.bottom).toBe('0px')
+    expect(geom.zIndex).toBe('50')
+    expect(geom.borderTop).toBe('4px solid rgb(10, 10, 10)')
+    expect(geom.boxShadow).toBe('rgb(255, 45, 135) 0px -6px 0px 0px')
+
+    expect(geom.scrollable, 'the fixture must actually scroll').toBeGreaterThan(0)
+    expect(geom.rectBottom, 'pinned to the viewport bottom at rest').toBe(geom.vh)
   })
 
   test('the bar is the SAME element on both tabs — it belongs to neither panel', async ({ page }) => {

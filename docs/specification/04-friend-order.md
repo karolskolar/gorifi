@@ -60,7 +60,8 @@
 4. **Success-modal copy.** The repo distinguishes "Vaša objednávka bola úspešne
    odoslaná!" vs "Vaša objednávka bola aktualizovaná!". The prototype uses one static
    subtitle for both paths. Prototype copy is final → both first submit and update show
-   **"Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia cyklu."**; the
+   ~~"…až do uzamknutia cyklu."~~ **"Objednávka bola odoslaná. Môžete ju upraviť až do ~~uzamknutia~~ uzavretia objednávok."**
+   (re-worded by 18 §UC-PI-017, PI-T11); the
    "aktualizovaná" variant is **dropped**.
 5. **Dirty-warning dismissability.** The prototype's cartbar warning has no close
    affordance; the shipped behavior (CLAUDE.md 2026-02-03) lets the user dismiss it, and
@@ -116,7 +117,7 @@ the auth restore this view depends on) landed.
    - `#trailing`: locked/planned/completed → `span.chip` with `NeoIcon name="lock"`;
      open → `span.chip.acc` with text **"Otvorené"**.
    - `ticker`: open → `"+++ OBJEDNÁVKY OTVORENÉ +++ NEHOVOR O TOM NAHLAS +++"`;
-     locked → `"+++ OBJEDNÁVKY UZAMKNUTÉ +++ DRŽ JAZYK ZA ZUBAMI +++"` (verbatim).
+     locked → `"+++ OBJEDNÁVKY ~~UZAMKNUTÉ~~ UZAVRETÉ +++ DRŽ JAZYK ZA ZUBAMI +++"` (verbatim).
    - The chrome is NOT sticky and scrolls away (02 UC-DS-005/006). This **removes** the
      current sticky header — the top edge belongs to `.cat-tabs` (UC-FO-004).
 3. Page column below the chrome: `max-width:760px`, centered, `width:100%`, padding
@@ -124,7 +125,7 @@ the auth restore this view depends on) landed.
    `flex:1` (prototype inline layout).
 4. Loading state: centered `.sub` text "Načítavam..." (copy unchanged). Fatal error
    state (error && !friend): `.banner.danger` with `<b>Chyba:</b> {error}` + a
-   `.btn` "Späť na zoznam cyklov" → `goBack()`.
+   `.btn` ~~"Späť na zoznam cyklov"~~ **"Späť na ponuku"** (18 §UC-PI-017/018) → `goBack()`.
 5. `document.title` logic, `onMounted` auth restore/redirect, `loadOrderData()`,
    pickup-locations + payment-settings fetches: **unchanged**.
 
@@ -158,8 +159,8 @@ the auth restore this view depends on) landed.
 
 | Condition (shipped, unchanged) | Renders |
 |---|---|
-| `isLocked` | `.banner.warn`: `<b>Objednávky sú uzamknuté.</b> Už nie je možné meniť objednávku.` |
-| `isSubmitted && !isLocked && cartItems.length > 0 && !hasUnsubmittedChanges` | `.banner.ok`: `<b>Vaša objednávka bola odoslaná!</b> Stále ju môžete upraviť až do uzamknutia.` |
+| `isLocked` | `.banner.warn`: `<b>Objednávky sú ~~uzamknuté~~ uzavreté.</b> Už nie je možné meniť objednávku.` |
+| `isSubmitted && !isLocked && cartItems.length > 0 && !hasUnsubmittedChanges` | `.banner.ok`: `<b>Vaša objednávka bola odoslaná!</b> Stále ju môžete upraviť až do ~~uzamknutia~~ uzavretia.` |
 | otherwise | nothing |
 
 Below it (independent, unchanged conditions): transient `error` → `.banner.danger.slim`
@@ -329,6 +330,10 @@ mono tasting notes, variant boxes.
       <div class="flex flex-wrap gap-[6px] mt-2">
         <span v-if="product.roast_type" class="badge" style="font-size:11px;padding:2px 7px">{{ product.roast_type }}</span>
         <span v-if="product.roastery" class="badge acc-o" style="font-size:11px;padding:2px 7px">{{ product.roastery }}</span>
+        <!-- ⚠ SUPERSEDED by 18 §UC-PI-014 (PI-T8, 2026-09-20): the class is no longer
+             unconditional. A roastery `lib/roasters.js` knows renders PLAIN and becomes a
+             popover trigger (`role="button"` only on a match); an unknown one keeps
+             `acc-o`. The 11px/2px-7px geometry and the badge ORDER are unchanged. -->
       </div>
       <div v-if="product.description1" class="sub" style="margin-top:7px;font-size:13px">{{ product.description1 }}</div>
       <div v-if="product.description2" class="mono" style="font-size:12.5px;color:var(--ink-faint);margin-top:2px">{{ product.description2 }}</div>
@@ -375,7 +380,9 @@ border, `3px 3px 0` magenta shadow, magenta price — theme-provided).
   (README §Interactions); persistence policy is UC-FO-008's.
 
 **Acceptance criteria:** card matches `03-shot.png` — display-caps name, two small
-badges (plain + highlight `acc-o`), gray spec line, mono notes, two `.vbox`es side by
+badges (plain + highlight `acc-o` — ⚠ the roastery badge's class is CONDITIONAL since
+18 §UC-PI-014 / PI-T8; see the note in the structure block above), gray spec line, mono
+notes, two `.vbox`es side by
 side; adding qty flips the box to `.sel` with magenta shadow and price; the `.pimg`
 frame's height tracks the text block (items-stretch), 2px ink border, radius 8.
 
@@ -408,7 +415,9 @@ ceiling — shipped math, prototype look.
   the friend's own uncommitted cart, exactly as today.
 - **Display is kg** (prototype copy): `kg(g) = (g/1000)` formatted with up to 2
   decimals, trailing zeros stripped, dot decimal, suffix `" kg"` — `250 → "0.25 kg"`,
-  `1000 → "1 kg"`, `1250 → "1.25 kg"`. Fill is always accent magenta; the sold-out
+  `1000 → "1 kg"`, `1250 → "1.25 kg"`. ⚠ ONE home since FUP-T24:
+  `frontend/src/lib/kg.js kgLabel(grams)`, grams in and the whole „X kg" string out.
+  Import it; never restate the expression. Fill is always accent magenta; the sold-out
   signal is the **"Vypredané"** label in danger red (repo state, kept), not a bar color.
 - The stepper ceiling stays in the view (02 UC-DS-008 forbids a max in the primitive):
   the `+` path runs the shipped `canIncrement(productId, variant)` — an increment that
@@ -672,7 +681,7 @@ the profile default updates only when the checkbox was ticked.
 **Goal:** the post-submit modal with inline payment.
 
 **Composition:** `NeoModal`, `closable`, `title="Hotovo!"`,
-`subtitle="Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia cyklu."`
+`subtitle="Objednávka bola odoslaná. Môžete ju upraviť až do ~~uzamknutia~~ uzavretia objednávok."` (was „…cyklu.", 18 §UC-PI-017)
 (both paths — resolved conflict #4). Footer: `button.btn` "OK".
 
 **Body (top to bottom; payment block only when `hasPaymentSettings`):**
@@ -762,7 +771,7 @@ completed}` — shipped definition, unchanged).
 **Business rules (deltas from the open state; everything else renders identically):**
 
 - Chrome: `chip` with lock icon instead of "Otvorené"; locked ticker copy (UC-FO-001).
-- `.banner.warn` "Objednávky sú uzamknuté…" as the only status banner (UC-FO-002).
+- `.banner.warn` "Objednávky sú ~~uzamknuté~~ uzavreté…" as the only status banner (UC-FO-002).
 - Every `NeoStepper` gets `disabled` (`.stepper.disabled` — 0.35 opacity,
   pointer-events none, plus the `disabled` attribute); `setQuantity` guards stay as
   belt-and-braces.

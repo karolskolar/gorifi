@@ -1,5 +1,11 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding, gotoCycle as portalGotoCycle } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // 40×30 RGBA PNG, left half opaque magenta, right half fully transparent — the
 // product-photo fixture for the frameless image rules (product decision
@@ -71,13 +77,15 @@ let eater = null
 
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-    timeout: TIMEOUT,
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+  timeout: TIMEOUT,
+})
 
 async function makeCycle(label, over = {}) {
   const name = `E2E RDFO2 ${label} ${uniq}`
@@ -157,10 +165,11 @@ async function signIn(page) {
 // ⚠ A cold deep-link to /cycle/:id bounces to `/` even with a valid stored
 // session — `FriendOrder.vue`'s `onMounted` delegates restore to `FriendPortal`.
 async function gotoCycle(page, cycle) {
-  await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
-  await page.getByRole('heading', { name: cycle.name, exact: true }).click()
-  await expect(page).toHaveURL(new RegExp(`/cycle/${cycle.id}$`))
+  // ⚠ PI-T3 · 18 §UC-PI-019 item 3 — the cycle CARDS are retired (§UC-PI-005), so
+  // `goto('/')` + a heading click is no longer a route to an order screen.
+  // `portalGotoCycle` (helpers/portal.js) is the ONE home of that navigation; it
+  // still enters cold and still proves state came back from the server.
+  await portalGotoCycle(page, cycle.id)
   await expect(page.locator('.app .appbar')).toBeVisible()
 }
 
@@ -266,13 +275,22 @@ test.describe('UC-FO-005 — coffee product card', () => {
     // which loads after Tailwind and would otherwise win at equal specificity.
     expect(nameStyle.lh).toBe('18.05px')
 
-    // Two SMALL badges: plain, then the highlighted `acc-o` roastery.
+    // Two SMALL badges: the roast type, then the roastery.
     const badges = card.locator('.badge')
     await expect(badges).toHaveCount(2)
     await expect(badges.nth(0)).toHaveText('Medium roast')
     await expect(badges.nth(1)).toHaveText('Goriffee')
     expect((await badges.nth(0).getAttribute('class')).split(/\s+/)).not.toContain('acc-o')
-    expect((await badges.nth(1).getAttribute('class')).split(/\s+/)).toContain('acc-o')
+    // ⚠ RETARGETED BY PI-T8 — SANCTIONED, 18 §UC-PI-014. „The roastery badge is
+    // always `acc-o`" was this file's shipped claim and it is SUPERSEDED, not
+    // dropped: the class now comes from `frontend/src/lib/roasters.js`'s
+    // `badgeClass` — Goriffee PLAIN, Robo `acc-o`, an UNKNOWN roastery keeps
+    // today's `acc-o` (so nothing about a free-text roastery changed). The badge
+    // is also a popover trigger on a match, which is why `role` is asserted here
+    // too. All three cases, both directions, live in `portal-explainer.spec.js`
+    // §6; what stays here is this card's own composition claim.
+    expect((await badges.nth(1).getAttribute('class')).split(/\s+/)).not.toContain('acc-o')
+    await expect(badges.nth(1)).toHaveAttribute('role', 'button')
     expect(await badges.nth(0).evaluate((el) => getComputedStyle(el).fontSize)).toBe('11px')
 
     // ⚠ RETARGETED 2026-08-13 (Noto Sans Condensed) and again 2026-08-18: the
