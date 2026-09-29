@@ -3,6 +3,7 @@ import { ADMIN_PASSWORD, FRIENDS_PASSWORD } from '../fixtures.js'
 import { assertReadable, code, HAS_SRC, NEEDS_SRC } from '../helpers/source-pins.js'
 import { ackExplainer, expectLanding, drawer, openMenu, menuGo, gotoCycle, landingStateModal, dismissLandingState, logout } from '../helpers/portal.js'
 import { makeAdmin } from '../helpers/admin.js'
+import { STANDING_GUEST_LINK, STANDING_PARKED } from '../helpers/features.js'
 
 // PI-T3 — 18 §UC-PI-005 (the landing, OPEN state), §UC-PI-011 (the two new share
 // entry points), §UC-PI-016 (the cycle list, the gear and the archive retired) and
@@ -527,7 +528,39 @@ test.describe('PI-T3 · 18 §UC-PI-011 — two entry points, ONE dialog', () => 
     await expect(page.locator('.modal-layer')).toHaveCount(0)
   })
 
+  test('PARKED standing link: a round that is not OPEN has no share affordance at all — no cartbar icon, no drawer row', async ({ page }) => {
+    // PO 2026-09-29 (`frontend/src/lib/features.js`): until module 21's WhatsApp
+    // notifications ship, the standing link is hidden and 05 §UC-KG-002's
+    // „a locked or closed round offers no share affordance" is back in force.
+    test.skip(STANDING_GUEST_LINK, 'only while the standing link is parked')
+    const friend = await makeFriend('Parked')
+    await signIn(page, friend)
+    await page.route('**/api/friends/*/balance', (r) => r.fulfill({ json: { balance: 0, transactions: [] } }))
+    const standingGets = []
+    page.on('request', (r) => { if (/\/api\/guest-links\/standing/.test(r.url())) standingGets.push(r.url()) })
+
+    for (const [state, list] of [
+      ['locked', [cycleRow({ n: 1, status: 'locked' })]],
+      ['closed', [cycleRow({ n: 2, status: 'completed' }), cycleRow({ n: 3, status: 'planned' })]],
+    ]) {
+      await stubCycles(page, list)
+      await open(page)
+      await expect(page.getByTestId('portal-landing'), state)
+        .toHaveAttribute('data-landing-state', state === 'locked' ? 'locked' : 'closed')
+      await dismissLandingState(page)
+      await expect(cartbarShare(page), `${state}: no cartbar icon`).toHaveCount(0)
+      const menu = await openMenu(page)
+      // Non-vacuity: the drawer rendered its other six rows.
+      await expect(menu.locator('.p2-mi'), `${state}: six rows`).toHaveCount(6)
+      await expect(menu.getByText('Zdieľať s kolegami'), `${state}: no share row`).toHaveCount(0)
+      await page.keyboard.press('Escape')
+      await expect(drawer(page)).toHaveCount(0)
+    }
+    expect(standingGets, 'nothing read (and so MINTED) a standing link').toEqual([])
+  })
+
   test('⚠ a round that is not OPEN: no cartbar icon, but the drawer row opens the STANDING-only dialog (GL-T6c)', async ({ page }) => {
+    test.skip(!STANDING_GUEST_LINK, STANDING_PARKED)
     // ⚠⚠ SANCTIONED REWRITE, GL-T6c (19 §UC-GL-008 acceptance clause 1 + R9.4 „the
     // host can copy the link any time"). This test used to pin „a round that is not
     // open offers no share affordance AT ALL" (05 §UC-KG-002 via 18 §UC-PI-004's
@@ -594,6 +627,7 @@ test.describe('PI-T3 · 18 §UC-PI-011 — two entry points, ONE dialog', () => 
   })
 
   test('GL-T6c · from ANOTHER view on a closed round the row goes to `/`, opens the dialog, and does NOT stack the state modal', async ({ page }) => {
+    test.skip(!STANDING_GUEST_LINK, STANDING_PARKED)
     // The pending-open path (PI-T3) on a landing that raises its own state modal once
     // per session: arriving from `/zostatok` would otherwise put the „Objednávky sú
     // zatvorené" NeoModal and the share dialog on one layer. The explicit request
@@ -1034,7 +1068,8 @@ test.describe('PI-T4 · 18 §UC-PI-006 — the landing, closed state', () => {
     // ⚠ SANCTIONED EDIT, GL-T6c: 6 → 7. A closed landing WITH a catalogue now carries
     // drawer item 4 (the standing link, 19 §UC-GL-008); the claim here — the drawer is
     // reachable once the modal is dismissed — is unchanged.
-    await expect(menu.locator('.p2-mi')).toHaveCount(7)
+    // Parked standing link (lib/features.js, PO 2026-09-29): back to 6.
+    await expect(menu.locator('.p2-mi')).toHaveCount(STANDING_GUEST_LINK ? 7 : 6)
     await page.keyboard.press('Escape')
     await expect(drawer(page)).toHaveCount(0)
   })
@@ -1545,6 +1580,7 @@ test.describe('PI-T5 · 18 §UC-PI-007 — the landing, locked state', () => {
   })
 
   test('GL-T6c · locked WITH an own order: the Kolegovia tab stays, and the drawer row opens the standing-only dialog', async ({ page }) => {
+    test.skip(!STANDING_GUEST_LINK, STANDING_PARKED)
     // Flow 6 of the GL-T6c e2e pass: the tabgroup test above proves the Kolegovia
     // TAB survives a locked round with a real submitted order; this proves the
     // drawer's „Zdieľať s kolegami" ROW reaches the same `FriendOrder` mount and

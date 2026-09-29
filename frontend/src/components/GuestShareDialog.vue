@@ -19,6 +19,7 @@
 import { ref, computed, watch } from 'vue'
 import api from '../api'
 import { ordersAccusativeLabel, waitingLabel } from '@/lib/plural'
+import { STANDING_GUEST_LINK } from '@/lib/features'
 import NeoModal from '@/components/neo/NeoModal.vue'
 import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
@@ -168,7 +169,10 @@ const standingUrl = computed(() =>
 // §UC-GL-008 item 3 — native share PREFERS the standing URL; the per-cycle one is
 // the fallback only when the standing read FAILED (never merely „not loaded yet",
 // or a quick tap would share the per-cycle URL and a slow one the standing URL).
-const shareUrl = computed(() => standingUrl.value || (standingError.value ? guestUrl.value : ''))
+// ⚠ `STANDING_GUEST_LINK` off (PO 2026-09-29, `lib/features.js`): the per-cycle URL, always.
+const shareUrl = computed(() => (STANDING_GUEST_LINK
+  ? standingUrl.value || (standingError.value ? guestUrl.value : '')
+  : guestUrl.value))
 
 watch(() => props.open, async (isOpen) => {
   const seq = ++standingSeq
@@ -178,7 +182,8 @@ watch(() => props.open, async (isOpen) => {
   standingRegenError.value = ''
   confirmStanding.value = false
   standingSaving.value = false
-  if (!isOpen) return
+  // Parked (lib/features.js): no read at all — the GET would MINT a token lazily.
+  if (!isOpen || !STANDING_GUEST_LINK) return
 
   try {
     const data = await api.getStandingGuestLink()
@@ -336,7 +341,7 @@ async function nativeShare() {
          confirm is `div.standing-confirm`, NOT `.confirmbox` (whose copy and single
          `<b>` are pinned); no button name here matches `/Zdieľať/` except the ONE
          native-share button, which is absent without `navigator.share`. -->
-    <div data-testid="standing-link" class="gsd-section">
+    <div v-if="STANDING_GUEST_LINK" data-testid="standing-link" class="gsd-section">
       <div class="field-lbl gsd-lbl">Stály odkaz pre kolegov</div>
       <div v-if="standingError" class="banner danger slim" role="alert" data-testid="standing-error">
         <span class="dot"></span>
@@ -437,9 +442,10 @@ async function nativeShare() {
         <div v-if="link.active" class="field-help" data-testid="share-standing-copy">Ten istý odkaz platí pre všetkých kolegov - každý si cez neho vytvorí vlastnú objednávku. Pre ďalšieho kolegu nevytvárajte nový odkaz.</div>
 
         <!-- Native share sheet — rendered only where navigator.share exists, and
-             HERE only as the fallback after a failed standing read (GL-T6b). -->
+             HERE only as the fallback after a failed standing read (GL-T6b) — or
+             always while the standing link is parked (`lib/features.js`). -->
         <button
-          v-if="canNativeShare && standingError"
+          v-if="canNativeShare && (standingError || !STANDING_GUEST_LINK)"
           type="button"
           class="btn accent block"
           @click="nativeShare"

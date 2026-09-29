@@ -61,6 +61,7 @@ import { stripComments } from '../helpers/source-pins.js'
 import { BANNED } from '../helpers/vocabulary.js'
 import { collectAppCopy } from '../helpers/copy-sweep.js'
 import { gotoCycle } from '../helpers/portal.js'
+import { STANDING_GUEST_LINK, STANDING_PARKED } from '../helpers/features.js'
 
 const DB_PATH = process.env.DB_PATH || ''
 const NEEDS_DB = 'needs direct DB access — set DB_PATH to the database the server runs on'
@@ -3256,7 +3257,42 @@ function gl6bPlant(hostId, name, { notified = null } = {}) {
   }
 }
 
+// PO 2026-09-29 — the standing link is PARKED on the friend surface until module 21's
+// WhatsApp notifications ship (`frontend/src/lib/features.js`). The GL-T6b block below
+// skips while it is; this one pins what the parked dialog IS. The standing API routes
+// and their tests above are untouched — a URL already handed out keeps working.
+test.describe('PARKED · the host share dialog without the standing section', () => {
+  test.skip(STANDING_GUEST_LINK, 'only while the standing link is parked')
+
+  test('an open round shows ONLY the per-cycle section, reads no standing link, and native share sends the per-cycle URL', async ({ page }) => {
+    const host = await makeHost('Parked')
+    const cycle = await makeCycle('Parked')
+    const link = await shareLink(host, cycle.id)
+    const standingGets = []
+    page.on('request', (r) => { if (/\/api\/guest-links\/standing/.test(r.url())) standingGets.push(r.url()) })
+
+    await gl6bSignIn(page, host, { share: true })
+    const dialog = await gl6bOpen(page)
+    const origin = await page.evaluate(() => window.location.origin)
+
+    // Non-vacuity: the per-cycle section rendered, with its link.
+    await expect(dialog.getByTestId('per-cycle-link').getByTestId('guest-link-url')).toHaveText(`${origin}/g/${link.token}`)
+    await expect(dialog.getByTestId('per-cycle-label')).toHaveText('Odkaz len na túto objednávku')
+    await expect(dialog.getByTestId('standing-link')).toHaveCount(0)
+    await expect(dialog.getByText('Stály odkaz pre kolegov')).toHaveCount(0)
+    await expect(dialog.getByRole('button', { name: 'Nový stály odkaz' })).toHaveCount(0)
+
+    const share = dialog.getByRole('button', { name: 'Zdieľať odkaz' })
+    await expect(share).toHaveCount(1)
+    await expect(dialog.getByTestId('per-cycle-link').getByRole('button', { name: 'Zdieľať odkaz' })).toHaveCount(1)
+    await share.click()
+    expect((await page.evaluate(() => window.__shared)).map((d) => d.url)).toEqual([`${origin}/g/${link.token}`])
+    expect(standingGets, 'the dialog never read — and so never MINTED — a standing link').toEqual([])
+  })
+})
+
 test.describe('GL-T6b · 19 §UC-GL-008 — the host share dialog: standing section first', () => {
+  test.skip(!STANDING_GUEST_LINK, STANDING_PARKED)
   test('with an open round BOTH sections render, standing FIRST; the copy row is the standing URL (text + clipboard); exact copy; no count at 0; the per-cycle section is intact below its label', async ({ page, context }) => {
     await context.grantPermissions(['clipboard-read', 'clipboard-write'])
     const host = await makeHost('Gl6bOrder')

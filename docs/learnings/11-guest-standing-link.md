@@ -1138,3 +1138,42 @@ carries GL-T6's pointer.
   specs. Files that ran reconcile against `--list`: 94 of 94. Box load average was 1.2–1.7 on 8 cores,
   so the ~14 min is load, not a regression. The server log has no `disk image is malformed`; its three
   „malformed" hits are the image-upload specs' own `multipart-malformed` 400s.
+
+## §PARKED — the standing link is hidden on the friend surface (PO 2026-09-29)
+
+**Why:** the standing link's main value is its pre-open waitlist („zapíšu sa, aby dostali
+správu"), and that message is module 21's WhatsApp notification, which does not exist yet and will
+not ship in the next round either. The PO does not want colleagues promised a message nobody sends.
+Only the per-cycle link stays, with its existing copy. The standing link comes back together
+with WhatsApp notifications.
+
+**How:** ONE switch, `frontend/src/lib/features.js STANDING_GUEST_LINK` (dependency-free, `false`).
+- `GuestShareDialog.vue`: the `standing-link` section is `v-if` on it. The standing GET is
+  skipped (it MINTS lazily, so a parked dialog must not call it). `shareUrl` is the per-cycle URL,
+  and the per-cycle „Zdieľať odkaz" renders whenever `navigator.share` exists (before, it rendered
+  only as the failed-standing-read fallback).
+- `FriendPortalSession.vue shareRowShown`: `open` only again. On locked/closed the dialog would
+  be empty.
+- `FriendOrder.vue openShareDialog()`: refuses when there is no `shareCycleId`, the same guard
+  expressed at the instance.
+- NOT touched: all backend routes (standing resolve, waitlist, rotation), admin `FriendDetail`'s
+  standing card, and every token already issued. A standing URL someone already holds keeps
+  working, and its pre-open page still shows the waitlist form.
+
+**Tests:** `e2e/helpers/features.js` reads the SAME flag out of the source file as text (sync, so a
+`describe` can skip at collection time; without the source tree it assumes `false`).
+- The GL-T6b dialog describe and the three GL-T6c portal-landing tests `test.skip(!STANDING_GUEST_LINK)`.
+- `share-dialog.spec.js`'s two native-share payloads and `portal-menu`/`portal-landing`'s row
+  counts branch on the flag.
+- Two `PARKED` tests pin the hidden state and `test.skip(STANDING_GUEST_LINK)`:
+  - `guest-standing-link.spec.js`: an open round shows only the per-cycle section, no standing
+    GET is made, and native share sends the per-cycle URL.
+  - `portal-landing.spec.js`: locked/closed have no cartbar icon, six drawer rows, and no
+    standing GET.
+
+**To un-park:** flip the flag. The skipped tests come back, the PARKED ones skip, and nothing
+else needs editing.
+
+⚠ **Still reachable while parked:** a *per-cycle* link opened after its round closed shows the
+stale pre-open page. With no other round open, that page carries the waitlist form, including the
+WhatsApp consent. This was put to the PO on 2026-09-29 as an open question.

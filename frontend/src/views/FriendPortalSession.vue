@@ -117,6 +117,7 @@ import { historyBadge } from '@/lib/history-badges'
 // explainer describes the process in general, the timeline reports where ONE round
 // is now (argued in that component's header).
 import PortalExplainer from '@/components/PortalExplainer.vue'
+import { STANDING_GUEST_LINK } from '@/lib/features'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
 import NeoModal from '@/components/neo/NeoModal.vue'
 import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
@@ -1163,6 +1164,9 @@ const closedOrder = ref(null)
 const shareRowShown = computed(() => {
   const l = landing.value
   if (l.state === 'open') return true
+  // Parked standing link (PO 2026-09-29, `lib/features.js`): locked/closed would open
+  // a dialog with nothing left in it, so the row is `state === 'open'` only again.
+  if (!STANDING_GUEST_LINK) return false
   if (l.state === 'locked') return !!l.currentCycle
   return !!l.catalogCycle
 })

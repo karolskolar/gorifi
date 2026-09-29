@@ -6,6 +6,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { expectLanding, gotoCycle as portalGotoCycle } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 import { makeAdmin } from '../helpers/admin.js'
+import { STANDING_GUEST_LINK, STANDING_PARKED } from '../helpers/features.js'
 
 // RD-KG-2 — 05 §UC-KG-006/007: `GuestShareDialog.vue` recomposed onto
 // `NeoModal` (02 §UC-DS-010) + `NeoCopyRow` (02 §UC-DS-011).
@@ -560,7 +561,8 @@ test.describe('UC-KG-006 — native share', () => {
       title: 'Objednávka Podpultovka',
       text: `Pridajte sa k mojej objednávke - ${cycle.name}`,
       // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — item 3: native share prefers the STANDING url)
-      url: `${origin}${(await standingOf(host)).standing.url_path}`,
+      // — and back to the per-cycle url while the standing link is parked (lib/features.js).
+      url: STANDING_GUEST_LINK ? `${origin}${(await standingOf(host)).standing.url_path}` : `${origin}/g/${link.token}`,
     }])
   })
 
@@ -610,7 +612,8 @@ test.describe('UC-KG-006 — native share', () => {
         title: 'Objednávka Podpultovka',
         text: 'Pridajte sa k mojej objednávke - objednávka',
         // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — item 3: native share prefers the STANDING url)
-        url: `${origin}${(await standingOf(host)).standing.url_path}`,
+        // — and back to the per-cycle url while the standing link is parked (lib/features.js).
+        url: STANDING_GUEST_LINK ? `${origin}${(await standingOf(host)).standing.url_path}` : `${origin}/g/${link.token}`,
       }])
     })
 })

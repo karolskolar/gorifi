@@ -11,6 +11,7 @@ import api, { getFriendsPassword, getFriendsAuthInfo, getFriendsToken } from '..
 // it. Nothing under `@/components/ui/` is imported here any more; keep it that
 // way (02 §UC-DS-004 rule 4 makes shadcn admin-only).
 import GuestShareDialog from '@/components/GuestShareDialog.vue'
+import { STANDING_GUEST_LINK } from '@/lib/features'
 import GuestSubOrders from '@/components/GuestSubOrders.vue'
 import BrandChrome from '@/components/neo/BrandChrome.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
@@ -340,6 +341,9 @@ const showShareModal = ref(false)
  * this file; the cartbar icon sets the same flag.
  */
 function openShareDialog() {
+  // Parked standing link (`lib/features.js`): a read-only mount has no per-cycle
+  // section either, so the dialog would open EMPTY — refuse instead.
+  if (!STANDING_GUEST_LINK && !shareCycleId.value) return
   showShareModal.value = true
 }
 

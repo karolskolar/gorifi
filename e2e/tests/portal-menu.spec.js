@@ -2,6 +2,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 import { ackExplainer, expectLanding, expectNoLanding, drawer, openMenu, menuGo, logout, dismissLandingState } from '../helpers/portal.js'
 import { makeAdmin } from '../helpers/admin.js'
+import { STANDING_GUEST_LINK, STANDING_PARKED } from '../helpers/features.js'
 
 // PI-T2 — 18 §UC-PI-004, the hamburger drawer (`NeoDrawer.vue`), and
 // §UC-PI-019 item 17's `portal-menu.spec.js`.
@@ -197,9 +198,12 @@ test.describe('PI-T2 · 18 §UC-PI-004 — the drawer rows', () => {
     await dismissLandingState(page)
     await openMenu(page)
     const locked = await rows(page)
-    expect(locked.map((r) => r.label)).toEqual(SEVEN)
-    expect(locked.find((r) => r.label === 'Zdieľať s kolegami').sub, 'no count is fetched for a round that is not open')
-      .toBe('Pošlite odkaz kolegom')
+    // Parked standing link (lib/features.js, PO 2026-09-29): the row is `open`-only again.
+    expect(locked.map((r) => r.label)).toEqual(STANDING_GUEST_LINK ? SEVEN : SEVEN.filter((l) => l !== 'Zdieľať s kolegami'))
+    if (STANDING_GUEST_LINK) {
+      expect(locked.find((r) => r.label === 'Zdieľať s kolegami').sub, 'no count is fetched for a round that is not open')
+        .toBe('Pošlite odkaz kolegom')
+    }
     await page.keyboard.press('Escape')
 
     // Closed with NO catalogue (a planned round only): nothing mounts `FriendOrder`,
@@ -610,8 +614,9 @@ test.describe('PI-T3 · 18 §UC-PI-004 item 4 — the colleague count', () => {
     // becomes „the row rendered WITHOUT a count": the claim (no count request for a
     // round that is not open) is unchanged and is still the assertion below.
     const seen = await rows(page)
-    expect(seen.length).toBe(7)
-    expect(seen.find((r) => r.label === 'Zdieľať s kolegami').sub).toBe('Pošlite odkaz kolegom')
+    // Parked standing link (lib/features.js): no row at all on a locked landing.
+    expect(seen.length).toBe(STANDING_GUEST_LINK ? 7 : 6)
+    if (STANDING_GUEST_LINK) expect(seen.find((r) => r.label === 'Zdieľať s kolegami').sub).toBe('Pošlite odkaz kolegom')
     await page.waitForTimeout(500)
     expect(asked, 'a closed/locked landing asks nobody about colleagues').toEqual([])
   })
