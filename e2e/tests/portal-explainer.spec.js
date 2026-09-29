@@ -150,10 +150,11 @@ async function stubBalance(page) {
 }
 
 /**
- * The public pickup feed, stubbed — and it RECORDS THE URL it was asked for, because
- * §UC-PI-012 item 4 names the endpoint WITH its argument („`api.getPickupLocations
- * ('coffee')`") and the type filter is the load-bearing half: without it the friend
- * reads a list that includes bakery-only points they can never choose.
+ * The public pickup feed, stubbed — and it RECORDS every URL it was asked for.
+ * ~~§UC-PI-012 item 4 composes the pickup row from `getPickupLocations('coffee')`~~ —
+ * SUPERSEDED by the PO copy pass 2026-09-29: the row is a static sentence and the
+ * explainer asks the feed NOTHING. The stub stays so a stray fetch has somewhere to
+ * land AND so §4 can prove none happens.
  */
 function stubPickup(page, rows) {
   const seen = []
@@ -186,7 +187,7 @@ const roasterCards = (page) => page.getByTestId('explainer-roaster')
 // The six phases, exactly as §UC-PI-012 item 3 writes them. Typed HERE as well as in
 // the component on purpose: a spec that harvested them from the source it is testing
 // would pass against any copy at all.
-const PHASE_TITLES = ['Pauza', 'Ohlásenie objednávky', 'Objednávanie', 'Čakáme na pražiareň', 'Balíme', 'Odovzdanie']
+const PHASE_TITLES = ['Čas na kávu', 'Ohlásenie objednávky', 'Objednávanie', 'Čakáme na pražiareň', 'Balíme', 'Odovzdanie']
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SRC = resolve(HERE, '../../frontend/src')
@@ -381,61 +382,53 @@ test.describe('PI-T8 · 18 §UC-PI-012 item 5 — who we are', () => {
 // 4. „AKO SA KU KÁVE DOSTANETE" (§UC-PI-012 item 4)
 // ═════════════════════════════════════════════════════════════════════════════
 test.describe('PI-T8 · 18 §UC-PI-012 item 4 — the three ways', () => {
-  test('the pickup row is composed from `getPickupLocations(\'coffee\')`', async ({ page }) => {
+  test('the three ways, in the ty-form — the pickup row is static PO copy', async ({ page }) => {
     const friend = await makeFriend('Ways')
     await signIn(page, friend)
     await stubBalance(page)
+    // Points ARE on offer — so the static sentence below is not the empty-feed
+    // fallback in disguise, and a name reaching the page would be a real regression.
     const asked = stubPickup(page, [
       { id: 1, name: 'Tesla', address: 'Ilkovičova 3', active: 1 },
-      // ⚠ address `null` ⇒ the parentheses are OMITTED, not printed empty.
       { id: 2, name: 'Fontána', address: null, active: 1 },
     ])
     await stubCycles(page, [cycleRow({ n: 4 })])
     await open(page)
 
+    await expect(explainer(page).locator('.field-lbl', { hasText: 'Ako sa ku káve dostaneš' })).toHaveCount(1)
     await expect(ways(page)).toHaveCount(3)
     await expect(ways(page).nth(0)).toContainText('Odberné miesto v Bratislave')
-    await expect(ways(page).nth(0).locator('.sub'))
-      .toHaveText('Tesla (Ilkovičova 3) · Fontána. Vyberáte pri objednávke.')
+    await expect(page.getByTestId('explainer-pickup-line')).toHaveText(
+      'Ak si z Petržalky, alebo v okolí Legovej práce, môžem ti kávu doniesť cestou. Ak si tu nový/á, '
+      + 'over si vopred, či mám kapacitu doručovať kam potrebuješ. Stále však môžeš počítať s donáškou cez Packetu.')
     await expect(ways(page).nth(0).locator('.badge')).toHaveText('zdarma')
-    await expect(ways(page).nth(1)).toContainText('Objednávate cez odkaz od priateľa? Kávu prevezme on/ona a odovzdá vám ju.')
+    await expect(ways(page).nth(1)).toContainText('Objednávaš cez odkaz od priateľa? Kávu prevezme on/ona a odovzdá ti ju.')
     await expect(ways(page).nth(1).locator('.badge')).toHaveText('zdarma')
-    await expect(ways(page).nth(2)).toContainText('na ľubovoľný Z-BOX alebo výdajné miesto.')
+    await expect(ways(page).nth(2)).toContainText(
+      'Nie si z Bratislavy? Objednaj si a nechaj poslať cez Packetu — na ľubovoľný Z-BOX alebo výdajné miesto.')
 
-    // ⚠ THE ARGUMENT IS THE POINT. Without `?type=coffee` the endpoint answers every
-    // active point, bakery-only ones included — places no coffee round ever offers.
-    expect(asked.length, 'the feed was asked for exactly once').toBe(1)
-    expect(asked[0], 'asked with the coffee filter').toContain('type=coffee')
+    await expect(explainer(page)).not.toContainText('Tesla')
+    await expect(explainer(page)).not.toContainText('Fontána')
+    expect(asked, 'the explainer no longer asks the pickup feed').toEqual([])
   })
 
-  test('an empty (or failed) feed falls back to the sentence that is true either way', async ({ page }) => {
-    const friend = await makeFriend('NoPoints')
+  test('⚠ ty-form: no vy-form verb survives on the page', async ({ page }) => {
+    const friend = await makeFriend('TyForm')
     await signIn(page, friend)
     await stubBalance(page)
     await stubPickup(page, [])
     await stubCycles(page, [cycleRow({ n: 5 })])
     await open(page)
 
-    await expect(ways(page).nth(0).locator('.sub'))
-      .toHaveText('Odberné miesto si vyberáte pri objednávke.')
-    // Non-vacuity: the OTHER two rows still carry their own copy, so the fallback is
-    // the pickup row's and not „the section failed to render".
+    // The PO copy pass 2026-09-29 moved THIS page (and only this page) to the ty-form.
+    // Non-vacuity: the page rendered its phases and its ways first.
+    await expect(phases(page)).toHaveCount(6)
     await expect(ways(page)).toHaveCount(3)
-  })
-
-  test('a 500 from the feed renders the same fallback and no error surface', async ({ page }) => {
-    const friend = await makeFriend('FeedDown')
-    await signIn(page, friend)
-    await stubBalance(page)
-    await page.route('**/api/pickup-locations*', (r) => r.fulfill({ status: 500, json: { error: 'boom' } }))
-    await stubCycles(page, [cycleRow({ n: 6 })])
-    await open(page)
-
-    await expect(ways(page).nth(0).locator('.sub'))
-      .toHaveText('Odberné miesto si vyberáte pri objednávke.')
-    // §UC-PI-012 has no error state: there is nothing the friend could do about it
-    // and the page's job is to reassure. The page-level banner must stay away.
-    await expect(page.locator('.app .banner.danger')).toHaveCount(0)
+    const text = await explainer(page).innerText()
+    for (const vy of ['môžete', 'dozviete', 'Naklikáte', 'odošlete', 'Vyzdvihnete', 'dostanete',
+      'Objednávate', 'Nie ste', 'Objednajte', 'nechajte', 'Zaplatíte', 'napíšte', 'Vyberáte', ' vám ']) {
+      expect(text.includes(vy), `vy-form „${vy.trim()}" is gone`).toBe(false)
+    }
   })
 
   test('⚠ the Packeta badge is gated on `parcel_enabled` — BOTH directions', async ({ page }) => {
@@ -517,12 +510,12 @@ test.describe('PI-T8 · 18 §UC-PI-012 — heading, payment, the note, the actio
     // scheme module 15 built a dedicated bar for (`lib/payment-links.js paymeLink`).
     // §UC-PI-012 item 6's `OPEN:` („hide it until 15 ships") resolved to KEEP.
     await expect(explainer(page)).toContainText(
-      'Zaplatíte jedným klepnutím cez Revolut alebo bankovú appku (PayMe), alebo prevodom na účet. Bez hotovosti.')
+      'Po zabalení dostaneš sumu a QR kód. Zaplatíš jedným klepnutím cez Revolut alebo bankovú appku (PayMe), alebo prevodom na účet. Bez hotovosti.')
     // The two emphasised scheme names really are `<b>`, not prose.
     await expect(explainer(page).locator('b', { hasText: 'Revolut' })).toHaveCount(1)
   })
 
-  test('the personal note is signed „— Karol" and is hardcoded, not a setting', async ({ page }) => {
+  test('the personal note is signed „— Lego" and is hardcoded, not a setting', async ({ page }) => {
     const friend = await makeFriend('Note')
     await signIn(page, friend)
     await stubCycles(page, [cycleRow({ n: 12 })])
@@ -530,8 +523,9 @@ test.describe('PI-T8 · 18 §UC-PI-012 — heading, payment, the note, the actio
 
     const note = page.getByTestId('explainer-note')
     await expect(note).toContainText(
-      '„Podpultovku robím vo voľnom čase pre kamarátov a kamarátov kamarátov. Ak čokoľvek nesedí, napíšte mi na WhatsApp.“')
-    await expect(note.locator('b')).toHaveText('— Karol')
+      '„Podpultovku robím vo voľnom čase pre kamarátov a kamarátov kamarátov. Ak čokoľvek nesedí, napíš mi na WhatsApp a určite doriešime.“')
+    await expect(note.locator('b')).toHaveText('— Lego')
+    await expect(note.locator('[aria-hidden="true"]')).toHaveText('L')
     // ⚠ NOT the signed-in friend's name, and not an admin setting: the voice is the
     // PO's own. A fixture friend called „PI8 Note …" is on screen elsewhere, so this
     // absence is not vacuous.
@@ -759,23 +753,22 @@ test.describe('PI-T8 · 18 §UC-PI-014 — `lib/roasters.js` has one home and on
 })
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 8. 320 px — zero horizontal overflow with a 120-character pickup name
+// 8. 320 px — zero horizontal overflow
 // ═════════════════════════════════════════════════════════════════════════════
 test.describe('PI-T8 · 18 §UC-PI-012 — the phone floor', () => {
-  test('a 120-char location name does not scroll the document sideways', async ({ page }) => {
+  test('the page does not scroll the document sideways at 320px', async ({ page }) => {
     const friend = await makeFriend('Narrow')
     await signIn(page, friend)
     await stubBalance(page)
-    // 120 characters, and DELIBERATELY UNBREAKABLE: `min-w-0` alone lets a flex item
-    // shrink but an unbreakable token still paints outside it, so this is what makes
-    // `overflow-wrap:anywhere` load-bearing rather than cosmetic.
-    const long = 'Z'.repeat(120)
-    await stubPickup(page, [{ id: 1, name: long, address: null, active: 1 }])
+    // ~~A 120-char unbreakable location name~~ — the pickup row no longer renders admin
+    // data (PO copy pass 2026-09-29), so the floor is measured on the static page with
+    // every conditional (the Packeta fee badge) switched ON.
+    await stubPickup(page, [])
     await stubCycles(page, [cycleRow({ n: 14, status: 'open', parcel_enabled: 1, parcel_fee: 3.5 })])
     await page.setViewportSize({ width: 320, height: 720 })
     await open(page)
 
-    await expect(ways(page).nth(0).locator('.sub')).toContainText(long)
+    await expect(page.getByTestId('explainer-parcel-fee')).toBeVisible()
     const overflow = await page.evaluate(() => ({
       doc: document.documentElement.scrollWidth,
       win: window.innerWidth,

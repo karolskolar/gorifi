@@ -3073,3 +3073,26 @@ row at 378px".
 6. **PI-T3 §2's homeless property stays homeless**, on purpose. It stops being homeless
    the day something reloads `cycles` in-session, and that row inherits the
    `guestCountSeq` guard and owes the test.
+
+## §PO-copy — „Ako to funguje" copy pass (PO 2026-09-29)
+
+The PO rewrote the explainer's copy. `PortalExplainer.vue` changed as follows:
+
+1. **The whole page is TY-form** („môžeš", „dozvieš", „Naklikáš … odošleš", „Vyzdvihneš",
+   „Ako sa ku káve dostaneš", „Objednávaš … odovzdá ti ju", „Nie si z Bratislavy? Objednaj si a
+   nechaj poslať", „dostaneš … Zaplatíš"). It is the ONE friend surface that does this. Every other
+   screen stays vy-form. Note the LandingStateModal captions („Pauza · Objednávky · Doručenie") are
+   a different component and were NOT renamed.
+2. Phase 1 title „Pauza" → **„Čas na kávu"** (its text and the `pause` icon are unchanged).
+3. The „Odberné miesto v Bratislave" row is now a **static sentence** (Petržalka / Legova práca
+   delivery offer). The list of active pickup points is gone, and with it the component's only
+   fetch (`api.getPickupLocations('coffee')`, `onMounted`, `pickupParts`, the `data-user-copy`
+   spans). The checkout picker still lists the points. `portal-explainer.spec.js` §4 now pins
+   that NO request goes to the feed and that a name from a stubbed feed never reaches the page.
+   `portal-vocabulary.spec.js`'s „a pickup location's name and address" test now pins that
+   absence as well. §8's 320px floor lost its 120-char name and is measured on the static page
+   with the Packeta fee badge ON.
+4. The note now ends „…napíš mi na WhatsApp a určite doriešime." and is signed **„— Lego"**,
+   with an **„L"** avatar (it used to be „— Karol" / „K").
+5. „Ak si tu nový/á" is the PO's own slash form. Reproduce it; do not „fix" it into the
+   gender-neutral rule.

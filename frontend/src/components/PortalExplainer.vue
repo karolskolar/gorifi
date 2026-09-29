@@ -18,7 +18,7 @@
 // `lib/cycle-stages.js` — pinned in `portal-explainer.spec.js` §1.
 //
 // ⚠ THE COPY IS THE PRODUCT OWNER'S. The roaster descriptions (`lib/roasters.js`),
-// the „— Karol" note, the „(PayMe)" in §Ako platím and the WhatsApp mention in phase
+// the „— Lego" note, the „(PayMe)" in §Ako platím and the WhatsApp mention in phase
 // 2 are all recorded decisions or PO drafts marked `OPEN:` in the spec. Reproduce
 // them; do not improve the prose. „(PayMe)" in particular looks redundant beside
 // „bankovú appku" and is not: module 15 shipped the PayMe bar deliberately
@@ -31,15 +31,11 @@
 // overlay this module needs (the roaster popover) lives in `FriendOrder.vue`, on the
 // modal layer.
 //
-// ⚠ SESSION BOUNDARY. This component owns one piece of state that outlives a render
-// — the pickup-location list — and it lives HERE rather than in a plain `<script>`
-// block (which `<script setup>` does not have, so a `let` up there would be ONE cache
-// shared by every instance the tab ever mounts) and rather than in `localStorage`.
-// Being a child of the session means the parent's `v-if` + `:key="sessionSeq"`
-// destroys it on logout with no list to maintain. Pickup points are not personal
-// data, but the rule is structural: the exception is how the next one gets made.
-import { ref, computed, onMounted } from 'vue'
-import api from '../api'
+// ⚠ PO COPY PASS 2026-09-29: this page speaks in the TY-FORM („môžeš", „dozvieš") —
+// the ONE friend surface that does; the rest of the UI stays vy-form. Phase 1 is
+// „Čas na kávu", the note is signed „— Lego" (avatar „L"), and the Bratislava row is
+// a static delivery sentence, so the component no longer fetches pickup locations.
+import { ref, computed } from 'vue'
 import { fmtEur } from '@/lib/money'
 import { ROASTERS } from '@/lib/roasters'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
@@ -96,61 +92,15 @@ const hide = ref(true)
 // Frozen and module-scoped-by-`const`: nothing here is reactive, nothing here is
 // derived from a round. See the header for why this is not `CycleTimeline`.
 const PHASES = [
-  { n: 1, icon: 'pause', title: 'Pauza', text: 'Väčšinu času sa neobjednáva. Ponuku si môžete prezrieť, košík je zamknutý.' },
-  { n: 2, icon: 'bell', title: 'Ohlásenie objednávky', text: 'Pár dní vopred sa dozviete, kedy sa objednávky otvoria. V appke aj cez WhatsApp.' },
-  { n: 3, icon: 'cup', title: 'Objednávanie', text: 'Zvyčajne 5–7 dní. Naklikáte si kávu, odošlete, do uzavretia môžete meniť.' },
+  { n: 1, icon: 'pause', title: 'Čas na kávu', text: 'Väčšinu času sa neobjednáva. Ponuku si môžeš prezrieť, košík je zamknutý.' },
+  { n: 2, icon: 'bell', title: 'Ohlásenie objednávky', text: 'Pár dní vopred sa dozvieš, kedy sa objednávky otvoria. V appke aj cez WhatsApp.' },
+  { n: 3, icon: 'cup', title: 'Objednávanie', text: 'Zvyčajne 5–7 dní. Naklikáš si kávu, odošleš, do uzavretia môžeš meniť.' },
   { n: 4, icon: 'truck', title: 'Čakáme na pražiareň', text: 'Objednávky uzavrieme, kávu objednáme. Praží sa na čerstvo, trvá to okolo týždňa.' },
   { n: 5, icon: 'box', title: 'Balíme', text: 'Káva dorazila, každému zabalíme jeho objednávku. Vtedy je čas zaplatiť.' },
-  { n: 6, icon: 'hand', title: 'Odovzdanie', text: 'Vyzdvihnete si ju na odbernom mieste, od priateľa alebo príde Packetou.' }
+  { n: 6, icon: 'hand', title: 'Odovzdanie', text: 'Vyzdvihneš si ju na odbernom mieste, od priateľa alebo príde Packetou.' }
 ]
 
 // ── §UC-PI-012 item 4: „Ako sa ku káve dostanete" ────────────────────────────
-
-/**
- * The ACTIVE coffee pickup points, from the public `GET /api/pickup-locations?type=coffee`.
- *
- * ⚠ `'coffee'` IS LOAD-BEARING. The endpoint takes an optional type and answers
- * EVERY active point without one — including the bakery-only ones, which no coffee
- * round ever offers. The friend would read a list of places they cannot choose.
- *
- * ⚠ This is the CHOOSABLE feed (the route filters `active = 1`), which is the right
- * question for a page that says „Vyberáte pri objednávke". It is NOT
- * `helpers/pickup.js pickupOf()`'s question („where is THIS party's bag going"),
- * whose answer may name a point that has since been deactivated — §UC-PI-007's badge
- * needs that one and must not be fed from here.
- */
-const locations = ref([])
-
-/**
- * ⚠ A FAILED FETCH IS INDISTINGUISHABLE FROM AN EMPTY LIST, DELIBERATELY. Both fall
- * back to §UC-PI-012's „Odberné miesto si vyberáte pri objednávke." — the sentence
- * that is true either way. An explainer is no place for an error surface: there is
- * nothing the friend could do about it and the page's job is to reassure.
- */
-onMounted(async () => {
-  try {
-    const rows = await api.getPickupLocations('coffee')
-    locations.value = Array.isArray(rows) ? rows : []
-  } catch {
-    locations.value = []
-  }
-})
-
-/**
- * „{name (address)} joined by ` · `, address omitted when null. Vyberáte pri
- * objednávke." — §UC-PI-012 item 4, verbatim.
- *
- * ⚠ PARTS, NOT ONE STRING (PI-T11 review): a location's name and address are admin
- * free text, so the template renders each in its own `data-user-copy` span (FUP-T22 /
- * 18 §UC-PI-017) and the vocabulary sweep reads only the app punctuation and the
- * trailing sentence. The rendered text is byte-identical to the old joined string.
- */
-const pickupParts = computed(() => locations.value
-  .map((l) => ({
-    name: typeof l?.name === 'string' ? l.name.trim() : '',
-    address: typeof l?.address === 'string' ? l.address.trim() : '',
-  }))
-  .filter((p) => p.name))
 
 /**
  * §UC-PI-012 item 4: the Packeta row's badge is „+{fmtEur(parcel_fee)}" when the
@@ -222,7 +172,7 @@ function done() {
          ⚠ R3.4.1 IS DROPPED (spec, item 4): this page RECOMMENDS, it restricts
          nothing — free-text pickup stays open to everyone. -->
     <div>
-      <div class="field-lbl" style="margin-bottom:10px">Ako sa ku káve dostanete</div>
+      <div class="field-lbl" style="margin-bottom:10px">Ako sa ku káve dostaneš</div>
       <div style="display:flex;flex-direction:column;gap:8px">
         <!-- WAY 1 — the Bratislava pickup points. -->
         <div class="card flat" style="padding:12px 14px;display:flex;gap:12px;align-items:flex-start" data-testid="explainer-way">
@@ -237,9 +187,13 @@ function done() {
               <b style="font-size:15px">Odberné miesto v Bratislave</b>
               <span class="badge ok" style="margin-left:auto;flex-shrink:0">zdarma</span>
             </div>
-            <!-- ⚠ ONE LINE on purpose: Vue's `condense` mode drops a whitespace node that
-                 contains a newline, which would glue the parts together. -->
-            <div class="sub" style="font-size:13.5px;line-height:1.4;margin-top:3px" data-testid="explainer-pickup-line"><template v-if="pickupParts.length"><template v-for="(p, i) in pickupParts" :key="i">{{ i ? ' · ' : '' }}<span data-user-copy>{{ p.name }}</span><template v-if="p.address">{{ ' (' }}<span data-user-copy>{{ p.address }}</span>{{ ')' }}</template></template>{{ '. Vyberáte pri objednávke.' }}</template><template v-else>Odberné miesto si vyberáte pri objednávke.</template></div>
+            <!-- PO copy 2026-09-29: the Bratislava row is a personal delivery offer, no
+                 longer the list of pickup points (the checkout picker still lists them). -->
+            <div class="sub" style="font-size:13.5px;line-height:1.4;margin-top:3px" data-testid="explainer-pickup-line">
+              Ak si z Petržalky, alebo v okolí Legovej práce, môžem ti kávu doniesť cestou. Ak si
+              tu nový/á, over si vopred, či mám kapacitu doručovať kam potrebuješ. Stále však
+              môžeš počítať s donáškou cez Packetu.
+            </div>
           </div>
         </div>
 
@@ -253,7 +207,7 @@ function done() {
               <span class="badge ok" style="margin-left:auto;flex-shrink:0">zdarma</span>
             </div>
             <div class="sub" style="font-size:13.5px;line-height:1.4;margin-top:3px">
-              Objednávate cez odkaz od priateľa? Kávu prevezme on/ona a odovzdá vám ju.
+              Objednávaš cez odkaz od priateľa? Kávu prevezme on/ona a odovzdá ti ju.
             </div>
           </div>
         </div>
@@ -272,7 +226,7 @@ function done() {
               >{{ parcelBadge }}</span>
             </div>
             <div class="sub" style="font-size:13.5px;line-height:1.4;margin-top:3px">
-              Nie ste z Bratislavy? Objednajte si a nechajte poslať cez Packetu — na
+              Nie si z Bratislavy? Objednaj si a nechaj poslať cez Packetu — na
               ľubovoľný Z-BOX alebo výdajné miesto.
             </div>
           </div>
@@ -314,7 +268,7 @@ function done() {
     <div>
       <div class="field-lbl" style="margin-bottom:10px">Ako platím</div>
       <div class="sub" style="font-size:14px;line-height:1.45">
-        Po zabalení dostanete sumu a QR kód. Zaplatíte jedným klepnutím cez
+        Po zabalení dostaneš sumu a QR kód. Zaplatíš jedným klepnutím cez
         <b>Revolut</b> alebo <b>bankovú appku</b> (PayMe), alebo prevodom na účet. Bez
         hotovosti.
       </div>
@@ -322,7 +276,7 @@ function done() {
 
     <!-- ══ 5. THE PERSONAL NOTE (§UC-PI-012 item 7) ══════════════════════════
          ⚠ HARDCODED, NOT A SETTING — the spec says so explicitly. It is the PO's
-         own draft wording and the „K" avatar is his initial; neither is derived
+         own draft wording and the „L" avatar is his initial; neither is derived
          from `friends` or from an admin setting, and an admin must not be able to
          edit the voice of the person who runs the thing.
          ⚠ NOT `[data-user-copy]`: every character here is APP copy, so the
@@ -336,10 +290,10 @@ function done() {
         class="display"
         style="width:44px;height:44px;border-radius:12px;border:3px solid var(--nb-ink);background:var(--nb-ink);color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:22px"
         aria-hidden="true"
-      >K</div>
+      >L</div>
       <div style="font-size:14px;line-height:1.45;min-width:0;overflow-wrap:anywhere">
         „Podpultovku robím vo voľnom čase pre kamarátov a kamarátov kamarátov. Ak čokoľvek
-        nesedí, napíšte mi na WhatsApp.“<br /><b>— Karol</b>
+        nesedí, napíš mi na WhatsApp a určite doriešime.“<br /><b>— Lego</b>
       </div>
     </div>
 

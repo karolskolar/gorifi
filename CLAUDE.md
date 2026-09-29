@@ -2,6 +2,7 @@
 
 Group coffee + bakery order management for a circle of friends. UI is **Slovak, impersonal vy-form**
 (never gendered participles addressing the reader: "nevytvoril si" ✗, "ešte nie je vytvorený" ✓).
+**One exception:** „Ako to funguje" (`PortalExplainer.vue`) speaks in the TY-form, PO 2026-09-29 (learnings 10 §PO-copy).
 
 ## Stack & layout
 
@@ -362,9 +363,10 @@ append the full write-up to the matching learnings file and add at most one line
   a second screen; it EMITS `done {hide}` and routes nothing. ⚠ `CycleTimeline` is NOT mounted here
   and that is §UC-PI-012 item 3, not an omission: an explainer describes the process, the timeline
   reports one round — `portal-explainer.spec.js` §1 reds both the import and the DOM. Packeta badge
-  = `currentCycle ?? catalogCycle` (`currentCycle` is NULL under `closed`), ways from
-  `api.getPickupLocations('coffee')` — the argument is load-bearing. The WhatsApp mention, „(PayMe)",
-  „— Karol" and both roaster texts are PO copy: reproduce, never improve — PI-T8),
+  = `currentCycle ?? catalogCycle` (`currentCycle` is NULL under `closed`), ~~ways from
+  `api.getPickupLocations('coffee')`~~ the pickup row is a STATIC PO sentence and the view fetches no
+  locations (PO 2026-09-29). The WhatsApp mention, „(PayMe)",
+  „— ~~Karol~~ Lego" and both roaster texts are PO copy: reproduce, never improve — PI-T8),
   `LandingStateModal.vue` (the landing's „Objednávky sú zatvorené/~~uzamknuté~~ uzavreté" modal — GP-T7; `title`/`intro`/`lead` are
   PROPS because PI-T5's no-order locked variant is the same modal with three strings — never a second one),
   `PickupLocationPicker.vue` (props `cycleId`+`friendId`, never an order id), `lib/plural.js`,

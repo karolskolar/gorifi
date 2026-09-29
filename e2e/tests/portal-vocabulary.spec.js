@@ -717,7 +717,7 @@ test.describe('PI-T11 · 18 §UC-PI-017 — the DOM sweep', () => {
       await expectExcluded(page, 'the next-round banner', planNote)
     })
 
-  test('⚠ „Ako to funguje": a pickup location\'s name and address are data (PI-T11 review r2)', async ({ page }) => {
+  test('⚠ „Ako to funguje": a pickup location\'s name and address never reach the page (PI-T11 r2, PO copy 2026-09-29)', async ({ page }) => {
     const friend = await makeFriend('ExplPickup')
     const locName = `Stanovisko kolo ${uniq}`
     const locAddress = `Cyklistická 7, ${uniq}`
@@ -730,13 +730,13 @@ test.describe('PI-T11 · 18 §UC-PI-017 — the DOM sweep', () => {
     }))
     await signIn(page, friend)
     await open(page, '/ako-to-funguje')
-    // The rendered sentence is byte-identical to the pre-split join (portal-explainer
-    // §4 pins the same shape), so splitting it into marked parts changed no pixel.
-    await expect(page.getByTestId('explainer-pickup-line'))
-      .toHaveText(`${locName} (${locAddress}) · Fontána. Vyberáte pri objednávke.`)
-    await expectCleanCopy(page, '/ako-to-funguje with typed locations', ['Vyberáte pri objednávke.', 'Odberné miesto v Bratislave'])
-    await expectExcluded(page, 'the explainer location name', locName)
-    await expectExcluded(page, 'the explainer location address', locAddress)
+    // ~~The row renders each location in a `data-user-copy` span~~ — SUPERSEDED by the
+    // PO copy pass 2026-09-29: the row is a static sentence, so the poisoned names in
+    // the feed above must not reach the page at all, and the whole page is app copy.
+    await expect(page.getByTestId('explainer-pickup-line')).toContainText('môžem ti kávu doniesť cestou')
+    await expectCleanCopy(page, '/ako-to-funguje with typed locations', ['môžem ti kávu doniesť cestou', 'Odberné miesto v Bratislave'])
+    await expect(page.getByTestId('portal-explainer')).not.toContainText(locName)
+    await expect(page.getByTestId('portal-explainer')).not.toContainText(locAddress)
   })
 
   test('the CLOSED landing — its state modal and the warn banner behind it', async ({ page }) => {
@@ -1304,7 +1304,7 @@ test.describe('GP-T7 · the lock copy is „uzavreté" on every friend/guest sur
       'Môžete ju upraviť až do uzavretia objednávok.'])
     assertReadable('views/FriendPortalSession.vue', ['+++ OBJEDNÁVKY UZAVRETÉ +++ KÁVA JE NA CESTE +++',
       "'Objednávky sú uzavreté' : 'Objednávky sú zatvorené'", 'title="Objednávky sú uzavreté"', '<b>Objednávky sú uzavreté.</b>'])
-    assertReadable('components/PortalExplainer.vue', ['odošlete, do uzavretia môžete meniť.'])
+    assertReadable('components/PortalExplainer.vue', ['odošleš, do uzavretia môžeš meniť.'])
   })
 
   test('the friend-facing order routes\' two lock 403s say „Objednávky sú uzavreté"; the ADMIN strings stay', () => {
