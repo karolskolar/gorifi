@@ -2207,6 +2207,14 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
     <!-- ⚠ NEVER in `readonly` (§UC-PI-006 / §UC-PI-007: „no `.cartbar`"). It is
          also what removes the share icon from a non-open round, which 05
          §UC-KG-002 requires and `portal-landing.spec.js` §3 pins. -->
+    <!-- ⚠ `landing` mode TELEPORTS the bar to `#portal-cartbar-slot`, the session's
+         sibling after its page column (2026-09-30: inside the column it was inset
+         by the gutter and floated mid-screen on short content — see the note on
+         the slot in `FriendPortalSession.vue`). ONE element, ONE state: `defer`
+         because the slot renders after this subtree, `:disabled` so the deep link
+         keeps rendering it in place. Scoped styles and the theme's descendant
+         `:where(.app,.modal-layer) .cartbar` rule both still reach it. -->
+    <Teleport to="#portal-cartbar-slot" defer :disabled="!isLanding">
     <div v-if="!loading && !(error && !friend) && !isReadonly" class="cartbar" data-testid="cartbar">
       <!-- 1. not-yet-submitted notice, and 2. the dirty warning. At most one of the
            two, neither when locked — the shipped `v-if`/`v-else-if` priority,
@@ -2407,6 +2415,7 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
         />
       </details>
     </div>
+    </Teleport>
 
     <!-- ================= Hotovo! success modal (04 §UC-FO-011) =================
          ⚠ ONE subtitle on BOTH paths (resolved conflict #4). The shipped view had

@@ -2438,7 +2438,7 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
        those two rules are asserted through while their VIEWS are still being
        built (PI-T3..T8). Neither is user copy; both are read by e2e only. -->
   <div
-    class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7"
+    class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7 flex-1"
     data-testid="portal-landing"
     :data-view="view"
     :data-landing-state="landing.state"
@@ -3069,6 +3069,23 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
       @done="onExplainerDone"
     />
   </div>
+
+  <!-- ⚠ THE LANDING'S CARTBAR SLOT (2026-09-30 friend report: „ten sticky košík je
+       nejaký uletený — nie je od kraja po kraj a keď je menší obsah, levituje
+       uprostred obrazovky"). `FriendOrder` in `landing` mode TELEPORTS its ONE
+       `.cartbar` here (`<Teleport defer :disabled="!isLanding">`), so on `/` the
+       bar has exactly the deep link's shape: a sibling AFTER the page column, in
+       `.app` — which `FriendPortal.vue` makes `flex flex-col` for a session, while
+       the column above takes `flex-1`. Before, the bar sat INSIDE the column:
+         · inset by its 16/28px gutter and capped at its 760px (not full-bleed);
+         · with short content (the Kolegovia tab, an empty cart) nothing pushed it
+           down, and a sticky element only sticks once its container overflows —
+           so it stopped mid-screen, measured 494–648 on a 800px viewport.
+       `display:contents` is load-bearing: a real box here would become the bar's
+       sticky containing block (starting at the bar's own top) and un-stick it —
+       the same trap `FriendOrder`'s landing wrapper documents. The element is
+       plain markup, not an overlay; `order-cartbar.spec.js` pins the geometry. -->
+  <div id="portal-cartbar-slot" style="display:contents"></div>
 
   <!-- ⚠⚠ THE ONE BALANCE `PaymentModal` IN THE TREE (§UC-PI-008 / §UC-PI-010; 15
        §UC-PL-007 item 4 RELOCATED, never duplicated). PL-T4 mounted it inside

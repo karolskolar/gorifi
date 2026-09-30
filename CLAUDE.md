@@ -316,6 +316,7 @@ append the full write-up to the matching learnings file and add at most one line
 - `.app > *` is `position:relative; z-index:1` at (0,1,0) and loads after Tailwind — `fixed/sticky/absolute/z-*`
   on a DIRECT child of `.app` silently compute `relative/1`. Overlays: `NeoModal`, `NeoDrawer`, radix `Dialog`, or
   `<Teleport to="body">`; never a hand-rolled fixed div at root. `.cartbar`/`.cat-tabs` survive only by cascade order.
+- The landing's `.cartbar` is TELEPORTED (`defer`, `:disabled="!isLanding"`) to the session's `#portal-cartbar-slot` (`display:contents`, after the `flex-1` page column; `.app` is `flex flex-col` for a session) — inside the column it was inset and floated mid-screen on short content (2026-09-30, learnings 03). Never give the slot a box.
 - `<script setup>` has NO module scope: a singleton/guard/cache needs a plain `<script>` block.
 - `components/neo/use-modal-layer.js` is the ONE home of what a `.modal-layer` surface DOES — body scroll
   lock (ONE module-scope counter across every surface), Esc, the capture-phase scrim-mousedown ORIGIN rule,
