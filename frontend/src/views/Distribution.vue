@@ -1370,7 +1370,7 @@ async function confirmHandover() {
               :data-active="stageFilter === option.key ? 'true' : 'false'"
               @click="stageFilter = option.key"
               class="px-3 py-1.5 text-sm transition-colors border-r last:border-r-0"
-              :class="stageFilter === option.key ? 'bg-secondary text-secondary-foreground' : 'bg-background hover:bg-muted'"
+              :class="stageFilter === option.key ? 'bg-primary text-primary-foreground' : 'bg-background hover:bg-muted'"
             >
               {{ option.label }}
             </button>
@@ -1385,8 +1385,20 @@ async function confirmHandover() {
 
         <!-- There ARE bags — just none that the current focus + filter select.
              A screen that explains itself instead of one that looks broken. -->
-        <div v-else-if="viewEmpty" class="text-muted-foreground italic py-8" data-testid="board-no-match">
-          Tomuto výberu nezodpovedá žiadny balíček. Zmeňte filter alebo zoskupenie.
+        <!-- ⚠ PO 2026-09-30: a „Zabalené" filter over a Packeta focus hid the one
+             UNPACKED bag and read as „the bag is lost". The active stage chip is now as
+             dark as the group-by one, and the empty view offers the way back. -->
+        <div v-else-if="viewEmpty" class="flex flex-wrap items-center gap-3 py-8">
+          <span class="text-muted-foreground italic" data-testid="board-no-match">Tomuto výberu nezodpovedá žiadny balíček. Zmeňte filter alebo zoskupenie.</span>
+          <Button
+            v-if="stageFilter !== 'all'"
+            variant="outline"
+            size="sm"
+            data-testid="board-no-match-reset"
+            @click="stageFilter = 'all'"
+          >
+            Zobraziť všetko
+          </Button>
         </div>
 
         <!-- ── Groups ───────────────────────────────────────────────────────── -->
