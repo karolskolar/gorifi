@@ -18,6 +18,17 @@ import { safeFetch } from './safe-fetch.js';
 // (NOT price_500g — the format cannot express it, see the row template). The
 // weight-label paths (150g/200g/250g/1kg) are byte-identical.
 //
+// SECOND sanctioned amendment (PO 2026-09-30): a ONE-ROW block — a name row
+// followed directly by a separator, e.g. the sheet's „Nespresso kapsule" /
+// „Iné" sub-section headers — is not a product. It used to be pushed as one
+// (the 2026-09-30 prod import created a price-less „Nespresso kapsule" catalog
+// row); it is now SKIPPED and returned in `skipped` ({ row, reason }), which
+// the catalog import reports under `unparsed` (nothing written). Same for a
+// block with NO variant label AND NO price (the sheet's delivery table below
+// the products parsed as „4 EUR", „11 EUR", … products). A labelled block is
+// still a product — an unpriceable one (unknown pack size) keeps PC-T12's
+// „imported, with a warning" behaviour. See multiRowSkipReason().
+//
 // ⚠ This module deliberately imports NO db module — it is pure parsing plus the
 // gsheet fetch. e2e imports it directly (catalog-import.spec.js), which is only
 // safe while importing it cannot open or migrate a database.
@@ -290,6 +301,19 @@ export function parsePriceString(priceStr, variantLabel = '') {
   return result;
 }
 
+// Why a finished multirow block is NOT a product, or null when it is one.
+// rowsSeen = how many of the block's (up to 3) rows were consumed.
+function multiRowSkipReason(product, rowsSeen) {
+  if (rowsSeen === 1) {
+    return `single-row block (section header or unsupported item), not a product: "${product.name}"`;
+  }
+  const PRICE_FIELDS = ['price_150g', 'price_200g', 'price_250g', 'price_1kg', 'price_20pc5g', 'price_8pc12g'];
+  if (!product._variantLabel && PRICE_FIELDS.every((f) => product[f] === null)) {
+    return `no variant label and no price, not a product: "${product.name}"`;
+  }
+  return null;
+}
+
 export function parseMultiRowProducts(csvContent) {
   const records = parse(csvContent, {
     columns: false,      // Keep as arrays, don't auto-detect headers
@@ -301,10 +325,23 @@ export function parseMultiRowProducts(csvContent) {
 
   const products = [];
   const warnings = [];
+  const skipped = [];
   let currentProduct = null;
   let rowInProduct = 0;
   let productIndex = 0;
   let inProductSection = false;
+
+  // Push a finished block — or record why it is skipped (2026-09-30).
+  const finalize = (product, rowsSeen) => {
+    if (!product || !product.name) return;
+    const reason = multiRowSkipReason(product, rowsSeen);
+    if (reason) {
+      skipped.push({ row: product._rowStart, reason });
+      return;
+    }
+    products.push(product);
+    productIndex++;
+  };
 
   for (let i = 0; i < records.length; i++) {
     const row = records[i];
@@ -325,10 +362,7 @@ export function parseMultiRowProducts(csvContent) {
     // Detect separator row
     if (isSeparatorRow(row)) {
       // Finalize current product if we have one
-      if (currentProduct && currentProduct.name) {
-        products.push(currentProduct);
-        productIndex++;
-      }
+      finalize(currentProduct, rowInProduct);
       currentProduct = null;
       rowInProduct = 0;
       continue;
@@ -388,10 +422,7 @@ export function parseMultiRowProducts(csvContent) {
       currentProduct.roast_type = (row[7] || '').trim();  // Light roast, Medium roast, etc.
 
       // Product complete - add it
-      if (currentProduct.name) {
-        products.push(currentProduct);
-        productIndex++;
-      }
+      finalize(currentProduct, 3);
 
       currentProduct = null;
       rowInProduct = 0;
@@ -399,9 +430,7 @@ export function parseMultiRowProducts(csvContent) {
   }
 
   // Handle last product if file doesn't end with separator
-  if (currentProduct && currentProduct.name) {
-    products.push(currentProduct);
-  }
+  finalize(currentProduct, rowInProduct);
 
-  return { products, warnings };
+  return { products, warnings, skipped };
 }

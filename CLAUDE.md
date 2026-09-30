@@ -61,6 +61,7 @@ cd frontend && npm run dev     # :5173
 | Cycle stages: the three `order_cycles` columns, `markCycleReady()`, the `POST/PATCH /cycles` contract, `lib/cycle-stages.js` + `CycleTimeline.vue`, the admin date/stage controls, the guest „Kde je vaša káva" card (module 17) | `docs/learnings/09-cycle-stages.md` |
 | Standing guest link: `friends.guest_link_token`, `helpers/standing-link.js`, the host + admin standing routes, `guest_waitlist`, `waiting_count`, cross-space token uniqueness (module 19) | `docs/learnings/11-guest-standing-link.md` |
 | Guest Packeta: `guest_orders.delivery_fee` / `packeta_address` / `delivery_fee_paid`, the submit's delivery block, `guestPaymentBlock().amount = total + fee`, the mail fee/point rows (module 20) | `docs/learnings/12-guest-packeta.md` |
+| Catalog: product-image FILES (`backend/src/db/uploads`, the 2026-09-30 loss + restore recipe), photos from the supplier sheet's XLSX, the multirow parser's skip rules (module 12) | `docs/learnings/13-catalog-images-import.md` |
 
 Specs: `docs/specification/*.md`, `docs/superpowers/specs/*.md`. Spec text that cites "CLAUDE.md GSO-T3" /
 "CLAUDE.md 2026-08-07" etc. now resolves to these files (search by task id or date). When you finish a task,
@@ -240,6 +241,7 @@ append the full write-up to the matching learnings file and add at most one line
   STRICT boolean; `delivery_fee_paid` has TWO writers — the soft cancel + the paid toggle, frozen at the first of {paid, cancel}
   (~~ONE writer~~, orchestrator 2026-09-23 pending PO; learnings 12 §6).
 - `delivered` is host-only, `paid` admin-only. Name literal columns; never spread a request body into an UPDATE.
+- Product images are FILES in `backend/src/db/uploads` (the DB holds only `/api/images/<hash>` URLs): never deploy from a checkout whose `deploy.sh` lacks `--exclude 'src/db/uploads'` — the 2026-09-06 deploys wiped all 71 (restore = the Drive uploads tar, learnings 13).
 - Share-link regeneration UPDATEs the token in place (DELETE+INSERT cascades away every sub-order).
 - Guest edit PUT delivery block (GP-T2, learnings 12 §9–11): only beside a NON-EMPTY `items` and AFTER the paid 409; flag absent/`null` ⇒ both columns untouched; `guest_email`'s only edit write is the Packeta switch's `… WHERE guest_email IS NULL` (write-once, D3) — a body e-mail beside a stored one is ignored, never validated.
 - Pickup: `orders` row if one exists (any status), else `guest_order_links`; no cycle-open gate; exactly one of

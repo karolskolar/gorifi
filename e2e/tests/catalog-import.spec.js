@@ -971,6 +971,82 @@ test.describe('PC-T12 — the honest report: warnings (imported) vs unparsed (sk
   })
 })
 
+// 2026-09-30 (PO): the prod import created a price-less „Nespresso kapsule"
+// catalog row out of the sheet's sub-section header, and today's sheet would
+// also turn its delivery table into „4 EUR" / „11 EUR" products. A one-row
+// block, and a block with no variant label and no price, are SKIPPED and
+// reported under `unparsed` (nothing written) — a LABELLED unpriceable block
+// still imports with a warning (PC-T12, pinned above).
+test.describe('2026-09-30 — multirow blocks that are not products are skipped', () => {
+  // The real sheet's shapes: a header row between two products, then the
+  // delivery table (country, price cells in columns B–D, nothing in I).
+  function sheetWithHeaders(stem) {
+    return [
+      'Cennik,,,,,,,,,,', ',,,,,,,,,,',
+      `,${stem} Pred,,,,,,Filter,250g / 1kg,,`,
+      ',Popis,,,,,,,"9 / 36 EUR",,',
+      ',kakao,,,,,,Light roast,,,',
+      ',,,,,,,,,,',
+      `,${stem} Nespresso kapsule,,,,,,,WS 1-80 pcs,WS 80+ pcs,`,
+      ',,,,,,,,,,',
+      `,${stem} Kapsula,,,,,,Nespresso ,20ks x 5g,,`,
+      ',Popis,,,,,,,10 EUR,,',
+      ',kakao,,,,,,Full city roast,,,',
+      ',,,,,,,,,,',
+      '🇨🇿 Czechia,4 EUR,10 EUR,Free,,,,,,,',
+      '🇵🇱 Poland ,5 EUR,11 EUR,Free,,,,,,,',
+      '🇩🇪 Germany ,7 EUR,12 EUR,Free,,,,,,,',
+      ',,,,,,,,,,',
+    ].join('\n')
+  }
+
+  test('the parser drops the header and the delivery rows, keeps both products', async () => {
+    const mod = await import(PARSING_URL)
+    const stem = uniq()
+    const { products, skipped } = mod.parseMultiRowProducts(sheetWithHeaders(stem))
+    expect(products.map((p) => p.name)).toEqual([`${stem} Pred`, `${stem} Kapsula`])
+    expect(products[1].price_20pc5g, 'the product AFTER the header still parses').toBe(10)
+    expect(skipped).toHaveLength(2)
+    expect(skipped[0].reason).toContain('single-row block')
+    expect(skipped[0].reason).toContain(`${stem} Nespresso kapsule`)
+    expect(skipped[0].row).toBe(7)
+    expect(skipped[1].reason).toContain('no variant label and no price')
+    expect(skipped[1].reason).toContain('4 EUR')
+  })
+
+  test('a one-row block at end of file is skipped too', async () => {
+    const mod = await import(PARSING_URL)
+    const csv = ['Cennik,,,,,,,,', ',,,,,,,,', ',Posledny nadpis,,,,,,,WS 1-80 pcs'].join('\n')
+    const { products, skipped } = mod.parseMultiRowProducts(csv)
+    expect(products).toHaveLength(0)
+    expect(skipped).toHaveLength(1)
+    expect(skipped[0].reason).toContain('Posledny nadpis')
+  })
+
+  test('the catalog import writes NO row for them and reports them under unparsed', async () => {
+    const stem = uniq()
+    const csv = sheetWithHeaders(stem)
+    const out = importProbe(`
+      const csv = ${JSON.stringify(csv)};
+      const parsed = parseMultiRowProducts(csv);
+      const report = importRowsIntoCatalog(parsed.products, 'Goriffee', { warnings: parsed.warnings, skipped: parsed.skipped });
+      const rows = db.all('SELECT name FROM coffee_products WHERE name LIKE ? ORDER BY name', [${JSON.stringify(`${stem}%`)}]);
+      const junk = db.all("SELECT name FROM coffee_products WHERE name IN ('4 EUR','5 EUR','7 EUR')");
+      return { report, rows, junk };
+    `)
+    expect(out.rows.map((r) => r.name)).toEqual([`${stem} Kapsula`, `${stem} Pred`])
+    expect(out.junk, 'the delivery table imported nothing').toEqual([])
+    expect(out.report.summary.new).toBe(2)
+    expect(out.report.summary.unparsed).toBe(2)
+    expect(out.report.unparsed[0]).toEqual({ row: 7, reason: expect.stringContaining('Nespresso kapsule') })
+  })
+
+  test('the gsheet route passes the parser skips into the import', () => {
+    const src = readFileSync(join(REPO_ROOT, 'backend', 'src', 'routes', 'coffee-products.js'), 'utf8')
+    expect(src).toContain('skipped: parsed.skipped')
+  })
+})
+
 test.describe('PC-T12 — decision-13 amendment: the price vector is sheet-owned on refresh', () => {
   test('the staging self-heal: a re-import with the pack label REPLACES the bogus 250g price', async () => {
     const stem = uniq()
