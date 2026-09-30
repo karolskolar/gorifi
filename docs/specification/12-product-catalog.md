@@ -1077,8 +1077,10 @@ snapshots come from once the per-cycle import retires.
   (manual upload, bakery, history) still wins the COALESCE.
 - **UI — the existing new-cycle dialog in `AdminDashboard.vue`** (where the bakery
   picker already lives): a coffee-type cycle shows the catalog product list with
-  checkboxes — **default: all `status='available'` products pre-ticked, the admin
-  unticks** (the brief's paste-and-go effort target, inverted into tick-and-go);
+  checkboxes — ~~**default: all `status='available'` products pre-ticked, the admin
+  unticks** (the brief's paste-and-go effort target, inverted into tick-and-go)~~
+  **default: NOTHING ticked — the admin searches and ticks (PO 2026-09-30:
+  the pre-tick is not the expected behaviour)**;
   retired products are not listed at all. Admin skin, existing dialog conventions;
   Slovak labels in the admin app's register. `api.js createCycle` already forwards
   arbitrary body fields (`typeof data === 'string'` legacy form aside), so the
@@ -1094,8 +1096,9 @@ at creation time; a later catalog price edit leaves those snapshots byte-identic
 (the freeze pin); a retired id in the request is skipped and produces no row; a
 coffee-cycle POST without `coffee_product_ids` still creates the (empty) cycle; the
 friend order page lists the picked products with the catalog image (COALESCE); the
-new-cycle dialog pre-ticks all available products and unticking one keeps it out of
-the cycle.
+new-cycle dialog ~~pre-ticks all available products and unticking one keeps it out of
+the cycle~~ **opens with no product ticked, and only the ticked products enter the cycle
+(PO 2026-09-30)**.
 
 ---
 

@@ -2318,7 +2318,9 @@ test.describe('UC-PC-013 — the per-cycle importers are retired (API)', () => {
 // ── PC-T8 UI half — the picker in the new-cycle dialog; no import section ──────
 
 test.describe('UC-PC-012/013 — admin UI (picker + retired import section)', () => {
-  test('the new-cycle dialog pre-ticks ALL available catalog products, never lists a retired one, and unticking keeps a product out', async ({ page }) => {
+  // PO 2026-09-30: the dialog opens with NOTHING ticked (was: all available
+  // pre-ticked, 12 §UC-PC-012 as shipped) — the admin searches and ticks.
+  test('the new-cycle dialog ticks NO catalog product by default, never lists a retired one, and only a ticked product goes in', async ({ page }) => {
     const token = await loginAsAdminUI(page)
     const stem = uniq()
     const nameA = `${stem} Tick A`
@@ -2344,12 +2346,15 @@ test.describe('UC-PC-012/013 — admin UI (picker + retired import section)', ()
     const rows = picker.getByTestId('coffee-picker-row')
     await expect(rows, 'retired products are not listed at all').toHaveCount(2)
     await expect(rows.filter({ hasText: nameR })).toHaveCount(0)
-    // Default: all available products PRE-TICKED (tick-and-go).
-    await expect(rows.filter({ hasText: nameA }).locator('input[type="checkbox"]')).toBeChecked()
-    await expect(rows.filter({ hasText: nameB }).locator('input[type="checkbox"]')).toBeChecked()
+    // Default: NOTHING ticked — not the search hits, and not the whole catalog
+    // (the counter covers the rows the search hides).
+    await expect(rows.filter({ hasText: nameA }).locator('input[type="checkbox"]')).not.toBeChecked()
+    await expect(rows.filter({ hasText: nameB }).locator('input[type="checkbox"]')).not.toBeChecked()
+    await expect(picker.getByText('Produkty z katalógu (0 vybraných)')).toBeVisible()
 
-    // Untick B and create.
-    await rows.filter({ hasText: nameB }).locator('input[type="checkbox"]').uncheck()
+    // Tick A only and create.
+    await rows.filter({ hasText: nameA }).locator('input[type="checkbox"]').check()
+    await expect(picker.getByText('Produkty z katalógu (1 vybraných)')).toBeVisible()
     await dialog.getByRole('button', { name: 'Vytvoriť' }).click()
     await expect(dialog).not.toBeVisible()
 
@@ -2358,8 +2363,8 @@ test.describe('UC-PC-012/013 — admin UI (picker + retired import section)', ()
     expect(created, 'the cycle was created').toBeTruthy()
     const products = await cycleProducts(created.id)
     const sources = products.map((p) => p.source_coffee_product_id)
-    expect(sources).toContain(idA)
-    expect(sources, 'the unticked product stays out').not.toContain(idB)
+    expect(sources, 'exactly the one ticked product went in').toEqual([idA])
+    expect(sources, 'the never-ticked product stays out').not.toContain(idB)
     expect(sources).not.toContain(idR)
   })
 

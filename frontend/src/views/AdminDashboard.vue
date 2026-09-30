@@ -23,8 +23,9 @@ const bakeryProducts = ref([])
 const selectedBakeryProductIds = ref([])
 const bakeryProductSearch = ref('')
 // PC-T8 (12 §UC-PC-012): coffee cycles pick their products from the catalog.
-// Default: ALL available products pre-ticked (tick-and-go); retired products
-// are never offered (the list is loaded with status='available').
+// Default: NOTHING ticked — the admin searches and ticks (PO 2026-09-30; was
+// „all pre-ticked", 12 §UC-PC-012 as shipped). Retired products are never
+// offered (the list is loaded with status='available').
 const coffeeProducts = ref([])
 const selectedCoffeeProductIds = ref([])
 const coffeeProductSearch = ref('')
@@ -87,10 +88,10 @@ async function openNewCycleModal() {
   } catch (e) {
     // Non-critical
   }
-  // Load the coffee catalog for the picker — available only, all pre-ticked.
+  // Load the coffee catalog for the picker — available only, none ticked
+  // (selectedCoffeeProductIds was reset above; PO 2026-09-30).
   try {
     coffeeProducts.value = await api.getCatalogProducts({ status: 'available' })
-    selectedCoffeeProductIds.value = coffeeProducts.value.map(p => p.id)
   } catch (e) {
     // Non-critical
   }
@@ -486,7 +487,7 @@ function getStatusText(status) {
             ></textarea>
           </div>
           <!-- Coffee catalog picker (PC-T8 — 12 §UC-PC-012): available products
-               only, all pre-ticked; the admin unticks. -->
+               only, none ticked; the admin searches and ticks (PO 2026-09-30). -->
           <div v-if="newCycleType === 'coffee'" class="space-y-2" data-testid="coffee-picker">
             <Label>Produkty z katalógu ({{ selectedCoffeeProductIds.length }} vybraných)</Label>
             <Input
