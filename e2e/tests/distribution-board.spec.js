@@ -546,11 +546,23 @@ test.describe('DP-T5 · 16 §UC-DP-010 — the distribution board shell', () => 
     await expect(page.getByTestId('board-empty'), 'the CYCLE is not empty — the view is').toHaveCount(0)
     await expect(page.getByTestId('board-no-match'))
       .toHaveText('Tomuto výberu nezodpovedá žiadny balíček. Zmeňte filter alebo zoskupenie.')
+    // PO 2026-09-30: the ACTIVE stage chip is as dark as the group-by one (a pale
+    // „Zabalené" hid an unpacked Packeta bag in plain sight on production).
+    await expect(page.getByTestId('stage-filter-handed')).toHaveClass(/\bbg-primary\b/)
+    await expect(page.getByTestId('stage-filter-all')).not.toHaveClass(/\bbg-primary\b/)
 
     // Releasing either half brings the board back.
     await page.getByTestId('stage-filter-all').click()
     await expect(page.getByTestId('board-no-match')).toHaveCount(0)
+    await expect(page.getByTestId('board-no-match-reset')).toHaveCount(0)
     await expect(page.getByTestId(`dist-group-loc${fx.L.id}`)).toBeVisible()
+
+    // …and so does the empty view's own „Zobraziť všetko", keeping the card focus.
+    await page.getByTestId('stage-filter-handed').click()
+    await page.getByTestId('board-no-match-reset').click()
+    await expect(page.getByTestId('stage-filter-all')).toHaveAttribute('data-active', 'true')
+    await expect(page.getByTestId('board-no-match')).toHaveCount(0)
+    await expect(page.locator('[data-testid^="dist-group-"]')).toHaveCount(1)
   })
 
   // ⚠ RETARGETED BY DP-T6 (16 §UC-DP-011): a group's parties are ROWS now, not
