@@ -107,6 +107,7 @@ append the full write-up to the matching learnings file and add at most one line
 - `guest_waitlist` (19, GL-T3): `helpers/guest-waitlist.js` is its ONLY writer (signup/re-arm, both purges, admin DELETE); `notified_at` gets a timestamp from module 21 ONLY (19 resets it to NULL); `helpers/phone.js toE164()` is the ONE E.164 normaliser (`parsePhoneNumber` nowhere else); the public `POST /api/guest/:token/waitlist` answers ONE 200 for create AND duplicate (no oracle) and never joins `ADMIN_ENDPOINTS`; its rows are non-member PII — ~~⚠ not in the e2e scrub yet, exact lines on the GL-T6 row (BLOCKING).~~ **scrubbed since GL-T6a (name/phone/e164 — learnings 11 §GL-T6).** No COMMENT in `routes/guest.js` may say async/await either: the D11 pin greps it raw.
 - Rate limits: FIVE separate buckets in `middleware/rate-limit.js` (`auth`, `abuse`, `guestRead`, `guestWrite`,
   `magicLink`). Never collapse them.
+- `trust proxy` is **2** hops (NPM → LXC nginx → Node): with 1, `req.ip` was NPM's address and ALL friends shared one limiter bucket (2026-09-30 login lock-out; learnings 04 §trust-proxy). Pinned by `rate-limit-proxy-hops.spec.js`.
 - CSP is copied in THREE files (`deploy/nginx-gorifi.conf`, `deploy/nginx-gorifi-staging.conf`,
   `docs/deploy/nginx-proxy-manager.md`), string-equal-checked by `self-hosted-fonts.spec.js`. Fix CSP breakage by
   self-hosting, never by loosening (GIS is the one sanctioned exception). Fonts: `frontend/public/fonts`, always

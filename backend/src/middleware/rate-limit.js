@@ -11,8 +11,10 @@ import rateLimit from 'express-rate-limit';
 //   RATE_LIMIT_GUEST_WRITE_MAX — max guest submits/edits/window (default 60)
 //   RATE_LIMIT_MAGIC_MAX  — max magic-link requests/window (default 10)
 //
-// Limits are per client IP. Because the app runs behind nginx/PM2, index.js
-// sets `trust proxy` so the real client IP (not the proxy's) is used.
+// Limits are per client IP. The app runs behind TWO proxies (NPM → nginx), so
+// index.js sets `trust proxy` to 2 hops — the real client IP, not the proxy's.
+// ⚠ With 1 hop every visitor keyed on NPM's IP: ONE bucket for everyone
+// (2026-09-30 prod lock-out, learnings 04 §trust-proxy).
 //
 // ⚠ Each of the FIVE limiters exported below is a SEPARATE bucket, and each split
 // was paid for by a real failure mode. Do not collapse them back onto one limiter.
