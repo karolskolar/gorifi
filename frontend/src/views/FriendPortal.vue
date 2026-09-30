@@ -1081,7 +1081,12 @@ const dropdownFriends = computed(() => {
 </script>
 
 <template>
-  <div class="app">
+  <!-- `flex flex-col` for a session ONLY (2026-09-30): the session's page column
+       takes `flex-1`, so the landing's teleported `.cartbar` (the slot after it)
+       sits at the viewport bottom even when the content is short — the deep
+       link's layout (`FriendOrder` route mode). The login/loading branches keep
+       their block flow untouched. -->
+  <div class="app" :class="{ 'flex flex-col': authState === 'authenticated' }">
     <!-- Brand chrome (UC-FL-001): appbar + hazard tape + ticker, mounted in ALL
          three states as the first child of `.app`, full-bleed and NOT sticky
          (UC-DS-005/006). One instance — the state only swaps its slot contents

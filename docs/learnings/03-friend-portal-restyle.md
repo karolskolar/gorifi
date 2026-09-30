@@ -926,3 +926,28 @@ failures across 5 files. Review verdict **approve**, four minors, all acted on:
   session that a premise I wrote into a backlog row went unchecked against the code it named
   (the first: "one door, not three" on the cancelled-after-hand-over seam, DP-T4). **A premise
   in a backlog row is a claim, and it inherits none of the verification the row demands.**
+
+## 2026-09-30 — the landing cartbar: inset and floating mid-screen (fixed)
+
+**Report** (friend, WhatsApp): „ten sticky košík je nejaký uletený — nie je od kraja po kraj a
+keď je menší obsah, levituje uprostred obrazovky."
+
+**Cause.** PI-T3 mounted `FriendOrder` on `/` in `landing` mode with a `display:contents`
+wrapper, which kept the bar sticky — but left it INSIDE `FriendPortalSession.vue`'s page column
+(`mx-auto max-w-[760px] px-4 sm:px-7 py-4 sm:py-7`). Two consequences the shipped pin
+(„THE LANDING VARIANT", a SCROLLING fixture) could not see:
+- width: inset by the gutter — measured 16→362 of 378px, and 704px on a 1280px desktop;
+- short content (the Kolegovia tab, one product): a sticky element only sticks once its container
+  overflows, and nothing pushed it down — measured top 494 / bottom 648 on an 800px viewport.
+The deep link never had either problem: there the bar is a direct child of a `flex flex-col` `.app`
+after a `flex-1` column.
+
+**Fix — the deep link's shape, not a second bar.** `FriendOrder` wraps its ONE `.cartbar` in
+`<Teleport to="#portal-cartbar-slot" defer :disabled="!isLanding">`; the session renders that slot
+(`display:contents`) right AFTER its page column; the column gains `flex-1`; `FriendPortal.vue`'s
+`.app` gets `flex flex-col` for an authenticated session only (login/loading keep block flow).
+`defer` (Vue ≥ 3.5) is required because the slot renders after the `FriendOrder` subtree. The slot
+MUST stay `display:contents`: a real box would become the bar's sticky containing block and
+un-stick it (the same trap as the landing wrapper). After: 0→378 and 0→1280, bottom = viewport
+bottom on both tabs. The friend-portal cluster (23 spec files, 520 tests) is green; the new
+`order-cartbar.spec.js` test „THE LANDING BAR is full-bleed…" fails without the Teleport (measured).

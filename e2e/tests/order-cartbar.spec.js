@@ -321,7 +321,10 @@ test.describe('UC-FO-009 — `.cartbar` is a direct child of `.app`', () => {
 
     expect(geom.insideApp, 'the theme rule is a DESCENDANT selector').toBe(true)
     expect(geom.parentIsApp, 'on the landing it is NOT a direct child — that is the point').toBe(false)
-    expect(geom.depthFromApp, 'nested inside the session page column').toBeGreaterThan(1)
+    // 2026-09-30: no longer inside the page column — teleported into the session's
+    // `display:contents` slot, a direct child of `.app` after the column (see the
+    // next test). Still one level down, so the descendant-selector point stands.
+    expect(geom.depthFromApp, 'nested one level, in the cartbar slot').toBe(2)
 
     // …and every computed value is byte-identical to the deep link's.
     expect(geom.position).toBe('sticky')
@@ -332,6 +335,46 @@ test.describe('UC-FO-009 — `.cartbar` is a direct child of `.app`', () => {
 
     expect(geom.scrollable, 'the fixture must actually scroll').toBeGreaterThan(0)
     expect(geom.rectBottom, 'pinned to the viewport bottom at rest').toBe(geom.vh)
+  })
+
+  // 2026-09-30 friend report: „ten sticky košík je nejaký uletený — nie je od kraja
+  // po kraj a keď je menší obsah, levituje uprostred obrazovky". On `/` the bar sat
+  // INSIDE the session's page column: inset by the 16px gutter (346 of 378px) and,
+  // with short content, at its natural flow position (494–648 on an 800px
+  // viewport — sticky only sticks once the container overflows). It is now
+  // teleported to `#portal-cartbar-slot` after the `flex-1` column in a
+  // `flex flex-col` `.app` — the deep link's shape.
+  test('THE LANDING BAR is full-bleed and sits on the viewport bottom even with SHORT content', async ({ page }) => {
+    await signIn(page)
+    for (const [w, h] of [[378, 800], [1280, 900]]) {
+      await page.setViewportSize({ width: w, height: h })
+      await page.goto('/')
+      await expectLanding(page)
+      await expect(page.getByTestId('portal-landing')).toHaveAttribute('data-landing-state', 'open')
+      // The Kolegovia tab is the reported screen: a single short card.
+      await page.getByTestId('main-tab-guests').click()
+      await expect(page.getByTestId('main-tab-guests')).toHaveAttribute('aria-selected', 'true')
+      const g = await page.evaluate(() => {
+        const el = document.querySelector('.cartbar')
+        const r = el.getBoundingClientRect()
+        const slot = document.getElementById('portal-cartbar-slot')
+        return {
+          left: r.left, right: r.right, bottom: Math.round(r.bottom),
+          vw: document.documentElement.clientWidth, vh: window.innerHeight,
+          scrollable: document.documentElement.scrollHeight - window.innerHeight,
+          inSlot: el.parentElement === slot,
+          slotIsAppChild: slot?.parentElement === document.querySelector('.app'),
+          slotDisplay: slot && getComputedStyle(slot).display,
+        }
+      })
+      expect(g.scrollable, `${w}px: the fixture really is SHORT (no scroll)`).toBeLessThanOrEqual(0)
+      expect(g.inSlot, 'teleported into the slot').toBe(true)
+      expect(g.slotIsAppChild, 'the slot is a direct child of .app').toBe(true)
+      expect(g.slotDisplay, 'a box here would re-clamp sticky').toBe('contents')
+      expect(g.left, `${w}px: edge to edge — left`).toBe(0)
+      expect(g.right, `${w}px: edge to edge — right`).toBe(g.vw)
+      expect(g.bottom, `${w}px: on the viewport bottom, not mid-screen`).toBe(g.vh)
+    }
   })
 
   test('the bar is the SAME element on both tabs — it belongs to neither panel', async ({ page }) => {
