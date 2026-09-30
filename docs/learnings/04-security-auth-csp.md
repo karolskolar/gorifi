@@ -471,3 +471,32 @@ it in place with no reload.
 2. **Transition mode's dialog is dismissible** (`@close="showCredentialSetup = false"`),
    so a friend who closes it has no way back that session. Same guard, same reasoning;
    re-opening it from the profile would be an additive UI row, not a new route.
+
+## §trust-proxy — 2026-09-30: every friend shared ONE login rate-limit bucket
+
+**Report.** A friend got „Príliš veľa pokusov, skúste to neskôr" on the login card on the day
+the October round opened.
+
+**Cause.** The production chain is Nginx Proxy Manager (TLS, `192.168.100.103`) → the LXC's
+nginx → Node on `127.0.0.1:3000`. Each hop appends to `X-Forwarded-For`, so Node receives
+`<client>, 192.168.100.103`. `index.js` had `app.set('trust proxy', 1)` (SEC-F2, written for one
+proxy), so `req.ip` — the key of all five limiters — was NPM's address for EVERY visitor. The
+LXC nginx access log shows only `192.168.100.103` as the client. That day saw 67 `/api/friends/auth`
+calls between 11:00 and 13:00 and 15 × 429: 20 logins per 15 min across the whole circle.
+
+**Proof (read-only except one throw-away attempt each).** On the server:
+`curl -H 'X-Forwarded-For: 203.0.113.7, 192.168.100.103' -X POST -d '{}' localhost:3000/api/friends/auth`
+→ `429`, `RateLimit: remaining=0` for a client that had never called; the same with
+`X-Forwarded-For: 203.0.113.7` → `401`, `remaining=19`.
+
+**Fix.** `trust proxy` = `TRUST_PROXY_HOPS || 2`. The two trusted entries are the ones the
+proxies append, so a client-forged leftmost entry is ignored (`true` would have trusted it).
+Node binds 127.0.0.1 only, so nothing reaches it without passing the LXC nginx; a LAN client
+talking to that nginx directly (bypassing NPM) can still forge one hop — the same exposure as before.
+Staging runs the same chain. Local dev / e2e hit Node directly with no header, so `req.ip` stays the
+socket address.
+
+**Pinned** by `e2e/tests/rate-limit-proxy-hops.spec.js`: it replays NPM's header against the gate
+server and reads `RateLimit: remaining=` instead of waiting for a 429, so it runs at the full-suite
+maxima. With `TRUST_PROXY_HOPS=1` the „separate buckets" test fails (measured); the forged-entry test
+guards against `true`.

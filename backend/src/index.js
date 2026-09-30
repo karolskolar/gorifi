@@ -40,10 +40,16 @@ import imagesRouter from './routes/images.js';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Behind nginx/PM2: trust the first proxy hop so express-rate-limit and any
-// IP-based logic see the real client IP, not the proxy's. Use a specific hop
-// count (not `true`) to avoid the permissive trust-proxy validation warning.
-app.set('trust proxy', 1);
+// Behind TWO proxies: Nginx Proxy Manager (TLS, 192.168.100.103) → the LXC's
+// nginx → this process (bound to 127.0.0.1). Each hop APPENDS to
+// X-Forwarded-For, so the real client is the entry TWO hops back. With `1` (as
+// shipped until 2026-09-30) req.ip was NPM's address for EVERY visitor, so all
+// friends shared ONE rate-limit bucket — on the day a round opened, 20 logins
+// in 15 min locked everyone out with „Príliš veľa pokusov". A leftmost entry a
+// client forges is ignored (only the two proxy-appended entries are trusted).
+// A specific hop count (not `true`) avoids the permissive trust-proxy warning.
+// TRUST_PROXY_HOPS overrides it for a different topology.
+app.set('trust proxy', parseInt(process.env.TRUST_PROXY_HOPS, 10) || 2);
 
 // Middleware
 // Lock CORS to an explicit allowlist. In production the SPA is served
