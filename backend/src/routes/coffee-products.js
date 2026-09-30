@@ -163,7 +163,7 @@ router.post('/import-gsheet-multirow', async (req, res) => {
     // "imported, but check this" — kept separate from `unparsed`, which is
     // strictly the skipped rows (PC-T12's honest split of UC-PC-004). Nothing
     // is silently guessed or dropped.
-    const report = importRowsIntoCatalog(parsed.products, roastery, { warnings: parsed.warnings });
+    const report = importRowsIntoCatalog(parsed.products, roastery, { warnings: parsed.warnings, skipped: parsed.skipped });
     return res.status(201).json({ report });
   } catch (error) {
     console.error('Catalog multirow import error:', error.message);

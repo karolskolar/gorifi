@@ -319,7 +319,7 @@ export function singleRowReport(result) {
 // row nothing was written for), a subset of what it carried before; the NEW
 // `warnings` bucket carries the parser warnings (row: null — a warning names a
 // product, not a row). A consumer of `unparsed` sees only true skips now.
-export function importRowsIntoCatalog(parsedRows, roastery, { warnings = [] } = {}) {
+export function importRowsIntoCatalog(parsedRows, roastery, { warnings = [], skipped = [] } = {}) {
   const run = db.transaction(() => {
     const report = {
       summary: { new: 0, matched: 0, price_changes: 0, pending_fuzzy: 0, unparsed: 0, warnings: 0 },
@@ -405,6 +405,11 @@ export function importRowsIntoCatalog(parsedRows, roastery, { warnings = [] } = 
 
     for (const w of warnings) {
       report.warnings.push({ row: null, reason: String(w) });
+    }
+    // Parser-side skips (the multirow one-row section headers, 2026-09-30):
+    // rows nothing was written for — exactly what `unparsed` means.
+    for (const sk of skipped) {
+      report.unparsed.push({ row: sk.row ?? null, reason: String(sk.reason) });
     }
 
     report.summary = {
