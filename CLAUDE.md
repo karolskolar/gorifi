@@ -129,8 +129,12 @@ append the full write-up to the matching learnings file and add at most one line
   halves are pinned (PI-T10). FUP-T12's „a non-string packeta_address = an absent key" stands.
 
 ### Money & data
-- `transactions` rows come ONLY from the friend paid toggle and pack/unpack (`orders.total`, never
-  `delivery_fee`). Guests have no balance: guest paid toggle, pickup PATCH, friend creation write NO ledger row.
+- `transactions` rows come ONLY from the friend paid toggle and pack/unpack — ~~(`orders.total`, never
+  `delivery_fee`)~~ **both post `helpers/packing.js orderLedgerAmount()` = goods + Packeta fee (PO 2026-10-01: a
+  Packeta friend transfers both)**, and each reversal negates what its leg POSTED (`orders.paid_amount` /
+  `packed_amount`; NULL = pre-2026-10-01 = `total`). Plus ONE more writer: a Packeta → pickup switch on a PACKED
+  order posts the fee back (`repriceCharge`, „Packeta zrušená"; a PAID fee stays as the friend's credit = refund).
+  Guests have no balance: guest paid toggle, guest pickup/delivery PATCH, friend creation write NO ledger row.
 - Hand-over (`handed_over_at`, stage 3) is LEDGER-NEUTRAL — `packed` is the money moment — and writes no
   `order_cycles.status`: the admin's „Ukončiť objednávku" button is the only way a cycle becomes
   **`completed`** (lock / unlock / open-for-ordering write the other values), gated in the UI only
@@ -246,7 +250,7 @@ append the full write-up to the matching learnings file and add at most one line
 - Share-link regeneration UPDATEs the token in place (DELETE+INSERT cascades away every sub-order).
 - Guest edit PUT delivery block (GP-T2, learnings 12 §9–11): only beside a NON-EMPTY `items` and AFTER the paid 409; flag absent/`null` ⇒ both columns untouched; `guest_email`'s only edit write is the Packeta switch's `… WHERE guest_email IS NULL` (write-once, D3) — a body e-mail beside a stored one is ignored, never validated.
 - Pickup: `orders` row if one exists (any status), else `guest_order_links`; no cycle-open gate; exactly one of
-  `pickup_location_id`/`pickup_location_note`; switching Packeta → pickup zeroes `delivery_fee` (ledger-neutral).
+  `pickup_location_id`/`pickup_location_note`; switching Packeta → pickup zeroes `delivery_fee` (~~ledger-neutral~~ — on a PACKED order it posts the fee back, see Money & data).
 - Guest Packeta → „cez {host}" = admin `PATCH /guest-orders/:id/delivery` (exact `{method:'via_host'}`) via `helpers/pickup.js applyGuestDelivery` — two literal columns, NEVER `delivery_fee_paid` (two writers only), no cycle/paid gate; `/unpaid` refund = items + (paid && packeta_address ? snapshot : 0) — a switch SETTLES a paid fee (pending PO) — with `paid = 1` in the SQL too, counted fee published as `refund_fee` (GP-T5). It 409s `host_handed_over` / `host_packed` (+ an unticked guest item) instead of rejoining a closed host bag — never auto-unpacks (GP-T6 review, pending PO).
 - A LIVE Packeta guest is its OWN `/distribution` party (`kind:'guest'`, `key` `guest:<id>`, `id:null`, derived `packed`) —
   never nested, never in the host's pack gate, auto-unpack (`hostBag`) or hand-over inheritance; `inheritingGuests()`

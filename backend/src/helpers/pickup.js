@@ -1,5 +1,6 @@
 import db from '../db/schema.js';
 import { bindValue } from './bind-value.js';
+import { repriceCharge } from './packing.js';
 
 // ⚠ THE ONE HOME for "where does this party pick up, and where is that stored".
 //
@@ -124,26 +125,27 @@ export function applyPickup(target, value) {
   // parcel fee and no parcel address would claim a delivery charge for a delivery
   // nobody makes. Both parcel fields are therefore cleared with the switch.
   //
-  // ⚠ AND IT IS LEDGER-NEUTRAL, which is what makes it safe on a PAID order —
-  // verified in the code, not assumed: `PATCH /orders/:id/paid` posts
-  // `roundMoney(order.total)` and `helpers/packing.js` charges `-roundMoney(order.total)`.
-  // Both legs use `total` ALONE; `delivery_fee` has never entered `transactions` at
-  // all. So zeroing it moves no balance and invalidates no existing row.
-  //
-  // What it DOES change is what the friend was asked to pay (`paymentTotal = total +
-  // delivery_fee` on the client, and the QR built from it). If they already
-  // transferred the fee, that is a refund conversation for the admin — which is
-  // exactly why the frontend puts this one case behind an inline confirm that names
-  // the amount, instead of switching silently.
+  // ~~⚠ AND IT IS LEDGER-NEUTRAL … Both legs use `total` ALONE; `delivery_fee` has
+  // never entered `transactions` at all.~~ SUPERSEDED (PO 2026-10-01): both ledger
+  // legs now post goods + fee (`helpers/packing.js orderLedgerAmount()`), so zeroing
+  // the fee is a ledger event on a PACKED order: `repriceCharge()` posts the fee back
+  // (one `charge` row, „Packeta zrušená") and the debt is goods-only again. The PAID
+  // leg is left as posted — the friend did transfer the fee, so their balance now
+  // shows it as a credit: the refund the admin owes, which is exactly why the
+  // frontend still puts this case behind an inline confirm that names the amount.
+  // An unpacked order (paid or not) needs no row: nothing was charged yet.
   const clearedParcel = !!order.packeta_address || (order.delivery_fee || 0) > 0;
   const feeRemoved = clearedParcel ? (order.delivery_fee || 0) : 0;
 
-  db.prepare(`
-    UPDATE orders
-       SET pickup_location_id = ?, pickup_location_note = ?,
-           packeta_address = NULL, delivery_fee = 0
-     WHERE id = ?
-  `).run(locationId, note, order.id);
+  db.transaction(() => {
+    db.prepare(`
+      UPDATE orders
+         SET pickup_location_id = ?, pickup_location_note = ?,
+             packeta_address = NULL, delivery_fee = 0
+       WHERE id = ?
+    `).run(locationId, note, order.id);
+    if (clearedParcel) repriceCharge(order.id);
+  })();
 
   return { cleared_parcel: clearedParcel, parcel_fee_removed: feeRemoved };
 }

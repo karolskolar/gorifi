@@ -2,7 +2,7 @@ import { Router } from 'express';
 import db from '../db/schema.js';
 import { validateFriendAuth, getAuthMode } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
-import { packOrder, unpackOrder, packingItemStats } from '../helpers/packing.js';
+import { packOrder, unpackOrder, packingItemStats, orderLedgerAmount, postedAmount } from '../helpers/packing.js';
 import { gramsByProductFromItems, stockViolations } from '../helpers/stock.js';
 import { basePriceForVariant, applyMarkup, roundMoney } from '../helpers/pricing.js';
 import { cycleSubOrdersByHost, loadSubOrder } from '../helpers/guest-orders.js';
@@ -522,7 +522,14 @@ router.patch('/:id/paid', requireAdmin, (req, res) => {
   // this toggle is how one of them enters the friend's real balance. Rounding at the
   // ledger boundary is what stops a legacy row leaving 1e-14 on a balance forever.
   // (The reversal negates the ROUNDED value, so the pair still cancels exactly.)
-  const paymentAmount = roundMoney(order.total);
+  //
+  // ⚠ PO 2026-10-01: the payment is goods + Packeta fee (`orderLedgerAmount()`, the
+  // same sum `packOrder` charges) — a Packeta friend transfers both, and recording
+  // only `total` showed the admin less than was paid. The reversal negates what the
+  // paid leg POSTED (`orders.paid_amount`; NULL = pre-2026-10-01 = `total`), never
+  // today's figure — the fee can be zeroed after payment by a switch to pickup.
+  const paymentAmount = orderLedgerAmount(order);
+  const reversalAmount = postedAmount(order.paid_amount, order);
 
   // Use transaction to ensure consistency
   const togglePaid = db.transaction(() => {
@@ -532,12 +539,14 @@ router.patch('/:id/paid', requireAdmin, (req, res) => {
         INSERT INTO transactions (friend_id, order_id, type, amount, note)
         VALUES (?, ?, 'payment', ?, ?)
       `).run(order.friend_id, order.id, paymentAmount, order.cycle_name);
+      db.prepare('UPDATE orders SET paid_amount = ? WHERE id = ?').run(paymentAmount, order.id);
     } else if (!paid && order.paid) {
       // Marking as unpaid - create reversal transaction (negative payment)
       db.prepare(`
         INSERT INTO transactions (friend_id, order_id, type, amount, note)
         VALUES (?, ?, 'payment', ?, ?)
-      `).run(order.friend_id, order.id, -paymentAmount, `${order.cycle_name} - storno`);
+      `).run(order.friend_id, order.id, -reversalAmount, `${order.cycle_name} - storno`);
+      db.prepare('UPDATE orders SET paid_amount = NULL WHERE id = ?').run(order.id);
     }
 
     db.prepare('UPDATE orders SET paid = ? WHERE id = ?').run(paid ? 1 : 0, req.params.id);
@@ -898,11 +907,13 @@ router.patch('/:id/handed-over', requireAdmin, (req, res) => {
 // ⚠ STILL NO CYCLE-OPEN GATE. The correction is needed exactly when the cycle is
 // LOCKED — that is when the admin packs. `PATCH /:id/packed` has none either.
 //
-// ⚠ STILL NO `transactions` ROW, and no `total`/`status`/`paid`/`packed` write. The
-// one money column this can now move is `delivery_fee`, and only on a Packeta order
-// being switched to personal pickup — see `applyPickup`, which records why that is
-// ledger-neutral (both ledger legs use `order.total` alone; the fee has never entered
-// `transactions`). The response reports the clearance so the UI can say what happened.
+// ⚠ No `total`/`status`/`paid`/`packed` write. The one money column this can move
+// is `delivery_fee`, and only on a Packeta order being switched to personal pickup —
+// see `applyPickup`. ~~STILL NO `transactions` ROW … ledger-neutral (both ledger legs
+// use `order.total` alone)~~ — SUPERSEDED PO 2026-10-01: both legs post goods + fee,
+// so on a PACKED order the switch posts ONE `charge` row giving the fee back
+// (`helpers/packing.js repriceCharge`, „Packeta zrušená"); an unpacked order still
+// gets none. The response reports the clearance so the UI can say what happened.
 router.patch('/cycle/:cycleId/friend/:friendId/pickup', requireAdmin, (req, res) => {
   const { cycleId, friendId } = req.params;
 
