@@ -234,7 +234,7 @@ append the full write-up to the matching learnings file and add at most one line
   placeholder; `CycleDetail` renders it only behind `isOrdered` (a DRAFT is not a debt). Mail carries the VS
   as TEXT — no `revolut.me`/`payme.sk` URL ever (08 one-origin pin).
 - `variantGrams()` stays own-property + type safe; stock compares `!(a + b <= limit)` so NaN fails closed.
-- Coffee stats (PO 2026-10-04): tiers 30 % from 5 kg / 35 % from 25 kg / 40 % from 50.0 kg (`helpers/analytics.js`, mirrored + pinned EQUAL in `frontend/src/lib/coffee-tiers.js`); tier VOLUME = `volumeKg()` (no capsules/brew bags — `variantToKg()` stays physical weight); margin basis = FRIENDS' tier-volume value only; „priemer na osobu" = volume / (friends + guests), a per-PERSON cycle figure (learnings 01 §Analytics 2026-10-04).
+- Coffee stats (PO 2026-10-04): tiers 30 % from 5 kg / 35 % from 25 kg / 40 % from 50.0 kg (`helpers/analytics.js`, mirrored + pinned EQUAL in `frontend/src/lib/coffee-tiers.js`); tier VOLUME = `volumeKg()` (no capsules/brew bags — `variantToKg()` stays physical weight); margin basis = tier-volume value of friends AND guests (~~friends only~~); „priemer na osobu" = volume / (friends + guests), a per-PERSON cycle figure (learnings 01 §Analytics 2026-10-04).
 - Guest aggregates: CYCLE-level totals include guests; per-FRIEND aggregates never do. Merge the guest half in
   JS, never as a second `LEFT JOIN` on `orders` (row multiplication corrupts `orders_count`); cycle-level guest
   counts use correlated subqueries. Guest kg lives in its own map (`guestKgMap`) — folding it in doubles money.

@@ -80,14 +80,15 @@ router.get('/', (req, res) => {
     const isDefaultRoastery = (roastery) => !roastery || roastery === defaultRoasteryName;
 
     // Kept apart on purpose: `friend*` and `guest*` are summed for the CYCLE-LEVEL
-    // totals; the margin basis (`friendMarginValue`) is friends only.
+    // totals.
     //
     // ⚠ PO 2026-10-04: kilos are TIER VOLUME (`volumeKg` — no capsules/brew bags);
-    // values stay whole (they are money). The margin basis is what FRIENDS paid for
-    // tier-volume coffee of the default roastery — see `computeMargin`.
+    // values stay whole (they are money). The margin basis (`marginValue`) is what
+    // friends AND guests paid for tier-volume coffee of the default roastery — „v tom
+    // nie je žiadny rozdiel" (a first cut counted friends only) — see `computeMargin`.
     let friendKg = 0;
     let friendValue = 0;
-    let friendMarginValue = 0;
+    let marginValue = 0;
     let guestKg = 0;
     let guestValue = 0;
     let otherRoasteryKg = 0;
@@ -104,7 +105,7 @@ router.get('/', (req, res) => {
       if (isDefaultRoastery(item.roastery)) {
         friendKg += kg;
         friendValue += itemValue;
-        if (isVolumeVariant(item.variant)) friendMarginValue += itemValue;
+        if (isVolumeVariant(item.variant)) marginValue += itemValue;
       } else {
         otherRoasteryKg += kg;
         otherRoasteryValue += itemValue;
@@ -117,6 +118,7 @@ router.get('/', (req, res) => {
       if (isDefaultRoastery(item.roastery)) {
         guestKg += kg;
         guestValue += itemValue;
+        if (isVolumeVariant(item.variant)) marginValue += itemValue;
       } else {
         otherRoasteryKg += kg;
         otherRoasteryValue += itemValue;
@@ -142,7 +144,7 @@ router.get('/', (req, res) => {
     const friendsNeeded = nextTier && avgKgPerPerson > 0
       ? Math.ceil(distanceToNextTier / avgKgPerPerson)
       : null;
-    const operatorMargin = roundEur(computeMargin(friendMarginValue, totalKg));
+    const operatorMargin = roundEur(computeMargin(marginValue, totalKg));
 
     // 3. Count eligible friends (active + subscribed to coffee OR no subscriptions)
     const eligibleFriends = db.all(

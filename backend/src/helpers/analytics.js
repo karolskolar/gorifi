@@ -62,11 +62,12 @@ export function getTier(totalKg) {
  * Compute operator margin for a cycle.
  * Formula: margin = totalOrderValue × (1 - (1 - tierDiscount) / (1 - BUYER_DISCOUNT))
  *
- * ⚠ PO 2026-10-04: `totalOrderValue` is the value FRIENDS paid (at 30 % off retail,
- * VAT included — the operator pays VAT too) for TIER-VOLUME coffee of the default
- * roastery only: no guests, no capsules/brew bags, no other roastery. Callers build
- * it with `isVolumeVariant()`; passing the whole cycle value (as both dashboards did
- * until this date) overstated October 2026 at 259.18 against a true 179.54.
+ * ⚠ PO 2026-10-04: `totalOrderValue` is the value friends AND guests paid (at 30 %
+ * off retail, VAT included — the operator pays VAT too) for TIER-VOLUME coffee of
+ * the default roastery only: no capsules/brew bags, no other roastery. Callers build
+ * it with `isVolumeVariant()`. Until this date both dashboards passed the whole
+ * value, capsules included (October 2026: 259.18 vs the correct 255.78); a first
+ * cut also dropped the guests (179.54) — the PO: „v tom nie je žiadny rozdiel".
  */
 export function computeMargin(totalOrderValue, totalKg) {
   const tier = getTier(totalKg);

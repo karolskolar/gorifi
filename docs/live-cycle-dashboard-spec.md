@@ -7,8 +7,8 @@
 >   (no margin), **35 % for 25–49.9 kg** and **40 % from 50.0 kg** (was 26 / 51 kg).
 > - **Volume (kg)** = `volumeKg()`: capsules (`20pc5g`) and brew bags (`8pc12g`) are NOT tier
 >   volume — they are priced per pack outside the kg tiers.
-> - **Margin** = value **friends** paid for tier-volume coffee of the default roastery (no guests,
->   no capsules/brew bags) × (1 − (1 − tier) / 0.70). Friends' prices include VAT and the operator
+> - **Margin** = value ~~**friends**~~ **friends AND guests** paid for tier-volume coffee of the
+>   default roastery (no capsules/brew bags) × (1 − (1 − tier) / 0.70). Friends' prices include VAT and the operator
 >   pays VAT too, so the formula applies to the paid prices; `markup_ratio` is NOT a separate margin.
 > - **Average per person** = tier volume / (friends + guest sub-orders), 2 decimals.
 
@@ -136,8 +136,8 @@ The estimated margin for the current cycle:
 
 ```
 if volume_kg < 25:     margin = 0  (5–24.9 kg is the 30 % tier = the friends' price)
-if volume_kg 25–49.9: margin = friend_volume_value * (1 - 0.65/0.70)  ≈ 7.14 %
-if volume_kg 50+:    margin = friend_volume_value * (1 - 0.60/0.70)  ≈ 14.29 %
+if volume_kg 25–49.9: margin = volume_value * (1 - 0.65/0.70)  ≈ 7.14 %   (friends + guests)
+if volume_kg 50+:    margin = volume_value * (1 - 0.60/0.70)  ≈ 14.29 %
 ```
 
 Note: respect `order_cycles.markup_ratio` if it's not 1.0. In that case, `total_order_value` already includes the markup, and the margin formula adjusts accordingly.
