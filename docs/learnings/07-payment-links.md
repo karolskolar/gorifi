@@ -655,3 +655,42 @@ will be looking.
   marks its person-typed interpolations, the template is UNTOUCHED, and the guard is now
   mutation-proven in both directions on every run. Full write-up in
   `docs/learnings/01-early-features.md`.
+
+## 2026-10-01 — the Packeta fee enters the friend ledger (PO)
+
+**Report.** A friend paid a Packeta order (38.17 goods + 3.40 fee = 41.57 EUR); ticking „zaplatené"
+in the cycle recorded **+38.17**. PO: „keď zakliknem, že je to zaplatené, tak sa to počíta ako celá
+suma aj s paketou."
+
+**Why it was so.** Both ledger legs — `PATCH /orders/:id/paid` (`payment +total`) and
+`helpers/packing.js` (`charge −total`) — posted `orders.total` alone, deliberately: the old rule
+(„`orders.total`, never `delivery_fee`") kept the fee out of `transactions` so the Packeta → pickup
+switch could zero it ledger-neutrally. The balance therefore always netted to 0, but the payment
+row showed less than the friend transferred. (The green „+38.17 EUR" in the screenshot is the
+friend's BALANCE: paid, not yet packed.)
+
+**Why not just the paid leg.** Posting goods + fee on payment alone leaves every Packeta friend with
+a permanent +fee credit after packing. Both legs move together: `orderLedgerAmount(order) =
+roundMoney(total + delivery_fee)`, one home in `helpers/packing.js`.
+
+**Reversals negate what was POSTED.** The fee can change after a leg was posted (the switch zeroes
+it), and a manual payment may carry an `order_id`, so a reversal can neither recompute today's
+figure nor net all rows of the order. New columns `orders.paid_amount` / `orders.packed_amount`
+(try/catch ALTER, written only by the paid toggle and `packing.js`) store the posted amount;
+`postedAmount(stored, order)` falls back to `roundMoney(total)` when NULL — exactly what every
+pre-2026-10-01 row posted, so history needs no back-fill and stays balanced (prod had 7 completed
+Packeta orders, all `charge = payment = total`).
+
+**The switch is no longer ledger-neutral on a PACKED order.** `applyPickup` now runs the UPDATE and
+`repriceCharge(orderId)` in one transaction: a packed order whose posted charge exceeds today's
+goods + fee gets one `charge +diff` row („Packeta zrušená") and `packed_amount` is re-set, so a
+later unpack still nets to 0. The PAID leg is left as transferred — the fee then shows as the
+friend's credit, which IS the refund owed (the picker's inline confirm still names the amount). An
+unpacked order gets no row (nothing charged yet) — `order-pickup-edit.spec.js`'s paid-but-unpacked
+test still pins zero new rows.
+
+**The one live order.** Prod order 245 (October, open) was paid under the old rule: `paid_amount`
+NULL, payment +38.17. Re-toggling it (unpaid → paid) reverses 38.17 by the fallback and posts 41.57.
+
+Pinned by `e2e/tests/ledger-packeta-fee.spec.js` (paid / packed / both reversals / the packed switch /
+a legacy pre-migration row via `DB_PATH`); 2 of its 4 tests fail against the old code (measured).

@@ -535,6 +535,20 @@ function initDb() {
     db.run('ALTER TABLE orders ADD COLUMN packeta_address TEXT');
   } catch (e) {}
 
+  // Migration (PO 2026-10-01): the ledger amount each toggle ACTUALLY posted, so its
+  // reversal negates exactly that. Since this date both legs post goods + Packeta
+  // fee (`helpers/packing.js orderLedgerAmount()`), and the fee can move AFTER a leg
+  // was posted (a Packeta → pickup switch zeroes it). NULL = posted before this
+  // migration = `roundMoney(total)` (the old goods-only rule) — no back-fill, the
+  // fallback is that rule. Written ONLY by `helpers/packing.js` and
+  // `PATCH /orders/:id/paid`.
+  try {
+    db.run('ALTER TABLE orders ADD COLUMN packed_amount REAL');
+  } catch (e) {}
+  try {
+    db.run('ALTER TABLE orders ADD COLUMN paid_amount REAL');
+  } catch (e) {}
+
   // Create transactions table for balance tracking
   db.run(`
     CREATE TABLE IF NOT EXISTS transactions (

@@ -118,12 +118,13 @@ const tone = computed(() => {
 const tid = (suffix) => `${props.testidPrefix}${suffix ? `-${suffix}` : ''}-${props.friendId}`
 
 // ⚠ THE ONE CASE THAT MAY NOT BE SILENT. Switching a parcel order to personal pickup
-// clears `packeta_address` and zeroes `delivery_fee` server-side. That is
-// LEDGER-neutral (both ledger legs post `order.total` alone — the fee has never
-// entered `transactions`), so no balance moves and no existing row is invalidated.
-// What it does change is what the friend was ASKED to pay, and they may already have
-// transferred it — so the confirm names the amount rather than leaving the admin to
-// discover a refund later.
+// clears `packeta_address` and zeroes `delivery_fee` server-side. ~~That is
+// LEDGER-neutral (both ledger legs post `order.total` alone)~~ — since PO 2026-10-01
+// both ledger legs post goods + fee, so on a PACKED order the server posts the fee
+// back (`helpers/packing.js repriceCharge`), and a friend who already PAID is left
+// with the fee as a credit on their balance. That credit is the refund the admin
+// owes — so the confirm still names the amount rather than leaving the admin to
+// discover it later.
 const parcelWarning = computed(() => {
   if (!isParcel.value) return ''
   const fee = feeAmount.value

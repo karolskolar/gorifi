@@ -27,15 +27,16 @@ import { ADMIN_PASSWORD } from '../fixtures.js'
 //     DRAFT is "has an own order" to one screen and not to the other. A per-surface
 //     choice of store would have written one and read back the other. There is a test
 //     that reads BOTH payloads for exactly that party and demands the same answer.
-//  2. ⚠ NO `transactions` ROW, EVER, and no `total`/`status`/`paid`/`packed` write —
+//  2. ⚠ NO `transactions` ROW (~~EVER~~ — except the one fee give-back on a PACKED
+//     Packeta order, PO 2026-10-01, see 3.), and no `total`/`status`/`paid`/`packed` write —
 //     the route is offered on a LOCKED, part-PAID cycle, which is the only reason that
 //     matters (the GSO-T6 lesson: a stray row corrupts a real friend's balance).
 //  3. ⚠ THE ONE MONEY COLUMN IT MAY MOVE is `delivery_fee`, and only when switching a
-//     PACKETA order to personal pickup. That is ledger-neutral — verified here, not
-//     assumed: `PATCH /orders/:id/paid` posts `roundMoney(order.total)` and
-//     `helpers/packing.js` charges `-roundMoney(order.total)`, so the fee has never
-//     entered `transactions`. The test switches a PAID parcel order and asserts the
-//     ledger is untouched while the fee and address are gone.
+//     PACKETA order to personal pickup. ~~That is ledger-neutral … the fee has never
+//     entered `transactions`.~~ SUPERSEDED PO 2026-10-01: both ledger legs post goods +
+//     fee, so on a PACKED order the switch posts the fee back (one „Packeta zrušená"
+//     charge — pinned in `ledger-packeta-fee.spec.js`). The test here switches a PAID
+//     but UNPACKED parcel order, which still gets no row: nothing was charged yet.
 //  4. ⚠ NO CYCLE-OPEN GATE, deliberately — the correction is needed exactly when the
 //     cycle is locked, because that is when the admin packs. Asserted, so nobody
 //     "fixes" it into a 409 later.
@@ -475,10 +476,11 @@ test.describe('⚠ the money guarantee', () => {
     expect(after.total, 'the goods themselves are untouched').toBe(before.total)
     expect(after.paid, 'and it is still marked paid').toBeTruthy()
 
-    // ⚠ THE CLAIM THAT MAKES THIS SAFE, asserted rather than assumed: neither ledger
-    // leg has ever used `delivery_fee` (`paid` posts `roundMoney(order.total)`,
-    // `packOrder` charges the negation), so zeroing it moves no balance.
-    expect(await ledgerCount(friend), 'zeroing the fee is ledger-neutral').toBe(ledgerBefore)
+    // ~~neither ledger leg has ever used `delivery_fee`~~ — since PO 2026-10-01 both do
+    // (goods + fee). On a PAID but UNPACKED order the switch still writes no row: the
+    // payment stays as transferred (the fee becomes the friend's credit = refund owed)
+    // and no charge exists yet to correct. The PACKED case: `ledger-packeta-fee.spec.js`.
+    expect(await ledgerCount(friend), 'no charge to correct on an unpacked order').toBe(ledgerBefore)
   })
 })
 

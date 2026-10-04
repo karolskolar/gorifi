@@ -56,7 +56,11 @@ without the migration the feature would work only on a database built from scrat
   `packeta_address` and the pickup columns are mutually exclusive by construction, so
   leaving the fee would claim a delivery charge for a delivery nobody makes; both parcel
   fields are cleared with the switch.
-- ⚠ **AND IT IS LEDGER-NEUTRAL — verified in the code, not assumed.** `PATCH
+- ~~⚠ **AND IT IS LEDGER-NEUTRAL — verified in the code, not assumed.**~~ **SUPERSEDED
+  (PO 2026-10-01):** both ledger legs now post goods + fee (`helpers/packing.js
+  orderLedgerAmount()`), so on a PACKED order the switch posts the fee back as one
+  `charge` row („Packeta zrušená", `repriceCharge`) and a PAID friend keeps the fee as a
+  credit = the refund owed. The original note, for the record: `PATCH
   /orders/:id/paid` posts `roundMoney(order.total)` and `helpers/packing.js` charges
   `-roundMoney(order.total)`: **both legs use `total` alone, and `delivery_fee` has
   never entered `transactions` at all.** So zeroing it moves no balance and invalidates

@@ -22,23 +22,70 @@ import { roundMoney } from './pricing.js';
 // permanently, not just as belt-and-braces on a now-clean column.
 //
 // The reversal negates the ROUNDED charge, so pack→unpack still nets exactly 0.
+//
+// ⚠ PO 2026-10-01 — THE PACKETA FEE IS PART OF THE DEBT. A friend who ordered
+// Packeta pays goods + fee; until this date both ledger legs posted `total` alone,
+// so marking such an order paid recorded LESS than the friend paid (the admin saw
+// „+38.17" for a 41.57 transfer). Both legs — this charge and
+// `PATCH /orders/:id/paid` — now post `orderLedgerAmount()`, the ONE home of that
+// sum, so a Packeta friend still nets to exactly 0.
+//
+// ⚠ A REVERSAL NEGATES WHAT WAS POSTED, never today's figure: the fee can change
+// after the charge (`helpers/pickup.js applyPickup` zeroes it on a switch to
+// personal pickup), so the posted amount is stored in `orders.packed_amount` and
+// re-read here. NULL = a charge posted before 2026-10-01 = `roundMoney(total)`.
+
+// Goods + Packeta fee, rounded — what a friend's order costs them.
+export function orderLedgerAmount(order) {
+  return roundMoney((Number(order.total) || 0) + (Number(order.delivery_fee) || 0));
+}
+
+// What an earlier leg actually posted: the stored amount, else the pre-2026-10-01
+// rule (goods only).
+export function postedAmount(stored, order) {
+  return stored === null || stored === undefined ? roundMoney(order.total) : stored;
+}
 
 export function packOrder(order) {
+  const row = db.prepare('SELECT * FROM orders WHERE id = ?').get(order.id) || order;
+  const amount = orderLedgerAmount(row);
   db.prepare(`
     INSERT INTO transactions (friend_id, order_id, type, amount, note)
     VALUES (?, ?, 'charge', ?, NULL)
-  `).run(order.friend_id, order.id, -roundMoney(order.total));
+  `).run(row.friend_id, row.id, -amount);
 
-  db.prepare('UPDATE orders SET packed = 1, packed_at = CURRENT_TIMESTAMP WHERE id = ?').run(order.id);
+  db.prepare('UPDATE orders SET packed = 1, packed_at = CURRENT_TIMESTAMP, packed_amount = ? WHERE id = ?').run(amount, row.id);
+}
+
+// Re-price a PACKED order's posted charge after its fee changed (today: the
+// Packeta → pickup switch in `helpers/pickup.js applyPickup` zeroes it). Posts the
+// difference as one `charge` row and stores the new posted amount, so the debt is
+// goods-only again and a later unpack still nets to exactly 0. Not packed, or
+// nothing to correct (a pre-2026-10-01 charge never carried the fee) ⇒ no row.
+// A PAID leg is deliberately left as posted: the friend did transfer the fee, so
+// the resulting credit IS the refund the admin owes them.
+export function repriceCharge(orderId) {
+  const row = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+  if (!row || !row.packed) return 0;
+  const now = orderLedgerAmount(row);
+  const diff = roundMoney(postedAmount(row.packed_amount, row) - now);
+  if (diff === 0) return 0;
+  db.prepare(`
+    INSERT INTO transactions (friend_id, order_id, type, amount, note)
+    VALUES (?, ?, 'charge', ?, 'Packeta zrušená')
+  `).run(row.friend_id, row.id, diff);
+  db.prepare('UPDATE orders SET packed_amount = ? WHERE id = ?').run(now, row.id);
+  return diff;
 }
 
 export function unpackOrder(order) {
+  const row = db.prepare('SELECT * FROM orders WHERE id = ?').get(order.id) || order;
   db.prepare(`
     INSERT INTO transactions (friend_id, order_id, type, amount, note)
     VALUES (?, ?, 'charge', ?, 'Stornované')
-  `).run(order.friend_id, order.id, roundMoney(order.total));
+  `).run(row.friend_id, row.id, postedAmount(row.packed_amount, row));
 
-  db.prepare('UPDATE orders SET packed = 0, packed_at = NULL WHERE id = ?').run(order.id);
+  db.prepare('UPDATE orders SET packed = 0, packed_at = NULL, packed_amount = NULL WHERE id = ?').run(row.id);
 }
 
 // The host's own submitted order for a cycle, or undefined. The guest per-item
