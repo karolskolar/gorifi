@@ -1,5 +1,17 @@
 # Live cycle dashboard — Specification
 
+> ⚠ **SUPERSEDED IN PART — PO 2026-10-04** (`docs/learnings/01-early-features.md` §Analytics
+> 2026-10-04; code: `backend/src/helpers/analytics.js`, mirror `frontend/src/lib/coffee-tiers.js`).
+> Every tier, margin and average statement below that disagrees with this box is stale:
+> - **Tiers**: friends always pay 30 % off retail; the operator BUYS at **30 % for 5–24.9 kg**
+>   (no margin), **35 % for 25–49.9 kg** and **40 % from 50.0 kg** (was 26 / 51 kg).
+> - **Volume (kg)** = `volumeKg()`: capsules (`20pc5g`) and brew bags (`8pc12g`) are NOT tier
+>   volume — they are priced per pack outside the kg tiers.
+> - **Margin** = value **friends** paid for tier-volume coffee of the default roastery (no guests,
+>   no capsules/brew bags) × (1 − (1 − tier) / 0.70). Friends' prices include VAT and the operator
+>   pays VAT too, so the formula applies to the paid prices; `markup_ratio` is NOT a separate margin.
+> - **Average per person** = tier volume / (friends + guest sub-orders), 2 decimals.
+
 ## Context
 
 This spec describes a real-time dashboard visible to the operator (admin) during an active ordering cycle. It answers: "How is the current cycle going, and what do I need to do to hit my tier target?"
@@ -120,13 +132,12 @@ A grid of metric cards (2 or 3 columns, responsive). Each card has: a muted labe
 
 The estimated margin for the current cycle:
 
+~~(5–25 kg → 0 · 26–50 kg → 7.14 % · 51+ kg → 14.29 % of total_order_value)~~ — **PO 2026-10-04:**
+
 ```
-if total_kg <= 25:
-  margin = 0  (operator buys at 30%, sells at 30%)
-if total_kg 26-50:
-  margin = total_order_value * (1 - 0.65/0.70)  ≈ 7.14% of order value
-if total_kg 51+:
-  margin = total_order_value * (1 - 0.60/0.70)  ≈ 14.29% of order value
+if volume_kg < 25:     margin = 0  (5–24.9 kg is the 30 % tier = the friends' price)
+if volume_kg 25–49.9: margin = friend_volume_value * (1 - 0.65/0.70)  ≈ 7.14 %
+if volume_kg 50+:    margin = friend_volume_value * (1 - 0.60/0.70)  ≈ 14.29 %
 ```
 
 Note: respect `order_cycles.markup_ratio` if it's not 1.0. In that case, `total_order_value` already includes the markup, and the margin formula adjusts accordingly.

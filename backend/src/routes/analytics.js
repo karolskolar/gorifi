@@ -2,7 +2,8 @@ import { Router } from 'express';
 import db from '../db/schema.js';
 import { guestCycleItems } from '../helpers/guest-aggregation.js';
 import {
-  variantToKg,
+  volumeKg,
+  isVolumeVariant,
   getTier,
   getNextTier,
   computeMargin,
@@ -118,9 +119,13 @@ router.get('/coffee', (req, res) => {
 
       // Compute total kg and total value (only default roastery for tier calculations).
       // `friend*` and `guest*` are kept apart so the CYCLE-LEVEL totals can include
-      // guests while the PER-FRIEND averages below stay on friend kilos.
+      // guests. ⚠ PO 2026-10-04 — the same three rules as `routes/live-cycle.js`:
+      // kilos are TIER VOLUME (`volumeKg`, no capsules/brew bags), the margin basis
+      // is friends' tier-volume value only, and the average is per PERSON.
       let friendKg = 0;
       let friendValue = 0;
+      let friendMarginValue = 0;
+      const guestOrderIds = new Set();
       let guestKg = 0;
       let guestValue = 0;
       let otherRoasteryKg = 0;
@@ -128,11 +133,12 @@ router.get('/coffee', (req, res) => {
       for (const order of cycleOrders) {
         const orderItems = itemsByOrder[order.id] || [];
         for (const item of orderItems) {
-          const kg = variantToKg(item.variant, item.quantity);
+          const kg = volumeKg(item.variant, item.quantity);
           const itemValue = item.price * item.quantity;
           if (isDefaultRoastery(item.roastery)) {
             friendKg += kg;
             friendValue += itemValue;
+            if (isVolumeVariant(item.variant)) friendMarginValue += itemValue;
           } else {
             otherRoasteryKg += kg;
             otherRoasteryValue += itemValue;
@@ -140,7 +146,8 @@ router.get('/coffee', (req, res) => {
         }
       }
       for (const item of guestItemsByCycle[cycle.id] || []) {
-        const kg = variantToKg(item.variant, item.quantity);
+        guestOrderIds.add(item.guest_order_id);
+        const kg = volumeKg(item.variant, item.quantity);
         const itemValue = item.price * item.quantity;
         if (isDefaultRoastery(item.roastery)) {
           guestKg += kg;
@@ -151,18 +158,17 @@ router.get('/coffee', (req, res) => {
         }
       }
 
-      const friendKgRounded = roundKg(friendKg);
-      const friendValueRounded = Math.round(friendValue * 100) / 100;
       const totalKg = roundKg(friendKg + guestKg);
       const totalValue = Math.round((friendValue + guestValue) * 100) / 100;
 
-      // PER-FRIEND: friend basis, so "avg kg per person" keeps meaning kilos per
-      // friend (it drives friends_needed_for_next_tier / min_viable_base below).
-      const avgKgPerPerson = numFriends > 0 ? roundKg(friendKgRounded / numFriends) : 0;
-      const avgValuePerPerson = numFriends > 0 ? Math.round((friendValueRounded / numFriends) * 100) / 100 : 0;
+      // PER PERSON (PO 2026-10-04): volume over friends + guest sub-orders, 2
+      // decimals — it still drives friends_needed_for_next_tier / min_viable_base.
+      const numPeople = numFriends + guestOrderIds.size;
+      const avgKgPerPerson = numPeople > 0 ? Math.round(((friendKg + guestKg) / numPeople) * 100) / 100 : 0;
+      const avgValuePerPerson = numPeople > 0 ? Math.round(((friendValue + guestValue) / numPeople) * 100) / 100 : 0;
 
       const tier = getTier(totalKg);
-      const operator_margin = Math.round(computeMargin(totalValue, totalKg) * 100) / 100;
+      const operator_margin = Math.round(computeMargin(friendMarginValue, totalKg) * 100) / 100;
 
       // New / returning / churned
       const newFriends = [...currentFriendSet].filter(f => !prevFriendSet.has(f)).length;
@@ -179,6 +185,7 @@ router.get('/coffee', (req, res) => {
         // CYCLE-LEVEL: friend + guest. PER-FRIEND (num_friends, the averages, the
         // new/returning/churned counts) stays keyed on `orders`.
         num_friends: numFriends,
+        num_guests: guestOrderIds.size,
         total_kg: totalKg,
         total_value: totalValue,
         guest_kg: roundKg(guestKg),
@@ -260,7 +267,7 @@ router.get('/coffee', (req, res) => {
           totalValue += order.order_value || 0;
           const orderItems = itemsByOrder[order.id] || [];
           for (const item of orderItems) {
-            const kg = variantToKg(item.variant, item.quantity);
+            const kg = volumeKg(item.variant, item.quantity);
             cycleKg += kg;
           }
         }
@@ -358,7 +365,7 @@ router.get('/coffee', (req, res) => {
       const orderItems = itemsByOrder[order.id] || [];
       let kg = 0;
       for (const item of orderItems) {
-        kg += variantToKg(item.variant, item.quantity);
+        kg += volumeKg(item.variant, item.quantity);
       }
       lastCycleFriendKg[order.friend_id] = (lastCycleFriendKg[order.friend_id] || 0) + kg;
     }

@@ -15,6 +15,7 @@ import {
   Filler,
 } from 'chart.js'
 import { Bar } from 'vue-chartjs'
+import { TIER_35_KG, TIER_40_KG } from '../../lib/coffee-tiers.js'
 
 ChartJS.register(
   CategoryScale,
@@ -48,16 +49,16 @@ const labels = computed(() =>
 
 const barColors = computed(() =>
   props.cycles.map((c) => {
-    if (c.total_kg >= 51) return 'rgba(34, 197, 94, 0.7)'  // green
-    if (c.total_kg >= 26) return 'rgba(59, 130, 246, 0.7)'  // blue
+    if (c.total_kg >= TIER_40_KG) return 'rgba(34, 197, 94, 0.7)'  // green
+    if (c.total_kg >= TIER_35_KG) return 'rgba(59, 130, 246, 0.7)'  // blue
     return 'rgba(245, 158, 11, 0.7)'                         // amber
   })
 )
 
 const barBorderColors = computed(() =>
   props.cycles.map((c) => {
-    if (c.total_kg >= 51) return 'rgb(34, 197, 94)'
-    if (c.total_kg >= 26) return 'rgb(59, 130, 246)'
+    if (c.total_kg >= TIER_40_KG) return 'rgb(34, 197, 94)'
+    if (c.total_kg >= TIER_35_KG) return 'rgb(59, 130, 246)'
     return 'rgb(245, 158, 11)'
   })
 )
@@ -88,8 +89,8 @@ const chartDataWithThresholds = computed(() => ({
     },
     {
       type: 'line',
-      label: '35% hranica (26 kg)',
-      data: Array(props.cycles.length).fill(26),
+      label: `35% hranica (${TIER_35_KG} kg)`,
+      data: Array(props.cycles.length).fill(TIER_35_KG),
       borderColor: 'rgba(59, 130, 246, 0.5)',
       borderDash: [5, 5],
       pointRadius: 0,
@@ -98,8 +99,8 @@ const chartDataWithThresholds = computed(() => ({
     },
     {
       type: 'line',
-      label: '40% hranica (51 kg)',
-      data: Array(props.cycles.length).fill(51),
+      label: `40% hranica (${TIER_40_KG} kg)`,
+      data: Array(props.cycles.length).fill(TIER_40_KG),
       borderColor: 'rgba(34, 197, 94, 0.5)',
       borderDash: [5, 5],
       pointRadius: 0,

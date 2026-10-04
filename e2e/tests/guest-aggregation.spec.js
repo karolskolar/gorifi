@@ -34,10 +34,12 @@ import { makeAdmin } from '../helpers/admin.js'
 //
 // Two assertions carry more weight than they look:
 //
-//  1. **The tier tip.** `cycleLockedA` holds 25 kg of friend coffee — one kilo under
-//     the 26 kg / 35% threshold — plus a 1 kg guest sub-order. A `tier.label` of
-//     '35%' can therefore ONLY come from the guest kilo being counted, and the
-//     margin (0 at 30%, non-zero at 35%) follows the same kilo.
+//  1. **The tier tip.** `cycleLockedA` holds 49 kg of friend coffee — one kilo under
+//     the 50 kg / 40% threshold (PO 2026-10-04 tiers: 30 % from 5 kg, 35 % from 25 kg,
+//     40 % from 50 kg; ~~25 kg under 26 kg / 35 %~~) — plus a 1 kg guest sub-order. A `tier.label` of
+//     '40%' can therefore ONLY come from the guest kilo being counted, and the
+//     margin (on the FRIEND value since 2026-10-04) moves from the 35 % to the 40 %
+//     rate with the same kilo.
 //  2. **The roastery bucket.** Only default-roastery kilos count toward the tier.
 //     A guest kilo of a NON-default roastery must land in `other_roastery_kg` and
 //     leave `total_kg` alone — a wrong default classification would silently move
@@ -246,7 +248,7 @@ function friendRow(analytics, friendId) {
 //                            a COMPLETED cycle, looked up BY ID. It is deliberately
 //                            NOT the source of live-cycle's `previous` any more; that
 //                            test completes its own cycle inline (see there).
-//   cycleLockedA locked    — 25 kg friend + 1 kg guest → the tier tip in analytics
+//   cycleLockedA locked    — 49 kg friend + 1 kg guest → the tier tip in analytics
 //   cycleLockedB locked    — 2 kg friend + 1 kg CANCELLED guest
 //
 // Each live-cycle test then builds its OWN open cycle via `freshLiveCycle()` and
@@ -310,11 +312,11 @@ test.beforeAll(async () => {
   await submitGuest(linkPrev.token, [{ product_id: productPrev.id, variant: '1kg', quantity: 1 }])
   await setStatus(cyclePrev.id, 'completed')
 
-  // --- cycleLockedA: 25 kg friend (one kilo under the 26 kg tier) + 1 kg guest ---
+  // --- cycleLockedA: 49 kg friend (one kilo under the 50 kg tier) + 1 kg guest ---
   cycleLockedA = await makeCycle('locka')
   const productA = await addProduct(cycleLockedA.id, { price_1kg: 20 })
   const linkA = await shareLink(hostA, cycleLockedA.id)
-  await submitOwnOrder(hostA, cycleLockedA.id, [{ product_id: productA.id, variant: '1kg', quantity: 25 }])
+  await submitOwnOrder(hostA, cycleLockedA.id, [{ product_id: productA.id, variant: '1kg', quantity: 49 }])
   await submitGuest(linkA.token, [{ product_id: productA.id, variant: '1kg', quantity: 1 }])
   await setStatus(cycleLockedA.id, 'locked')
 
@@ -347,7 +349,8 @@ test.describe('live-cycle dashboard — cycle totals include guest kilos (UC-GSO
     expect(before.totals.next_tier.minKg).toBe(5)
     expect(before.totals.distance_to_next_tier).toBe(1)
 
-    // PER-FRIEND snapshot: everything below must be byte-identical afterwards.
+    // PER-FRIEND snapshot: the friend count and the nudge list must be identical
+    // afterwards. (The AVERAGES are per PERSON since PO 2026-10-04 — asserted below.)
     const friendFacts = {
       num_friends: before.totals.num_friends,
       total_eligible: before.totals.total_eligible,
@@ -369,17 +372,19 @@ test.describe('live-cycle dashboard — cycle totals include guest kilos (UC-GSO
     expect(after.totals.guest_kg, 'the guest share, visible on its own').toBe(2)
     expect(after.totals.guest_value).toBe(40)
     expect(after.totals.tier_label, '6 kg clears the 5 kg tier').toBe('30%')
-    expect(after.totals.next_tier.minKg).toBe(26)
-    expect(after.totals.distance_to_next_tier, '26 − 6').toBe(20)
+    expect(after.totals.next_tier.minKg).toBe(25)
+    expect(after.totals.distance_to_next_tier, '25 − 6').toBe(19)
 
-    // PER-FRIEND: a guest is not a friend. Nothing about the friend base moved —
-    // not the count, not the averages, not one row of the nudge list.
+    // A guest is not a friend: the friend count and the nudge list do not move.
     expect(after.totals.num_friends, 'a guest must NEVER raise the friend count').toBe(1)
+    expect(after.totals.num_guests, 'the guest is counted on its own').toBe(1)
     expect(after.totals.total_eligible).toBe(friendFacts.total_eligible)
-    expect(after.totals.avg_kg_per_person, 'per-FRIEND average stays on friend kilos').toBe(4)
-    expect(after.totals.avg_value_per_person).toBe(friendFacts.avg_value_per_person)
     expect(JSON.stringify(after.not_ordered), 'the nudge list is untouched').toBe(friendFacts.not_ordered)
-    expect(after.potential_kg).toBe(friendFacts.potential_kg)
+    // ⚠ PO 2026-10-04 — the averages are per PERSON (friends + guests): 6 kg / 2.
+    expect(after.totals.avg_kg_per_person, '6 kg / (1 friend + 1 guest)').toBe(3)
+    expect(after.totals.avg_value_per_person, '120 EUR / 2 people').toBe(60)
+    expect(after.potential_kg, 'the nudge maths uses the per-person average')
+      .toBe(Math.round(after.not_ordered.length * 3 * 10) / 10)
 
     // And the guest appears nowhere in the friend-shaped output. Scoped to the guests
     // this spec submitted (see `guestNames`) — the nudge list is every eligible friend
@@ -501,8 +506,9 @@ test.describe('live-cycle dashboard — cycle totals include guest kilos (UC-GSO
     expect(body.previous.total_kg, '2 kg friend + 1 kg guest').toBe(3)
     expect(body.previous.total_value, '40 + 20 EUR').toBe(60)
     expect(body.previous.num_friends, 'one friend ordered — the guest is not one').toBe(1)
-    expect(body.previous.avg_kg_per_person, 'per-FRIEND average stays on friend kilos').toBe(2)
-    expect(body.previous.avg_value_per_person).toBe(40)
+    expect(body.previous.num_guests).toBe(1)
+    expect(body.previous.avg_kg_per_person, 'per PERSON (PO 2026-10-04): 3 kg / 2').toBe(1.5)
+    expect(body.previous.avg_value_per_person, '60 EUR / 2').toBe(30)
     expect(body.previous.friend_ids, 'only the host').toEqual([hostMain.id])
   })
 })
@@ -512,35 +518,36 @@ test.describe('coffee analytics — cycle totals include guest kilos (UC-GSO-013
     const analytics = await coffeeAnalytics()
     const row = cycleRow(analytics, cycleLockedA.id)
 
-    // 25 kg of friend coffee is ONE KILO under the 26 kg / 35% threshold, so a
-    // '35%' tier here is only reachable with the guest kilo counted.
-    expect(row.total_kg, '25 friend + 1 guest kg').toBe(26)
-    expect(row.total_value, '500 + 20 EUR').toBe(520)
+    // 49 kg of friend coffee is ONE KILO under the 50 kg / 40% threshold, so a
+    // '40%' tier here is only reachable with the guest kilo counted.
+    expect(row.total_kg, '49 friend + 1 guest kg').toBe(50)
+    expect(row.total_value, '980 + 20 EUR').toBe(1000)
     expect(row.guest_kg).toBe(1)
     expect(row.guest_value).toBe(20)
-    expect(row.tier.label, 'the guest kilo tipped the tier — 25 kg alone is 30%').toBe('35%')
-    expect(row.tier.minKg).toBe(26)
+    expect(row.tier.label, 'the guest kilo tipped the tier — 49 kg alone is 35%').toBe('40%')
+    expect(row.tier.minKg).toBe(50)
 
-    // margin = value × (1 − (1 − 0.35) / (1 − 0.30)); at 30% the formula yields 0,
-    // so a non-zero margin is the same guest kilo showing up in the money.
-    const expectedMargin = Math.round(520 * (1 - 0.65 / 0.7) * 100) / 100
-    expect(expectedMargin).toBeCloseTo(37.14, 2)
+    // PO 2026-10-04: margin = FRIENDS' value × (1 − (1 − tier) / (1 − 0.30)) — the
+    // guest's 20 EUR is not in the basis, but the guest kilo moves the RATE from
+    // 35 % (68.57) to 40 % (140.00), so it still shows up in the money.
+    const expectedMargin = Math.round(980 * (1 - 0.6 / 0.7) * 100) / 100
+    expect(expectedMargin).toBeCloseTo(140, 2)
     expect(row.operator_margin).toBe(expectedMargin)
 
-    // PER-FRIEND, same payload: the friend count and the per-friend averages stay
-    // on friend orders only.
+    // The friend count stays friend-only; the averages are per PERSON.
     expect(row.num_friends, 'one friend ordered').toBe(1)
-    expect(row.avg_kg_per_person, '25 friend kg / 1 friend — NOT 26').toBe(25)
-    expect(row.avg_value_per_person).toBe(500)
+    expect(row.num_guests).toBe(1)
+    expect(row.avg_kg_per_person, '50 kg / (1 friend + 1 guest)').toBe(25)
+    expect(row.avg_value_per_person, '1000 EUR / 2').toBe(500)
   })
 
   test('the per-friend table stays friend-only', async () => {
     const analytics = await coffeeAnalytics()
     const host = friendRow(analytics, hostIds.a)
-    expect(host.total_kg, "the host's own 25 kg — their guest's kilo is not theirs (that is GSO-T9)").toBe(25)
-    expect(host.total_value).toBe(500)
+    expect(host.total_kg, "the host's own 49 kg — their guest's kilo is not theirs (that is GSO-T9)").toBe(49)
+    expect(host.total_value).toBe(980)
     expect(host.cycles_participated).toBe(1)
-    expect(host.avg_kg_per_cycle).toBe(25)
+    expect(host.avg_kg_per_cycle).toBe(49)
 
     // No guest is ever a row in the friend table. Same scoping as the nudge list
     // above: `analytics.friends` is every active friend plus every friend with an

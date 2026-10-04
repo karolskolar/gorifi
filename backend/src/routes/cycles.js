@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
-import { variantToKg } from '../helpers/analytics.js';
+import { variantToKg, volumeKg } from '../helpers/analytics.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { cycleSubOrdersByHost, guestOrderStatus, loadSubOrder } from '../helpers/guest-orders.js';
 import { guestCycleItems } from '../helpers/guest-aggregation.js';
@@ -235,7 +235,9 @@ router.get('/', requireAdmin, (req, res) => {
     if (!breakdownByCycle[it.cycle_id][roastery]) {
       breakdownByCycle[it.cycle_id][roastery] = { name: roastery, total_kg: 0, total_value: 0 };
     }
-    breakdownByCycle[it.cycle_id][roastery].total_kg += variantToKg(it.variant, it.quantity);
+    // TIER VOLUME (PO 2026-10-04): capsules/brew bags are not „kg kávy" on this card
+    // — the same `volumeKg()` the live dashboard's tier uses, so the two agree.
+    breakdownByCycle[it.cycle_id][roastery].total_kg += volumeKg(it.variant, it.quantity);
     breakdownByCycle[it.cycle_id][roastery].total_value += (it.price || 0) * it.quantity;
   };
   for (const it of items) {
