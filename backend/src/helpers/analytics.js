@@ -1,13 +1,14 @@
 // Tier thresholds: kg → the discount off RETAIL the operator BUYS at.
 //
 // PO 2026-10-04 (supersedes 5→30 % / 26→35 % / 51→40 %): friends always buy at
-// 30 % off retail (BUYER_DISCOUNT); the operator buys at 35 % from 5 kg and at
-// 40 % from 50 kg („5–49,9 kg → 35 %, nad 50 kg → 40 %"). Below 5 kg there is no
-// tier and no margin. ⚠ Mirrored for the views in `frontend/src/lib/coffee-tiers.js`
-// — `live-stats.spec.js` pins the two EQUAL.
+// 30 % off retail (BUYER_DISCOUNT); the operator buys at 30 % for 5–24.9 kg (no
+// margin), 35 % for 25–49.9 kg and 40 % from 50.0 kg. Below 5 kg there is no tier.
+// ⚠ Mirrored for the views in `frontend/src/lib/coffee-tiers.js` —
+// `live-stats.spec.js` pins the two EQUAL.
 export const TIER_THRESHOLDS = [
   { minKg: 50, discount: 0.40, label: '40%' },
-  { minKg: 5,  discount: 0.35, label: '35%' },
+  { minKg: 25, discount: 0.35, label: '35%' },
+  { minKg: 5,  discount: 0.30, label: '30%' },
 ];
 
 // Buyer discount rate (what friends pay relative to retail)

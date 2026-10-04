@@ -1,8 +1,9 @@
 // PO 2026-10-04 — what the coffee statistics count (live dashboard „Živý prehľad",
 // the „Káva" tab, and the dashboard cycle card).
 //
-//  1. TIERS: friends always pay 30 % off retail; the operator buys at 35 % from 5 kg
-//     and 40 % from 50 kg (was 5→30 / 26→35 / 51→40). Backend + view mirror EQUAL.
+//  1. TIERS: friends always pay 30 % off retail; the operator buys at 30 % from 5 kg
+//     (no margin), 35 % from 25 kg and 40 % from 50.0 kg (was 5→30 / 26→35 / 51→40).
+//     Backend + view mirror EQUAL.
 //  2. VOLUME (`volumeKg`): capsules (20pc5g) and brew bags (8pc12g) are priced per
 //     pack outside the kg tiers — they are not tier volume. Physical weight
 //     (`variantToKg`) is untouched for rewards / catalog / distribution.
@@ -30,9 +31,11 @@ test.describe('pure helpers (direct import — helpers/analytics.js imports noth
     expect(view.COFFEE_TIERS).toEqual(backend.TIER_THRESHOLDS)
     expect(backend.TIER_THRESHOLDS).toEqual([
       { minKg: 50, discount: 0.40, label: '40%' },
-      { minKg: 5, discount: 0.35, label: '35%' },
+      { minKg: 25, discount: 0.35, label: '35%' },
+      { minKg: 5, discount: 0.30, label: '30%' },
     ])
-    expect(view.TIER_35_KG).toBe(5)
+    expect(view.TIER_30_KG).toBe(5)
+    expect(view.TIER_35_KG).toBe(25)
     expect(view.TIER_40_KG).toBe(50)
   })
 
@@ -46,14 +49,17 @@ test.describe('pure helpers (direct import — helpers/analytics.js imports noth
     expect(m.variantToKg('8pc12g', 1)).toBeCloseTo(0.096, 10)
   })
 
-  test('tiers and margin: none under 5 kg, 35 % from 5, 40 % from 50; October 2026 = 179.54', async () => {
+  test('tiers and margin: none under 5 kg, 30 % from 5, 35 % from 25, 40 % from 50; October 2026 = 179.54', async () => {
     const m = await import(ANALYTICS_URL)
     expect(m.getTier(4.9)).toBeNull()
-    expect(m.getTier(5).label).toBe('35%')
+    expect(m.getTier(5).label).toBe('30%')
+    expect(m.getTier(24.9).label).toBe('30%')
+    expect(m.getTier(25).label).toBe('35%')
     expect(m.getTier(49.9).label).toBe('35%')
-    expect(m.getTier(50).label).toBe('40%')
+    expect(m.getTier(50).label, 'exactly 50.0 kg is already 40 %').toBe('40%')
     expect(m.computeMargin(100, 4.9)).toBe(0)
-    expect(m.computeMargin(700, 10)).toBeCloseTo(50, 10) // 700 × (1 − 0.65/0.70)
+    expect(m.computeMargin(700, 24.9), 'the 30 % tier buys at the friends\' price — no margin').toBe(0)
+    expect(m.computeMargin(700, 30)).toBeCloseTo(50, 10) // 700 × (1 − 0.65/0.70)
     // The measured case: friends' Goriffee beans 1256.77 EUR at 51.4 kg.
     expect(Math.round(m.computeMargin(1256.77, 51.4) * 100) / 100).toBe(179.54)
   })
@@ -99,9 +105,9 @@ test.describe('the live dashboard, the Káva tab and the cycle card agree', () =
     const caps = await prod({ name: `Stats kapsule ${uniq}`, price_20pc5g: 10 })
     const bags = await prod({ name: `Stats bags ${uniq}`, price_8pc12g: 11 })
 
-    // Friend: 20 kg of beans + 3 capsule packs + 2 brew-bag packs.
+    // Friend: 30 kg of beans + 3 capsule packs + 2 brew-bag packs.
     const items = [
-      { product_id: beans.id, variant: '1kg', quantity: 20 },
+      { product_id: beans.id, variant: '1kg', quantity: 30 },
       { product_id: caps.id, variant: '20pc5g', quantity: 3 },
       { product_id: bags.id, variant: '8pc12g', quantity: 2 },
     ]
@@ -126,17 +132,17 @@ test.describe('the live dashboard, the Káva tab and the cycle card agree', () =
     const body = await (await adminReq('/api/analytics/live-cycle')).json()
     expect(body.cycle.id, 'this file\'s cycle is the live one').toBe(cycle.id)
     const t = body.totals
-    expect(t.total_kg, '20 + 1 kg — no capsules, no brew bags').toBe(21)
+    expect(t.total_kg, '30 + 1 kg — no capsules, no brew bags').toBe(31)
     expect(t.guest_kg).toBe(1)
     expect(t.tier_label).toBe('35%')
     expect(t.next_tier.minKg).toBe(50)
-    // Friends' bean value only: 20 × 20 = 400 → 400 × (1 − 0.65/0.70) = 28.57.
-    expect(t.operator_margin, 'not the capsules, not the bags, not the guest').toBe(28.57)
+    // Friends' bean value only: 30 × 20 = 600 → 600 × (1 − 0.65/0.70) = 42.86.
+    expect(t.operator_margin, 'not the capsules, not the bags, not the guest').toBe(42.86)
     expect(t.num_friends).toBe(1)
     expect(t.num_guests).toBe(1)
-    expect(t.avg_kg_per_person, '21 kg / 2 people').toBe(10.5)
-    // Money stays whole: 400 + 30 + 22 (friend) + 20 + 10 (guest).
-    expect(t.total_value).toBe(482)
+    expect(t.avg_kg_per_person, '31 kg / 2 people').toBe(15.5)
+    // Money stays whole: 600 + 30 + 22 (friend) + 20 + 10 (guest).
+    expect(t.total_value).toBe(682)
   })
 
   test('the Káva tab row says the same', async () => {
@@ -145,9 +151,9 @@ test.describe('the live dashboard, the Káva tab and the cycle card agree', () =
     expect((await adminReq(`/api/cycles/${cycle.id}`, { method: 'patch', data: { status: 'locked' } })).status()).toBe(200)
     const body = await (await adminReq('/api/analytics/coffee')).json()
     const row = body.cycles.find((c) => c.id === cycle.id)
-    expect(row.total_kg).toBe(21)
-    expect(row.operator_margin).toBe(28.57)
-    expect(row.avg_kg_per_person).toBe(10.5)
+    expect(row.total_kg).toBe(31)
+    expect(row.operator_margin).toBe(42.86)
+    expect(row.avg_kg_per_person).toBe(15.5)
     expect(row.num_guests).toBe(1)
   })
 
@@ -158,9 +164,9 @@ test.describe('the live dashboard, the Káva tab and the cycle card agree', () =
     await expect(page).toHaveURL(/\/admin\/dashboard/)
     adminToken = await page.evaluate(() => localStorage.getItem('adminToken')) // the UI login rotated it
     await page.goto('/admin/analytics/live')
-    await expect(page.getByTestId('live-total-kg')).toHaveText('21.00')
-    await expect(page.getByTestId('live-margin')).toContainText('28.57')
-    await expect(page.getByTestId('live-avg-kg')).toContainText('10.50')
+    await expect(page.getByTestId('live-total-kg')).toHaveText('31.00')
+    await expect(page.getByTestId('live-margin')).toContainText('42.86')
+    await expect(page.getByTestId('live-avg-kg')).toContainText('15.50')
     await expect(page.getByTestId('live-num-guests')).toHaveText('+ 1 hosť')
     // „40% (0.4%)" was the raw fraction printed as a percentage.
     await expect(page.getByTestId('live-tier')).toHaveText('35% zlava')
@@ -170,6 +176,6 @@ test.describe('the live dashboard, the Káva tab and the cycle card agree', () =
     const cycles = await (await adminReq('/api/cycles')).json()
     const row = cycles.find((c) => c.id === cycle.id)
     const total = row.roastery_breakdown.reduce((s, r) => s + r.total_kg, 0)
-    expect(total, 'no capsules / brew bags on the card').toBe(21)
+    expect(total, 'no capsules / brew bags on the card').toBe(31)
   })
 })

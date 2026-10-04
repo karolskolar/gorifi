@@ -35,8 +35,8 @@ import { makeAdmin } from '../helpers/admin.js'
 // Two assertions carry more weight than they look:
 //
 //  1. **The tier tip.** `cycleLockedA` holds 49 kg of friend coffee — one kilo under
-//     the 50 kg / 40% threshold (PO 2026-10-04 tiers: 35 % from 5 kg, 40 % from 50 kg;
-//     ~~25 kg under 26 kg / 35 %~~) — plus a 1 kg guest sub-order. A `tier.label` of
+//     the 50 kg / 40% threshold (PO 2026-10-04 tiers: 30 % from 5 kg, 35 % from 25 kg,
+//     40 % from 50 kg; ~~25 kg under 26 kg / 35 %~~) — plus a 1 kg guest sub-order. A `tier.label` of
 //     '40%' can therefore ONLY come from the guest kilo being counted, and the
 //     margin (on the FRIEND value since 2026-10-04) moves from the 35 % to the 40 %
 //     rate with the same kilo.
@@ -345,7 +345,7 @@ test.describe('live-cycle dashboard — cycle totals include guest kilos (UC-GSO
     expect(before.totals.total_value, '4 × 20 EUR').toBe(80)
     expect(before.totals.guest_kg, 'no guests yet').toBe(0)
     expect(before.totals.guest_value).toBe(0)
-    expect(before.totals.tier_label, 'under the 5 kg / 35% threshold').toBeNull()
+    expect(before.totals.tier_label, 'under the 5 kg / 30% threshold').toBeNull()
     expect(before.totals.next_tier.minKg).toBe(5)
     expect(before.totals.distance_to_next_tier).toBe(1)
 
@@ -371,9 +371,9 @@ test.describe('live-cycle dashboard — cycle totals include guest kilos (UC-GSO
     expect(after.totals.total_value, '80 + 40 EUR').toBe(120)
     expect(after.totals.guest_kg, 'the guest share, visible on its own').toBe(2)
     expect(after.totals.guest_value).toBe(40)
-    expect(after.totals.tier_label, '6 kg clears the 5 kg tier').toBe('35%')
-    expect(after.totals.next_tier.minKg).toBe(50)
-    expect(after.totals.distance_to_next_tier, '50 − 6').toBe(44)
+    expect(after.totals.tier_label, '6 kg clears the 5 kg tier').toBe('30%')
+    expect(after.totals.next_tier.minKg).toBe(25)
+    expect(after.totals.distance_to_next_tier, '25 − 6').toBe(19)
 
     // A guest is not a friend: the friend count and the nudge list do not move.
     expect(after.totals.num_friends, 'a guest must NEVER raise the friend count').toBe(1)
@@ -402,7 +402,7 @@ test.describe('live-cycle dashboard — cycle totals include guest kilos (UC-GSO
     expect(withIt.totals.total_kg, '4 + 3').toBe(7)
     expect(withIt.totals.total_value, '80 + 60').toBe(140)
     expect(withIt.totals.guest_kg).toBe(3)
-    expect(withIt.totals.tier_label, '7 kg clears the 5 kg tier').toBe('35%')
+    expect(withIt.totals.tier_label, '7 kg clears the 5 kg tier').toBe('30%')
 
     // Cancelling KEEPS the item rows (GSO-T4), so only the
     // COALESCE(status,'submitted') <> 'cancelled' predicate can remove these kilos.

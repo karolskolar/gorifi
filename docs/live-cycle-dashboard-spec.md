@@ -3,8 +3,8 @@
 > ⚠ **SUPERSEDED IN PART — PO 2026-10-04** (`docs/learnings/01-early-features.md` §Analytics
 > 2026-10-04; code: `backend/src/helpers/analytics.js`, mirror `frontend/src/lib/coffee-tiers.js`).
 > Every tier, margin and average statement below that disagrees with this box is stale:
-> - **Tiers**: friends always pay 30 % off retail; the operator BUYS at **35 % from 5 kg** and
->   **40 % from 50 kg**. There is no „30 % tier" and no 26 / 51 kg threshold any more.
+> - **Tiers**: friends always pay 30 % off retail; the operator BUYS at **30 % for 5–24.9 kg**
+>   (no margin), **35 % for 25–49.9 kg** and **40 % from 50.0 kg** (was 26 / 51 kg).
 > - **Volume (kg)** = `volumeKg()`: capsules (`20pc5g`) and brew bags (`8pc12g`) are NOT tier
 >   volume — they are priced per pack outside the kg tiers.
 > - **Margin** = value **friends** paid for tier-volume coffee of the default roastery (no guests,
@@ -135,8 +135,8 @@ The estimated margin for the current cycle:
 ~~(5–25 kg → 0 · 26–50 kg → 7.14 % · 51+ kg → 14.29 % of total_order_value)~~ — **PO 2026-10-04:**
 
 ```
-if volume_kg < 5:   margin = 0
-if volume_kg 5–49.9: margin = friend_volume_value * (1 - 0.65/0.70)  ≈ 7.14 %
+if volume_kg < 25:     margin = 0  (5–24.9 kg is the 30 % tier = the friends' price)
+if volume_kg 25–49.9: margin = friend_volume_value * (1 - 0.65/0.70)  ≈ 7.14 %
 if volume_kg 50+:    margin = friend_volume_value * (1 - 0.60/0.70)  ≈ 14.29 %
 ```
 

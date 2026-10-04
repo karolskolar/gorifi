@@ -261,7 +261,7 @@ const visibleNotOrdered = computed(() => {
             <p class="text-2xl font-bold" :class="totals.operator_margin > 0 ? 'text-green-600' : ''" data-testid="live-margin">
               {{ totals.operator_margin?.toFixed(2) }} <span class="text-sm font-normal text-muted-foreground">EUR</span>
             </p>
-            <p v-if="totals.operator_margin === 0" class="text-xs text-muted-foreground">pod {{ TIER_35_KG }} kg — bez tieru</p>
+            <p v-if="totals.operator_margin === 0" class="text-xs text-muted-foreground">pod {{ TIER_35_KG }} kg — bez marze</p>
             <p v-else class="text-xs text-muted-foreground">z objednavok priatelov, bez kapsul a hosti</p>
           </CardContent>
         </Card>

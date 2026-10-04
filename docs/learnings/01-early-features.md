@@ -320,8 +320,10 @@ cycle `markup_ratio` 1.19 — friends and guests alike.
 - 259.18 = 1814.27 (the whole default-roastery value: friends + guests + capsules) × 14.29 %.
 - „(0.4%)" printed `tier_discount` (a fraction) with a „%".
 
-**PO rules (2026-10-04).** Friends pay 30 % off retail (VAT incl.); the operator buys at 35 % from
-5 kg and 40 % from 50 kg (VAT paid too) — `TIER_THRESHOLDS` was 5→30 / 26→35 / 51→40. Margin =
+**PO rules (2026-10-04).** Friends pay 30 % off retail (VAT incl.); the operator buys at 30 % for
+5–24.9 kg, 35 % for 25–49.9 kg and 40 % from 50.0 kg (VAT paid too) — `TIER_THRESHOLDS` was
+5→30 / 26→35 / 51→40. (A first answer said „35 % from 5 kg"; the PO corrected it the same day —
+the Goriffee sheet's „35 % nad 25 kg" is the rule.) Margin =
 difference between that purchase discount and the value of FRIENDS' orders bought at 30 %. Capsules
 AND brew bags are not volume. Average = total kg / ALL people (friends + guests).
 Check: friends' Goriffee beans 519.18 + 737.59 = 1256.77 × (1 − 0.60/0.70) = **179.54** — the PO's

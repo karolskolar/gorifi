@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, watchEffect, onMounted } from 'vue'
-import { COFFEE_TIERS, TIER_35_KG, TIER_40_KG } from '../lib/coffee-tiers.js'
+import { COFFEE_TIERS, TIER_30_KG, TIER_35_KG, TIER_40_KG } from '../lib/coffee-tiers.js'
 import { useRouter } from 'vue-router'
 import api from '../api'
 import { Button } from '@/components/ui/button'
@@ -78,16 +78,21 @@ const milestones = computed(() => {
   const kg = rollingAvg.value
   const avgPp = avgKgPerPerson.value
   return [
-    // PO 2026-10-04: friends pay the 30 % price; the operator buys at 35 % from
-    // 5 kg and at 40 % from 50 kg (`lib/coffee-tiers.js`). Margin on friends' order
-    // value = 1 − (1 − tier) / 0.70 ⇒ ≈ 7 % at 35 %, ≈ 14 % at 40 %.
+    // PO 2026-10-04: friends pay the 30 % price; the operator buys at 30 % from
+    // 5 kg, 35 % from 25 kg and 40 % from 50 kg (`lib/coffee-tiers.js`). Margin on
+    // friends' order value = 1 − (1 − tier) / 0.70 ⇒ 0 / ≈ 7 % / ≈ 14 %.
     {
-      label: `Dosiahnuť ${TIER_35_KG} kg (35% zľava → ≈7% marža)`,
+      label: `Dosiahnuť ${TIER_30_KG} kg (veľkoobchodná cena, 30% zľava)`,
+      done: kg >= TIER_30_KG,
+      friendsNeeded: kg < TIER_30_KG && avgPp > 0 ? Math.ceil((TIER_30_KG - kg) / avgPp) : null,
+    },
+    {
+      label: `Dosiahnuť ${TIER_35_KG} kg stabilne (35% zľava → ≈7% marža)`,
       done: kg >= TIER_35_KG,
       friendsNeeded: kg < TIER_35_KG && avgPp > 0 ? Math.ceil((TIER_35_KG - kg) / avgPp) : null,
     },
     {
-      label: `Dosiahnuť ${TIER_40_KG} kg stabilne (40% zľava → ≈14% marža)`,
+      label: `Dosiahnuť ${TIER_40_KG} kg (40% zľava → ≈14% marža)`,
       done: kg >= TIER_40_KG,
       friendsNeeded: kg < TIER_40_KG && avgPp > 0 ? Math.ceil((TIER_40_KG - kg) / avgPp) : null,
     },
