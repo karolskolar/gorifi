@@ -7,8 +7,8 @@
 >   (no margin), **35 % for 25–49.9 kg** and **40 % from 50.0 kg** (was 26 / 51 kg).
 > - **Volume (kg)** = `volumeKg()`: capsules (`20pc5g`) and brew bags (`8pc12g`) are NOT tier
 >   volume — they are priced per pack outside the kg tiers.
-> - **Margin** = value **friends** paid for tier-volume coffee of the default roastery (no guests,
->   no capsules/brew bags) × (1 − (1 − tier) / 0.70). Friends' prices include VAT and the operator
+> - **Margin** = value ~~**friends**~~ **friends AND guests** paid for tier-volume coffee of the
+>   default roastery (no capsules/brew bags) × (1 − (1 − tier) / 0.70). Friends' prices include VAT and the operator
 >   pays VAT too, so the formula applies to the paid prices; `markup_ratio` is NOT a separate margin.
 > - **Average per person** = tier volume / (friends + guest sub-orders), 2 decimals.
 
@@ -366,7 +366,7 @@ All analytics metrics should be computed from these queries. Given the low data 
 - **markup_ratio**: the `order_cycles.markup_ratio` field (currently 1.0) is the mechanism for the operator to eventually charge more than the 30% discount price. The analytics should be aware of this: if `markup_ratio > 1.0`, the buyer pays `base_price × markup_ratio`, and the operator's margin includes both the tier delta AND the markup. For now, assume 1.0 but don't hardcode it.
 - ~~**Tier thresholds**: 5 kg (30%), 26 kg (35%), 51 kg (40%).~~ **5 kg (30%), 25 kg (35%), 50 kg (40%) — PO 2026-10-04.** Store as configurable constants.
 - **Retail price derivation**: compute avg retail price from actual order data: `SUM(orders.total) / SUM(order_kg)` gives avg price per kg at buyer price (30% discount). Divide by 0.70 to get retail. Don't hardcode €61.7.
-- ~~**Margin formula**: `operator_margin = total_order_value × (1 - (1 - tier_discount) / (1 - 0.30))`. Simplified: at 35% tier on €1000 of orders (at 30% price), operator cost is €1000 × (0.65/0.70) = €928.57, margin = €71.43. At 40%: cost = €1000 × (0.60/0.70) = €857.14, margin = €142.86.~~ **SUPERSEDED (PO 2026-10-04): the basis is FRIENDS' tier-volume value, not the total — see the box at the top.**
+- ~~**Margin formula**: `operator_margin = total_order_value × (1 - (1 - tier_discount) / (1 - 0.30))`. Simplified: at 35% tier on €1000 of orders (at 30% price), operator cost is €1000 × (0.65/0.70) = €928.57, margin = €71.43. At 40%: cost = €1000 × (0.60/0.70) = €857.14, margin = €142.86.~~ **SUPERSEDED (PO 2026-10-04): the basis is the tier-volume value (friends + guests, no capsules/brew bags), not the total — see the box at the top.**
 - **Charts**: should work with as few as 2–3 cycles of data (current state). Show "Nedostatok dát pre analýzu trendov" if only 1 cycle exists.
 - **Segmentation lookback** (3 cycles) should be configurable.
 - **Precision**: EUR to 2 decimals, kg to 1 decimal.

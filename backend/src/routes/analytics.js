@@ -121,10 +121,10 @@ router.get('/coffee', (req, res) => {
       // `friend*` and `guest*` are kept apart so the CYCLE-LEVEL totals can include
       // guests. ⚠ PO 2026-10-04 — the same three rules as `routes/live-cycle.js`:
       // kilos are TIER VOLUME (`volumeKg`, no capsules/brew bags), the margin basis
-      // is friends' tier-volume value only, and the average is per PERSON.
+      // is the tier-volume value of friends AND guests, and the average is per PERSON.
       let friendKg = 0;
       let friendValue = 0;
-      let friendMarginValue = 0;
+      let marginValue = 0;
       const guestOrderIds = new Set();
       let guestKg = 0;
       let guestValue = 0;
@@ -138,7 +138,7 @@ router.get('/coffee', (req, res) => {
           if (isDefaultRoastery(item.roastery)) {
             friendKg += kg;
             friendValue += itemValue;
-            if (isVolumeVariant(item.variant)) friendMarginValue += itemValue;
+            if (isVolumeVariant(item.variant)) marginValue += itemValue;
           } else {
             otherRoasteryKg += kg;
             otherRoasteryValue += itemValue;
@@ -152,6 +152,7 @@ router.get('/coffee', (req, res) => {
         if (isDefaultRoastery(item.roastery)) {
           guestKg += kg;
           guestValue += itemValue;
+          if (isVolumeVariant(item.variant)) marginValue += itemValue;
         } else {
           otherRoasteryKg += kg;
           otherRoasteryValue += itemValue;
@@ -168,7 +169,7 @@ router.get('/coffee', (req, res) => {
       const avgValuePerPerson = numPeople > 0 ? Math.round(((friendValue + guestValue) / numPeople) * 100) / 100 : 0;
 
       const tier = getTier(totalKg);
-      const operator_margin = Math.round(computeMargin(friendMarginValue, totalKg) * 100) / 100;
+      const operator_margin = Math.round(computeMargin(marginValue, totalKg) * 100) / 100;
 
       // New / returning / churned
       const newFriends = [...currentFriendSet].filter(f => !prevFriendSet.has(f)).length;

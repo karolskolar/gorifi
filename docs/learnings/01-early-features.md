@@ -324,21 +324,23 @@ cycle `markup_ratio` 1.19 — friends and guests alike.
 5–24.9 kg, 35 % for 25–49.9 kg and 40 % from 50.0 kg (VAT paid too) — `TIER_THRESHOLDS` was
 5→30 / 26→35 / 51→40. (A first answer said „35 % from 5 kg"; the PO corrected it the same day —
 the Goriffee sheet's „35 % nad 25 kg" is the rule.) Margin =
-difference between that purchase discount and the value of FRIENDS' orders bought at 30 %. Capsules
-AND brew bags are not volume. Average = total kg / ALL people (friends + guests).
-Check: friends' Goriffee beans 519.18 + 737.59 = 1256.77 × (1 − 0.60/0.70) = **179.54** — the PO's
-„~180". (With the guests' 533.70 it would be 255.78 — the PO's definition excludes them.)
+difference between that purchase discount and the value of ~~FRIENDS'~~ **ALL** orders bought at 30 %
+— friends AND guests („v tom nie je žiadny rozdiel"). Capsules AND brew bags are not volume and not
+in the basis. Average = total kg / ALL people (friends + guests).
+Check: Goriffee beans of friends 1256.77 + guests 533.70 = 1790.47 × (1 − 0.60/0.70) = **255.78**.
+⚠ A first cut read „hodnota objednávok priateľov" as friends ONLY (179.54, matching the PO's rough
+„~180"); the PO corrected it the same day — guests count. A matching estimate is not a definition.
 
 **Code.** `helpers/analytics.js`: new `TIER_THRESHOLDS`, `NON_VOLUME_VARIANTS` / `isVolumeVariant()` /
 `volumeKg()` (tier volume; `variantToKg()` keeps PHYSICAL weight for rewards, catalog stats and
 distribution grams — untouched). `routes/live-cycle.js` and `routes/analytics.js` (Káva tab) use
-`volumeKg`, a `friendMarginValue` basis and the per-person average (2 decimals, `num_guests` added);
+`volumeKg`, a `marginValue` basis (friends + guests) and the per-person average (2 decimals, `num_guests` added);
 `routes/cycles.js` uses `volumeKg` for the dashboard card's roastery kg. Views read the tiers from
 `frontend/src/lib/coffee-tiers.js` (they hard-coded 26/51 in three files), the badge prints the label,
-„+ N hostí" via `plural.js guestsLabel`. Expected on prod October: 51.4 kg, 40 %, 179.54 EUR, 1.01 kg.
+„+ N hostí" via `plural.js guestsLabel`. Expected on prod October: 51.4 kg, 40 %, 255.78 EUR, 1.01 kg.
 
 **Pinned** by `e2e/tests/live-stats.spec.js` (mirror equality, `volumeKg`, tiers/margin incl. the
-179.54 case, live + Káva + card on one fixture, the rendered page); 6/6 API tests fail on the old
-backend (measured). `guest-aggregation.spec.js` (tier tip moved to 49 + 1 = 50 kg; margin on friend
-value; per-person averages) and `guest-rewards.spec.js` (0.9 = 4.5 / 5) were re-pinned to the new
+255.78 case, live + Káva + card on one fixture, the rendered page); 6/6 API tests fail on the old
+backend (measured). `guest-aggregation.spec.js` (tier tip moved to 49 + 1 = 50 kg; margin on the
+friend + guest value; per-person averages) and `guest-rewards.spec.js` (0.9 = 4.5 / 5) were re-pinned to the new
 definitions, superseded lines struck in place.

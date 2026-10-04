@@ -7,9 +7,10 @@
 //  2. VOLUME (`volumeKg`): capsules (20pc5g) and brew bags (8pc12g) are priced per
 //     pack outside the kg tiers — they are not tier volume. Physical weight
 //     (`variantToKg`) is untouched for rewards / catalog / distribution.
-//  3. MARGIN = value FRIENDS paid for tier-volume coffee × (1 − (1 − tier) / 0.70):
-//     no guests, no capsules/brew bags. October 2026 measured 259.18 under the old
-//     whole-value basis against the PO's ~180; the friends' bean value gives 179.54.
+//  3. MARGIN = value friends AND guests paid for tier-volume coffee × (1 − (1 − tier)
+//     / 0.70): no capsules/brew bags. October 2026 measured 259.18 under the old
+//     whole-value basis; the tier-volume value gives 255.78 (a first cut counted
+//     friends only, 179.54 — corrected by the PO the same day).
 //  4. AVERAGE per PERSON = tier volume / (friends + guest sub-orders), 2 decimals
 //     (it was friend kilos / friends rounded to 1 decimal: 1.04 printed „1.00").
 import { test, expect, request as playwrightRequest } from '@playwright/test'
@@ -49,7 +50,7 @@ test.describe('pure helpers (direct import — helpers/analytics.js imports noth
     expect(m.variantToKg('8pc12g', 1)).toBeCloseTo(0.096, 10)
   })
 
-  test('tiers and margin: none under 5 kg, 30 % from 5, 35 % from 25, 40 % from 50; October 2026 = 179.54', async () => {
+  test('tiers and margin: none under 5 kg, 30 % from 5, 35 % from 25, 40 % from 50; October 2026 = 255.78', async () => {
     const m = await import(ANALYTICS_URL)
     expect(m.getTier(4.9)).toBeNull()
     expect(m.getTier(5).label).toBe('30%')
@@ -60,8 +61,8 @@ test.describe('pure helpers (direct import — helpers/analytics.js imports noth
     expect(m.computeMargin(100, 4.9)).toBe(0)
     expect(m.computeMargin(700, 24.9), 'the 30 % tier buys at the friends\' price — no margin').toBe(0)
     expect(m.computeMargin(700, 30)).toBeCloseTo(50, 10) // 700 × (1 − 0.65/0.70)
-    // The measured case: friends' Goriffee beans 1256.77 EUR at 51.4 kg.
-    expect(Math.round(m.computeMargin(1256.77, 51.4) * 100) / 100).toBe(179.54)
+    // The measured case: Goriffee beans of friends (1256.77) + guests (533.70) at 51.4 kg.
+    expect(Math.round(m.computeMargin(1790.47, 51.4) * 100) / 100).toBe(255.78)
   })
 })
 
@@ -136,8 +137,8 @@ test.describe('the live dashboard, the Káva tab and the cycle card agree', () =
     expect(t.guest_kg).toBe(1)
     expect(t.tier_label).toBe('35%')
     expect(t.next_tier.minKg).toBe(50)
-    // Friends' bean value only: 30 × 20 = 600 → 600 × (1 − 0.65/0.70) = 42.86.
-    expect(t.operator_margin, 'not the capsules, not the bags, not the guest').toBe(42.86)
+    // Bean value of friend (600) + guest (20) = 620 → × (1 − 0.65/0.70) = 44.29.
+    expect(t.operator_margin, 'the guest kilo counts; capsules and bags do not').toBe(44.29)
     expect(t.num_friends).toBe(1)
     expect(t.num_guests).toBe(1)
     expect(t.avg_kg_per_person, '31 kg / 2 people').toBe(15.5)
@@ -152,7 +153,7 @@ test.describe('the live dashboard, the Káva tab and the cycle card agree', () =
     const body = await (await adminReq('/api/analytics/coffee')).json()
     const row = body.cycles.find((c) => c.id === cycle.id)
     expect(row.total_kg).toBe(31)
-    expect(row.operator_margin).toBe(42.86)
+    expect(row.operator_margin).toBe(44.29)
     expect(row.avg_kg_per_person).toBe(15.5)
     expect(row.num_guests).toBe(1)
   })
@@ -165,7 +166,7 @@ test.describe('the live dashboard, the Káva tab and the cycle card agree', () =
     adminToken = await page.evaluate(() => localStorage.getItem('adminToken')) // the UI login rotated it
     await page.goto('/admin/analytics/live')
     await expect(page.getByTestId('live-total-kg')).toHaveText('31.00')
-    await expect(page.getByTestId('live-margin')).toContainText('42.86')
+    await expect(page.getByTestId('live-margin')).toContainText('44.29')
     await expect(page.getByTestId('live-avg-kg')).toContainText('15.50')
     await expect(page.getByTestId('live-num-guests')).toHaveText('+ 1 hosť')
     // „40% (0.4%)" was the raw fraction printed as a percentage.

@@ -527,11 +527,11 @@ test.describe('coffee analytics — cycle totals include guest kilos (UC-GSO-013
     expect(row.tier.label, 'the guest kilo tipped the tier — 49 kg alone is 35%').toBe('40%')
     expect(row.tier.minKg).toBe(50)
 
-    // PO 2026-10-04: margin = FRIENDS' value × (1 − (1 − tier) / (1 − 0.30)) — the
-    // guest's 20 EUR is not in the basis, but the guest kilo moves the RATE from
-    // 35 % (68.57) to 40 % (140.00), so it still shows up in the money.
-    const expectedMargin = Math.round(980 * (1 - 0.6 / 0.7) * 100) / 100
-    expect(expectedMargin).toBeCloseTo(140, 2)
+    // PO 2026-10-04: margin = tier-volume value of friends AND guests × (1 − (1 − tier)
+    // / (1 − 0.30)). The guest kilo moves the RATE from 35 % to 40 % and its 20 EUR
+    // is in the basis: 1000 × 1/7 = 142.86 (49 kg alone: 980 × 1/14 = 70.00).
+    const expectedMargin = Math.round(1000 * (1 - 0.6 / 0.7) * 100) / 100
+    expect(expectedMargin).toBeCloseTo(142.86, 2)
     expect(row.operator_margin).toBe(expectedMargin)
 
     // The friend count stays friend-only; the averages are per PERSON.
