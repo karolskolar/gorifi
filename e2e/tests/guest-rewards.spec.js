@@ -403,7 +403,9 @@ test.describe('rewards volume — a guest sub-order credits the HOST (UC-GSO-014
     const row = cycleRow(analytics, cycle.id)
     expect(row.total_kg, '3 friend + 1.5 guest, counted once').toBe(4.5)
     expect(row.num_friends, 'two friends ordered; the three guests are not friends').toBe(2)
-    expect(row.avg_kg_per_person, 'per-FRIEND average stays on friend kilos: 3 / 2').toBe(1.5)
+    // ~~per-FRIEND average stays on friend kilos: 3 / 2 = 1.5~~ — PO 2026-10-04: per
+    // PERSON, volume over friends + guest sub-orders: 4.5 / (2 + 3).
+    expect(row.avg_kg_per_person, 'per-PERSON average: 4.5 / 5').toBe(0.9)
 
     expect(totalAcrossBuckets(report, cycle.id), '4.5 in the report, once').toBe(4.5)
     expect(guestAcrossBuckets(report, cycle.id)).toBe(1.5)

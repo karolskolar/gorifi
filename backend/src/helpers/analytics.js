@@ -1,12 +1,35 @@
-// Tier thresholds: kg → discount percentage
+// Tier thresholds: kg → the discount off RETAIL the operator BUYS at.
+//
+// PO 2026-10-04 (supersedes 5→30 % / 26→35 % / 51→40 %): friends always buy at
+// 30 % off retail (BUYER_DISCOUNT); the operator buys at 35 % from 5 kg and at
+// 40 % from 50 kg („5–49,9 kg → 35 %, nad 50 kg → 40 %"). Below 5 kg there is no
+// tier and no margin. ⚠ Mirrored for the views in `frontend/src/lib/coffee-tiers.js`
+// — `live-stats.spec.js` pins the two EQUAL.
 export const TIER_THRESHOLDS = [
-  { minKg: 51, discount: 0.40, label: '40%' },
-  { minKg: 26, discount: 0.35, label: '35%' },
-  { minKg: 5,  discount: 0.30, label: '30%' },
+  { minKg: 50, discount: 0.40, label: '40%' },
+  { minKg: 5,  discount: 0.35, label: '35%' },
 ];
 
 // Buyer discount rate (what friends pay relative to retail)
 export const BUYER_DISCOUNT = 0.30;
+
+// Pack variants that are NOT tier volume (PO 2026-10-04): capsules (20 × 5 g) and
+// brew bags (8 × 12 g) are priced per pack, outside the roastery's kg tiers, so they
+// neither count toward the tier nor earn the tier margin. `variantToKg()` keeps
+// their PHYSICAL weight for everything else (rewards, catalog stats, distribution).
+export const NON_VOLUME_VARIANTS = new Set(['20pc5g', '8pc12g']);
+
+export function isVolumeVariant(variant) {
+  return !NON_VOLUME_VARIANTS.has(variant);
+}
+
+/**
+ * Tier VOLUME in kg — `variantToKg()` minus the pack variants above. The one
+ * function every „objem" figure (tier, progress bar, cycle card, margin basis) uses.
+ */
+export function volumeKg(variant, quantity) {
+  return isVolumeVariant(variant) ? variantToKg(variant, quantity) : 0;
+}
 
 /**
  * Compute weight in kg from order_items variant and quantity.
@@ -37,6 +60,12 @@ export function getTier(totalKg) {
 /**
  * Compute operator margin for a cycle.
  * Formula: margin = totalOrderValue × (1 - (1 - tierDiscount) / (1 - BUYER_DISCOUNT))
+ *
+ * ⚠ PO 2026-10-04: `totalOrderValue` is the value FRIENDS paid (at 30 % off retail,
+ * VAT included — the operator pays VAT too) for TIER-VOLUME coffee of the default
+ * roastery only: no guests, no capsules/brew bags, no other roastery. Callers build
+ * it with `isVolumeVariant()`; passing the whole cycle value (as both dashboards did
+ * until this date) overstated October 2026 at 259.18 against a true 179.54.
  */
 export function computeMargin(totalOrderValue, totalKg) {
   const tier = getTier(totalKg);

@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { TIER_35_KG, TIER_40_KG } from '../lib/coffee-tiers.js'
+import { guestsLabel } from '../lib/plural.js'
 
 const router = useRouter()
 const data = ref(null)
@@ -48,31 +50,32 @@ const potentialKg = computed(() => data.value?.potential_kg || 0)
 // Tier progress
 const barMax = computed(() => {
   const kg = totals.value?.total_kg || 0
-  return Math.max(51, kg * 1.2, 60)
+  return Math.max(TIER_40_KG, kg * 1.2, 60)
 })
 
 const barColor = computed(() => {
   const kg = totals.value?.total_kg || 0
-  if (kg >= 51) return 'bg-green-500'
-  if (kg >= 26) return 'bg-blue-500'
+  if (kg >= TIER_40_KG) return 'bg-green-500'
+  if (kg >= TIER_35_KG) return 'bg-blue-500'
   return 'bg-gray-400'
 })
+
+// Everyone who ordered: friends + guest sub-orders (the average's denominator).
+const numPeople = computed(() => (totals.value?.num_friends || 0) + (totals.value?.num_guests || 0))
+const prevNumPeople = computed(() => (previous.value?.num_friends || 0) + (previous.value?.num_guests || 0))
 
 const tierMessage = computed(() => {
   if (!totals.value) return ''
   const kg = totals.value.total_kg
-  if (kg >= 51) return '40% tier dosiahnuty!'
-  if (kg >= 26) {
-    const dist = (51 - kg).toFixed(1)
-    return `35% tier dosiahnuty! Este ${dist} kg do 40%`
+  if (kg >= TIER_40_KG) return '40% tier dosiahnuty!'
+  const peopleNeeded = totals.value.friends_needed || 0
+  const people = peopleNeeded > 0 ? ` (+ ${peopleNeeded} ludi pri priemernej objednavke)` : ''
+  if (kg >= TIER_35_KG) {
+    const dist = (TIER_40_KG - kg).toFixed(1)
+    return `35% tier dosiahnuty! Este ${dist} kg do 40%${people}`
   }
-  const dist = (26 - kg).toFixed(1)
-  const friendsNeeded = totals.value.friends_needed || 0
-  let msg = `Este ${dist} kg do 35% tieru`
-  if (friendsNeeded > 0) {
-    msg += ` (+ ${friendsNeeded} ludi pri priemernej objednavke)`
-  }
-  return msg
+  const dist = (TIER_35_KG - kg).toFixed(1)
+  return `Este ${dist} kg do 35% tieru${people}`
 })
 
 // Comparison deltas
@@ -187,12 +190,12 @@ const visibleNotOrdered = computed(() => {
             <div class="relative h-6 text-xs text-muted-foreground">
               <span
                 class="absolute"
-                :style="{ left: (26 / barMax * 100) + '%', transform: 'translateX(-50%)' }"
-              >26 kg</span>
+                :style="{ left: (TIER_35_KG / barMax * 100) + '%', transform: 'translateX(-50%)' }"
+              >{{ TIER_35_KG }} kg</span>
               <span
                 class="absolute"
-                :style="{ left: (51 / barMax * 100) + '%', transform: 'translateX(-50%)' }"
-              >51 kg</span>
+                :style="{ left: (TIER_40_KG / barMax * 100) + '%', transform: 'translateX(-50%)' }"
+              >{{ TIER_40_KG }} kg</span>
             </div>
 
             <!-- Bar -->
@@ -202,15 +205,15 @@ const visibleNotOrdered = computed(() => {
                 :class="barColor"
                 :style="{ width: Math.min(100, (totals.total_kg / barMax) * 100) + '%' }"
               />
-              <!-- 26 kg marker -->
+              <!-- 35 % tier marker -->
               <div
                 class="absolute top-0 bottom-0 border-l-2 border-dashed border-gray-500"
-                :style="{ left: (26 / barMax * 100) + '%' }"
+                :style="{ left: (TIER_35_KG / barMax * 100) + '%' }"
               />
-              <!-- 51 kg marker -->
+              <!-- 40 % tier marker -->
               <div
                 class="absolute top-0 bottom-0 border-l-2 border-dashed border-gray-500"
-                :style="{ left: (51 / barMax * 100) + '%' }"
+                :style="{ left: (TIER_40_KG / barMax * 100) + '%' }"
               />
             </div>
           </div>
@@ -224,7 +227,8 @@ const visibleNotOrdered = computed(() => {
         <Card>
           <CardContent class="pt-4 pb-4">
             <p class="text-xs text-muted-foreground">Celkovo kg</p>
-            <p class="text-2xl font-bold">{{ totals.total_kg?.toFixed(2) }}</p>
+            <p class="text-2xl font-bold" data-testid="live-total-kg">{{ totals.total_kg?.toFixed(2) }}</p>
+            <p class="text-xs text-muted-foreground">bez kapsul a brew bags</p>
           </CardContent>
         </Card>
 
@@ -232,13 +236,15 @@ const visibleNotOrdered = computed(() => {
           <CardContent class="pt-4 pb-4">
             <p class="text-xs text-muted-foreground">Objednalo</p>
             <p class="text-2xl font-bold">{{ totals.num_friends }} <span class="text-sm font-normal text-muted-foreground">z {{ totals.total_eligible }}</span></p>
+            <p v-if="totals.num_guests" class="text-xs text-muted-foreground" data-testid="live-num-guests">+ {{ guestsLabel(totals.num_guests) }}</p>
           </CardContent>
         </Card>
 
         <Card>
           <CardContent class="pt-4 pb-4">
             <p class="text-xs text-muted-foreground">Priemer na osobu</p>
-            <p class="text-2xl font-bold">{{ totals.avg_kg_per_person?.toFixed(2) }} <span class="text-sm font-normal text-muted-foreground">kg</span></p>
+            <p class="text-2xl font-bold" data-testid="live-avg-kg">{{ totals.avg_kg_per_person?.toFixed(2) }} <span class="text-sm font-normal text-muted-foreground">kg</span></p>
+            <p class="text-xs text-muted-foreground">{{ totals.total_kg?.toFixed(1) }} kg / {{ numPeople }} ludi vratane hosti</p>
           </CardContent>
         </Card>
 
@@ -252,10 +258,11 @@ const visibleNotOrdered = computed(() => {
         <Card>
           <CardContent class="pt-4 pb-4">
             <p class="text-xs text-muted-foreground">Odhadovana marza</p>
-            <p class="text-2xl font-bold" :class="totals.operator_margin > 0 ? 'text-green-600' : ''">
+            <p class="text-2xl font-bold" :class="totals.operator_margin > 0 ? 'text-green-600' : ''" data-testid="live-margin">
               {{ totals.operator_margin?.toFixed(2) }} <span class="text-sm font-normal text-muted-foreground">EUR</span>
             </p>
-            <p v-if="totals.operator_margin === 0" class="text-xs text-muted-foreground">30% tier</p>
+            <p v-if="totals.operator_margin === 0" class="text-xs text-muted-foreground">pod {{ TIER_35_KG }} kg — bez tieru</p>
+            <p v-else class="text-xs text-muted-foreground">z objednavok priatelov, bez kapsul a hosti</p>
           </CardContent>
         </Card>
 
@@ -264,10 +271,11 @@ const visibleNotOrdered = computed(() => {
             <p class="text-xs text-muted-foreground">Aktualny tier</p>
             <Badge
               v-if="totals.tier_label"
-              :class="totals.total_kg >= 51 ? 'bg-green-100 text-green-800' : totals.total_kg >= 26 ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-600'"
+              :class="totals.total_kg >= TIER_40_KG ? 'bg-green-100 text-green-800' : totals.total_kg >= TIER_35_KG ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-600'"
               class="mt-1"
+              data-testid="live-tier"
             >
-              {{ totals.tier_label }} ({{ totals.tier_discount }}%)
+              {{ totals.tier_label }} zlava
             </Badge>
           </CardContent>
         </Card>
@@ -293,11 +301,11 @@ const visibleNotOrdered = computed(() => {
                 </p>
               </div>
               <div>
-                <p class="text-xs text-muted-foreground">Pocet ludi</p>
-                <p class="text-lg font-semibold">{{ totals.num_friends }}</p>
-                <p class="text-sm" :class="deltaClass(delta(totals.num_friends, previous.num_friends))">
-                  {{ deltaArrow(delta(totals.num_friends, previous.num_friends)) }}
-                  {{ formatDelta(delta(totals.num_friends, previous.num_friends)) }}
+                <p class="text-xs text-muted-foreground">Pocet ludi (s hostami)</p>
+                <p class="text-lg font-semibold">{{ numPeople }}</p>
+                <p class="text-sm" :class="deltaClass(delta(numPeople, prevNumPeople))">
+                  {{ deltaArrow(delta(numPeople, prevNumPeople)) }}
+                  {{ formatDelta(delta(numPeople, prevNumPeople)) }}
                 </p>
               </div>
               <div>

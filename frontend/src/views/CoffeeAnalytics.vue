@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, watchEffect, onMounted } from 'vue'
+import { COFFEE_TIERS, TIER_35_KG, TIER_40_KG } from '../lib/coffee-tiers.js'
 import { useRouter } from 'vue-router'
 import api from '../api'
 import { Button } from '@/components/ui/button'
@@ -52,8 +53,8 @@ const BAR_MAX = 60
 
 const tierColor = computed(() => {
   const kg = rollingAvg.value
-  if (kg >= 51) return 'green'
-  if (kg >= 26) return 'blue'
+  if (kg >= TIER_40_KG) return 'green'
+  if (kg >= TIER_35_KG) return 'blue'
   return 'amber'
 })
 
@@ -77,20 +78,18 @@ const milestones = computed(() => {
   const kg = rollingAvg.value
   const avgPp = avgKgPerPerson.value
   return [
+    // PO 2026-10-04: friends pay the 30 % price; the operator buys at 35 % from
+    // 5 kg and at 40 % from 50 kg (`lib/coffee-tiers.js`). Margin on friends' order
+    // value = 1 − (1 − tier) / 0.70 ⇒ ≈ 7 % at 35 %, ≈ 14 % at 40 %.
     {
-      label: 'Dosiahnuť 5 kg (veľkoobchodná cena, 30% zľava)',
-      done: kg >= 5,
-      friendsNeeded: kg < 5 && avgPp > 0 ? Math.ceil((5 - kg) / avgPp) : null,
+      label: `Dosiahnuť ${TIER_35_KG} kg (35% zľava → ≈7% marža)`,
+      done: kg >= TIER_35_KG,
+      friendsNeeded: kg < TIER_35_KG && avgPp > 0 ? Math.ceil((TIER_35_KG - kg) / avgPp) : null,
     },
     {
-      label: 'Dosiahnuť 26 kg stabilne (35% zľava → 5% marža)',
-      done: kg >= 26,
-      friendsNeeded: kg < 26 && avgPp > 0 ? Math.ceil((26 - kg) / avgPp) : null,
-    },
-    {
-      label: 'Dosiahnuť 51 kg (40% zľava → 10% marža)',
-      done: kg >= 51,
-      friendsNeeded: kg < 51 && avgPp > 0 ? Math.ceil((51 - kg) / avgPp) : null,
+      label: `Dosiahnuť ${TIER_40_KG} kg stabilne (40% zľava → ≈14% marža)`,
+      done: kg >= TIER_40_KG,
+      friendsNeeded: kg < TIER_40_KG && avgPp > 0 ? Math.ceil((TIER_40_KG - kg) / avgPp) : null,
     },
   ]
 })
@@ -102,10 +101,7 @@ const simTotalKg = computed(() => {
 
 const simTier = computed(() => {
   const kg = simTotalKg.value
-  if (kg >= 51) return { discount: 0.40, label: '40%' }
-  if (kg >= 26) return { discount: 0.35, label: '35%' }
-  if (kg >= 5) return { discount: 0.30, label: '30%' }
-  return null
+  return COFFEE_TIERS.find((t) => kg >= t.minKg) || null
 })
 
 const simTierLabel = computed(() => {
@@ -218,21 +214,21 @@ const comparison = computed(() => {
               </div>
               <!-- Tier threshold markers -->
               <div class="relative w-full h-6 mt-1">
-                <!-- 26 kg marker (35%) -->
+                <!-- 35 % tier marker -->
                 <div
                   class="absolute top-0 flex flex-col items-center -translate-x-1/2"
-                  :style="{ left: (26 / BAR_MAX * 100) + '%' }"
+                  :style="{ left: (TIER_35_KG / BAR_MAX * 100) + '%' }"
                 >
                   <div class="w-px h-3 bg-muted-foreground/50" />
-                  <span class="text-xs text-muted-foreground whitespace-nowrap">26 kg (35%)</span>
+                  <span class="text-xs text-muted-foreground whitespace-nowrap">{{ TIER_35_KG }} kg (35%)</span>
                 </div>
-                <!-- 51 kg marker (40%) -->
+                <!-- 40 % tier marker -->
                 <div
                   class="absolute top-0 flex flex-col items-center -translate-x-1/2"
-                  :style="{ left: (51 / BAR_MAX * 100) + '%' }"
+                  :style="{ left: (TIER_40_KG / BAR_MAX * 100) + '%' }"
                 >
                   <div class="w-px h-3 bg-muted-foreground/50" />
-                  <span class="text-xs text-muted-foreground whitespace-nowrap">51 kg (40%)</span>
+                  <span class="text-xs text-muted-foreground whitespace-nowrap">{{ TIER_40_KG }} kg (40%)</span>
                 </div>
               </div>
             </div>
@@ -476,7 +472,7 @@ const comparison = computed(() => {
 
             <!-- Minimum viable base -->
             <div v-if="data.summary.min_viable_base" class="p-4 bg-muted rounded-lg">
-              <div class="text-sm text-muted-foreground">Minimálna základňa pre 26 kg (úroveň 35%)</div>
+              <div class="text-sm text-muted-foreground">Minimálna základňa pre {{ data.summary.current_tier?.minKg }} kg (úroveň {{ data.summary.current_tier?.label }})</div>
               <div class="text-lg font-semibold">
                 {{ data.summary.min_viable_base }} jadro+pravidelní priatelia
                 <span class="text-sm font-normal text-muted-foreground">

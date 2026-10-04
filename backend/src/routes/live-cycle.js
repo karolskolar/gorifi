@@ -2,7 +2,8 @@ import { Router } from 'express';
 import db from '../db/schema.js';
 import { guestCycleItems } from '../helpers/guest-aggregation.js';
 import {
-  variantToKg,
+  volumeKg,
+  isVolumeVariant,
   getTier,
   getNextTier,
   computeMargin,
@@ -20,6 +21,10 @@ function roundKg(v) {
 function roundEur(v) {
   return Math.round(v * 100) / 100;
 }
+
+// The average is a 2-decimal figure (PO 2026-10-04): rounding it to roundKg's one
+// decimal printed 1.04 kg as „1.00".
+const roundAvg = roundEur;
 
 const SEGMENT_PRIORITY = { core: 0, regular: 1, occasional: 2, new: 3, inactive: 4 };
 
@@ -74,32 +79,40 @@ router.get('/', (req, res) => {
     // carry the same `roastery`.
     const isDefaultRoastery = (roastery) => !roastery || roastery === defaultRoasteryName;
 
-    // Kept apart on purpose: `friend*` feeds the PER-FRIEND averages, `guest*` is
-    // reported on its own, and the two are summed for the CYCLE-LEVEL totals.
+    // Kept apart on purpose: `friend*` and `guest*` are summed for the CYCLE-LEVEL
+    // totals; the margin basis (`friendMarginValue`) is friends only.
+    //
+    // ⚠ PO 2026-10-04: kilos are TIER VOLUME (`volumeKg` — no capsules/brew bags);
+    // values stay whole (they are money). The margin basis is what FRIENDS paid for
+    // tier-volume coffee of the default roastery — see `computeMargin`.
     let friendKg = 0;
     let friendValue = 0;
+    let friendMarginValue = 0;
     let guestKg = 0;
     let guestValue = 0;
     let otherRoasteryKg = 0;
     let otherRoasteryValue = 0;
     const orderedFriendIds = new Set();
+    const guestOrderIds = new Set();
 
     for (const order of orders) {
       orderedFriendIds.add(order.friend_id);
     }
     for (const item of items) {
-      const kg = variantToKg(item.variant, item.quantity);
+      const kg = volumeKg(item.variant, item.quantity);
       const itemValue = item.price * item.quantity;
       if (isDefaultRoastery(item.roastery)) {
         friendKg += kg;
         friendValue += itemValue;
+        if (isVolumeVariant(item.variant)) friendMarginValue += itemValue;
       } else {
         otherRoasteryKg += kg;
         otherRoasteryValue += itemValue;
       }
     }
     for (const item of guestItems) {
-      const kg = variantToKg(item.variant, item.quantity);
+      guestOrderIds.add(item.guest_order_id);
+      const kg = volumeKg(item.variant, item.quantity);
       const itemValue = item.price * item.quantity;
       if (isDefaultRoastery(item.roastery)) {
         guestKg += kg;
@@ -110,16 +123,18 @@ router.get('/', (req, res) => {
       }
     }
 
-    const friendKgRounded = roundKg(friendKg);
-    const friendValueRounded = roundEur(friendValue);
     const totalKg = roundKg(friendKg + guestKg);
     const totalValue = roundEur(friendValue + guestValue);
     const numFriends = orderedFriendIds.size;
-    // PER-FRIEND: "how much does one friend bring?" — the basis stays FRIEND kilos,
-    // or the nudge maths below ("how many more friends do we need for the next
-    // tier?") would credit each missing friend with the guests' coffee too.
-    const avgKgPerPerson = numFriends > 0 ? roundKg(friendKgRounded / numFriends) : 0;
-    const avgValuePerPerson = numFriends > 0 ? roundEur(friendValueRounded / numFriends) : 0;
+    const numGuests = guestOrderIds.size;
+    // ⚠ PO 2026-10-04 — PER PERSON, not per friend: the tier volume over EVERYONE
+    // who ordered (friends + guest sub-orders). It used to be friend kilos over
+    // friends, beside a guest-inclusive total, which read as a wrong division
+    // (51.6 kg / 35 people „= 1.00"). The nudge maths below („how many more people
+    // for the next tier?") now credits each missing person with this average.
+    const numPeople = numFriends + numGuests;
+    const avgKgPerPerson = numPeople > 0 ? roundAvg((friendKg + guestKg) / numPeople) : 0;
+    const avgValuePerPerson = numPeople > 0 ? roundEur((friendValue + guestValue) / numPeople) : 0;
 
     const tier = getTier(totalKg);
     const nextTier = getNextTier(totalKg);
@@ -127,7 +142,7 @@ router.get('/', (req, res) => {
     const friendsNeeded = nextTier && avgKgPerPerson > 0
       ? Math.ceil(distanceToNextTier / avgKgPerPerson)
       : null;
-    const operatorMargin = roundEur(computeMargin(totalValue, totalKg));
+    const operatorMargin = roundEur(computeMargin(friendMarginValue, totalKg));
 
     // 3. Count eligible friends (active + subscribed to coffee OR no subscriptions)
     const eligibleFriends = db.all(
@@ -174,7 +189,7 @@ router.get('/', (req, res) => {
         prevFriendIds.add(o.friend_id);
       }
       for (const item of prevItems) {
-        prevFriendKg += variantToKg(item.variant, item.quantity);
+        prevFriendKg += volumeKg(item.variant, item.quantity);
       }
 
       // The comparison is cycle-vs-cycle, so the previous cycle's totals count its
@@ -183,16 +198,17 @@ router.get('/', (req, res) => {
       // (there is none on this block for friend orders either).
       let prevGuestKg = 0;
       let prevGuestValue = 0;
+      const prevGuestOrderIds = new Set();
       for (const item of guestCycleItems([prevCycle.id])) {
-        prevGuestKg += variantToKg(item.variant, item.quantity);
+        prevGuestOrderIds.add(item.guest_order_id);
+        prevGuestKg += volumeKg(item.variant, item.quantity);
         prevGuestValue += item.price * item.quantity;
       }
 
-      const prevFriendKgRounded = roundKg(prevFriendKg);
-      const prevFriendValueRounded = roundEur(prevFriendValue);
       const prevTotalKg = roundKg(prevFriendKg + prevGuestKg);
       const prevTotalValue = roundEur(prevFriendValue + prevGuestValue);
       const prevNumFriends = prevFriendIds.size;
+      const prevNumPeople = prevNumFriends + prevGuestOrderIds.size;
 
       previous = {
         id: prevCycle.id,
@@ -201,10 +217,11 @@ router.get('/', (req, res) => {
         total_value: prevTotalValue,
         guest_kg: roundKg(prevGuestKg),
         guest_value: roundEur(prevGuestValue),
-        // PER-FRIEND, friend basis (same rule as the current cycle above).
+        // Same per-PERSON rule as the current cycle above (friends + guests).
         num_friends: prevNumFriends,
-        avg_kg_per_person: prevNumFriends > 0 ? roundKg(prevFriendKgRounded / prevNumFriends) : 0,
-        avg_value_per_person: prevNumFriends > 0 ? roundEur(prevFriendValueRounded / prevNumFriends) : 0,
+        num_guests: prevGuestOrderIds.size,
+        avg_kg_per_person: prevNumPeople > 0 ? roundAvg((prevFriendKg + prevGuestKg) / prevNumPeople) : 0,
+        avg_value_per_person: prevNumPeople > 0 ? roundEur((prevFriendValue + prevGuestValue) / prevNumPeople) : 0,
         friend_ids: [...prevFriendIds],
       };
     }
@@ -271,8 +288,10 @@ router.get('/', (req, res) => {
         total_value: totalValue,
         guest_kg: roundKg(guestKg),
         guest_value: roundEur(guestValue),
-        // PER-FRIEND from here down — guests are invisible (Decision 4).
+        // `num_friends` counts friends; `num_guests` the guest sub-orders. The two
+        // averages are per PERSON (both) since PO 2026-10-04.
         num_friends: numFriends,
+        num_guests: numGuests,
         total_eligible: eligibleFriends.length,
         avg_kg_per_person: avgKgPerPerson,
         avg_value_per_person: avgValuePerPerson,
