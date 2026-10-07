@@ -1418,11 +1418,13 @@ test.describe('PI-T5 · 18 §UC-PI-007 — the landing, locked state', () => {
     await expect(modal).toHaveCount(1)
     await expect(modal).toContainText('Suma na úhradu: 26.00 EUR')
 
-    // ⚠ THE VARIABLE SYMBOL IS THE SERVER'S — a friend order's VS IS its order id
-    // (`backend/src/helpers/payment.js`), quoted from the order response. No client
-    // derives one (CLAUDE.md §Money & data), which is why this asserts the value the
-    // API issued rather than a locally composed string.
-    await expect(modal.getByTestId('payment-vs')).toContainText(String(fx.order.id))
+    // ~~⚠ THE VARIABLE SYMBOL IS THE SERVER'S — asserted on the `payment-vs` row~~ —
+    // PO 2026-10-07 merged that row into the note: the friend reads (and Revolut
+    // prefills) ONE string, the order reference. The VS still rides in the QR only.
+    await expect(modal.getByTestId('payment-vs')).toHaveCount(0)
+    await expect(modal.getByTestId('payment-reference')).toContainText(`${fx.friend.name} / ${fx.cycle.name}`)
+    expect(await modal.getByRole('link', { name: /Revolut/ }).getAttribute('href'))
+      .toContain(`&note=${encodeURIComponent(`${fx.friend.name} / ${fx.cycle.name}`)}`)
 
     await page.keyboard.press('Escape')
 
@@ -1915,7 +1917,8 @@ test.describe('PI-T7 · 18 §UC-PI-008 — the debt banner', () => {
     await expect(d, '§UC-PI-008: amount = -balance').toContainText('Suma na úhradu:')
     await expect(d).toContainText('52.80 EUR')
     // Quoted from the server's block, never composed here (15 §UC-PL-003 item 4).
-    await expect(page.getByTestId('payment-vs').locator('.val')).toHaveText('8000777')
+    // PO 2026-10-07: no VS row any more — the note is the one identification.
+    await expect(page.getByTestId('payment-vs')).toHaveCount(0)
     await expect(page.getByTestId('payment-reference')).toContainText('PI7 / zostatok')
 
     await d.getByRole('button', { name: 'Zavrieť' }).click()

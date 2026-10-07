@@ -457,7 +457,8 @@ async function walkAuthenticated(page, { fill, snaps = [], label = '', gate = fa
   let dialog = page.getByRole('dialog')
   await expect(dialog).toBeVisible()
   // …quoting THIS friend's block, fetched for this session (the per-friend stub).
-  if (self) await expect(dialog.getByTestId('payment-vs')).toContainText(balanceFor(self.id).variable_symbol)
+  // (PO 2026-10-07: the VS row is gone, so the note is what names THIS friend's block.)
+  if (self) await expect(dialog.getByTestId('payment-reference')).toContainText(balanceFor(self.id).reference)
   if (fill) await fillEverything(dialog)
   await record('balance-payment')
   await page.keyboard.press('Escape')

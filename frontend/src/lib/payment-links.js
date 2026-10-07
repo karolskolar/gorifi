@@ -84,8 +84,16 @@ function payableAmount(amount) {
  *
  * Returns `''` for a blank handle, which is the shipped gate: `PaymentModal` renders the
  * control only when `revolutUsername` is set.
+ *
+ * `note` (PO 2026-10-07) is the payment note — the SAME server-owned reference the modal
+ * shows under „Poznámka k platbe" — sent as `&note=`, which Revolut prefills as the
+ * transfer's note — the PO's working example is `revolut.me/<user>?currency=EUR&amount=1300
+ * &note=2x%206,50` (⚠ undocumented by Revolut, like the amount variant). A friend reported the amount prefilled but the note empty, so the payee could not tell
+ * whose transfer it was. It is a VALUE, so it is encoded; a blank note adds no key. It is
+ * appended LAST, so the `?amount=` the modal's label reads stays where it was, and it
+ * rides on the flag-off profile link too (the note does not depend on the amount format).
  */
-export function revolutLink(username, amount) {
+export function revolutLink(username, amount, note) {
   // The `@` is how a handle is written and shown; it is not part of the URL path. No
   // lower-casing: Revolut handles are case-insensitive, but the value is the admin's own
   // setting echoed back, and rewriting it would be a second transformation to explain.
@@ -94,8 +102,11 @@ export function revolutLink(username, amount) {
 
   const base = `https://revolut.me/${encodeURIComponent(handle)}`
   const payable = REVOLUT_AMOUNT_LINK ? payableAmount(amount) : null
-  if (payable === null) return base
-  return `${base}?amount=${Math.round(payable * 100)}&currency=EUR`
+  const params = []
+  if (payable !== null) params.push(`amount=${Math.round(payable * 100)}`, 'currency=EUR')
+  const message = text(note)
+  if (message) params.push(`note=${encodeURIComponent(message)}`)
+  return params.length ? `${base}?${params.join('&')}` : base
 }
 
 /**
@@ -106,7 +117,7 @@ export function revolutLink(username, amount) {
  * "payee unknown" form, and §UC-PL-002 rule 1 makes the creditor name the switch for
  * this whole feature. The caller renders the button only when this returns a link.
  */
-export function paymeLink({ iban, amount, variableSymbol, reference, creditorName, date } = {}) {
+export function paymeLink({ iban, amount, reference, creditorName, date } = {}) {
   // ⚠ The IBAN is upper-cased and stripped of whitespace here and NOWHERE else on this
   // path: `payBySquarePayload` strips whitespace for the QR (as the shipped component
   // did) and the modal prints the stored, spaced form for a human to read. Three
@@ -118,7 +129,6 @@ export function paymeLink({ iban, amount, variableSymbol, reference, creditorNam
   const payable = payableAmount(amount)
   if (!account || !name || payable === null) return ''
 
-  const vs = text(variableSymbol)
   const note = text(reference).slice(0, MAX_PAYME_MESSAGE_LENGTH)
 
   const params = [
@@ -128,22 +138,12 @@ export function paymeLink({ iban, amount, variableSymbol, reference, creditorNam
     'CC=EUR',
     `DT=${encodeURIComponent(text(date) || todayCompact())}`,
   ]
-  // `/VS<vs>/SS/KS` is the standard's payment-identification triplet with the two symbols
-  // this app does not use left empty. Never emitted without a symbol: an empty
-  // `PI=/VS/SS/KS` is a malformed identification, not an absent one.
-  //
-  // ⚠ THE STRUCTURAL SLASHES STAY BARE — THE VALUE INSIDE IS ENCODED, THE SHAPE IS NOT,
-  // and this is the one place where "encode everything" was WRONG. A `/` is legal
-  // unencoded in a query string, §UC-PL-006 and the published PayMe examples write this
-  // parameter literally, and a receiving bank app that splits the RAW query instead of
-  // URL-decoding it would read `%2FVS…%2FSS%2FKS` verbatim — a malformed identifier on
-  // the single field that makes a bank statement match a person. ⚠ Neither a parsed
-  // assertion (`searchParams.get('PI')` decodes, so both forms look identical) nor a raw
-  // pin written against the encoded form can see this: `payment-links.spec.js` therefore
-  // asserts the RAW `PI=` segment, character for character.
-  // The symbol itself still goes through `encodeURIComponent`: it is server-derived
-  // digits, so it costs nothing, and a refused/odd value can never break the shape.
-  if (vs) params.push(`PI=/VS${encodeURIComponent(vs)}/SS/KS`)
+  // ~~`PI=/VS<vs>/SS/KS` — the variable symbol, structural slashes bare~~ **REMOVED, PO
+  // 2026-10-07:** everything the payee needs to match the transfer goes in the NOTE
+  // (`MSG`, the server's reference — it already names the order: `G{id} / meno / …`,
+  // `meno / …`, `meno / zostatok`), and the variable symbol is not filled. `PI` is
+  // optional in the PayMe standard, so the link carries no symbol at all rather than
+  // an empty `PI=/VS/SS/KS` (malformed, not absent).
   if (note) params.push(`MSG=${encodeURIComponent(note)}`)
   params.push(`CN=${encodeURIComponent(name)}`)
 
