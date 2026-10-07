@@ -619,7 +619,7 @@ new spec must pin. Money paths use the pixel-QR technique (01-architecture §Tes
 
 - **Revolut** — the link carries the note: `https://revolut.me/<user>?amount=<minor>&currency=EUR&note=<encoded
   reference>` (the PO's working example: `?currency=EUR&amount=1300&note=2x%206,50`). `note` is undocumented
-  by Revolut, like the amount variant — a phone check is the acceptance. A blank reference adds no key; the
+  by Revolut, like the amount variant — **verified by the PO on a phone on production, 2026-10-07**. A blank reference adds no key; the
   `REVOLUT_AMOUNT_LINK=false` fallback drops only the amount, the note stays.
 - **No variable symbol to fill.** „Everything for the payee goes into the note.“ PayMe's `PI=/VS…/SS/KS` is
   dropped (optional in the standard); `MSG` = the reference stays. The Platba modal's two rows „Poznámka k

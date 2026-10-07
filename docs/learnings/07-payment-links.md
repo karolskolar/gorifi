@@ -718,7 +718,8 @@ Platba modal's „Poznámka k platbe“ + „Variabilný symbol“ rows are merg
   `variableSymbol` PROP stays (additive API) and still feeds the Pay-by-Square QR — the server keeps
   deriving/publishing the VS, the admin views and the guest mail keep quoting it. Nothing server-side moved.
 
-**Not verified here.** Revolut's `note` is undocumented (like `amount`); the acceptance is the PO's phone.
+**VERIFIED by the PO on a real phone, 2026-10-07** (production): the Revolut app opens with the amount AND
+the note prefilled. ~~Not verified here — the acceptance is the PO's phone.~~ Still undocumented by Revolut.
 No length cap is applied to the Revolut note (none is known); references are short in practice.
 
 **Gate.** `payment-links`, `guest-payment-modal`, `portal-landing`, `portal-session-boundary`,
