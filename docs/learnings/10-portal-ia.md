@@ -3099,3 +3099,25 @@ The PO rewrote the explainer's copy. `PortalExplainer.vue` changed as follows:
    is titled **„Cez priateľa / kolegu"**. `portal-explainer.spec.js` pins the full intro and that title.
 6. „Ak si tu nový/á" is the PO's own slash form. Reproduce it; do not „fix" it into the
    gender-neutral rule.
+
+## PO 2026-10-07 — the explainer gate is shown ONCE however it is left; the profile auto-open is parked
+
+**Report.** After every login the PO met the profile modal and then „Ako to funguje" instead of the
+current round („Káva dorazila").
+
+**Explainer.** The PO's account had `explainer_seen_at` NULL after weeks of use: they always left the
+gate by the appbar BACK CHEVRON, and the `watch(view)` that lowers the gate on any exit lowered it
+UNSTAMPED (PI-T9 chose „the chevron answers nothing"). So every login re-opened it. Now the same watch
+STAMPS when it lowers a still-raised gate (`markExplainerSeen`, fire-and-forget): leaving the page any
+way means it has been shown. The only way to be shown it again is the explicit one — untick „Už mi to
+neukazovať" and press „Rozumiem" (`onExplainerDone` lowers the flag first, so the watch's branch never
+runs after it). `portal-explainer.spec.js`: the one-shot test now expects exactly ONE stamp (the
+chevron's) and a new test proves the next login lands on `/`. Both fail on the old watch (measured).
+
+**Profile auto-open (§UC-PI-015, PI-T10) — PARKED.** „Aj keď som nedoplnil všetky, nezobrazujme
+naďalej modal ako default po prihlásení." `lib/features.js PROFILE_AUTO_OPEN = false`;
+`profileAutoOpenArmed = ref(PROFILE_AUTO_OPEN && !!props.entry?.freshLogin)`, so it never arms. The
+trigger, the derived term walk and its source pins are untouched (flip the flag to restore). The 11
+behaviour tests of the auto-open skip off the same flag (`e2e/helpers/features.js`); a `PARKED:` test
+pins that a phone-less login opens nothing and that the drawer still opens the modal with Mobil
+required. The PO's account (Lego) has no phone — that is why it opened every time.

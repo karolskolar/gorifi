@@ -391,6 +391,13 @@ export const api = {
     method: 'POST'
   }),
 
+  // 2026-10-07 — the session COOKIE pair (`middleware/friend-auth.js`). The cookie is
+  // HttpOnly and path-scoped to these two routes; `fetch` sends it same-origin by
+  // default. `restore` answers `{ friend: {id, name, uid}, token, expiresAt }` or a 401;
+  // `logout` is idempotent and clears it (JS cannot — that is what HttpOnly means).
+  restoreFriendSession: () => request('/friends/session/restore', { method: 'POST' }),
+  endFriendSession: () => request('/friends/session/logout', { method: 'POST' }),
+
   // Orders (password-protected, for friends)
   getOrderByFriend: (cycleId, friendId) => request(`/orders/cycle/${cycleId}/friend/${friendId}`),
   updateOrderByFriend: (cycleId, friendId, items) => request(`/orders/cycle/${cycleId}/friend/${friendId}`, {

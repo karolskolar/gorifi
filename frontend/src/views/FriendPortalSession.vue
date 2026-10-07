@@ -117,7 +117,7 @@ import { historyBadge } from '@/lib/history-badges'
 // explainer describes the process in general, the timeline reports where ONE round
 // is now (argued in that component's header).
 import PortalExplainer from '@/components/PortalExplainer.vue'
-import { STANDING_GUEST_LINK } from '@/lib/features'
+import { STANDING_GUEST_LINK, PROFILE_AUTO_OPEN } from '@/lib/features'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
 import NeoModal from '@/components/neo/NeoModal.vue'
 import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
@@ -1699,7 +1699,19 @@ const explainerGate = ref(!!props.entry?.explainerPending)
  * `hide` branch can run a second time, and this watch fires only after the navigation.
  */
 watch(view, (now, before) => {
-  if (before === 'explainer' && now !== 'explainer') explainerGate.value = false
+  if (before === 'explainer' && now !== 'explainer' && explainerGate.value) {
+    explainerGate.value = false
+    // ⚠ PO 2026-10-07 — LEAVING THE GATE ANY OTHER WAY COUNTS AS SEEN. The PO's own
+    // account (Lego) logged in again and again and met the explainer EVERY time:
+    // they left it by the back chevron, which lowered the gate unstamped, so
+    // `explainer_seen_at` stayed NULL forever („po zavretí modalu sa zobrazuje
+    // »Ako to funguje« namiesto aktuálneho stavu objednávky"). The gate exists to
+    // show the page ONCE; a friend who walked away from it has been shown it. The
+    // ONLY way to be shown it again is the explicit one — UNTICKING „Už mi to
+    // neukazovať" and pressing „Rozumiem" (`onExplainerDone` lowers the flag first,
+    // so this branch never runs after it). Fire-and-forget like that handler.
+    api.markExplainerSeen(props.friendId).catch(() => {})
+  }
 })
 
 /**
@@ -1746,7 +1758,9 @@ function onExplainerDone(payload) {
  * `FriendPortal.vue beginSession`. A restore (every reload, every deep link) leaves
  * it false, inheriting §UC-PI-013's „a restore is not a login" boundary verbatim.
  */
-const profileAutoOpenArmed = ref(!!props.entry?.freshLogin)
+// ⚠ PO 2026-10-07: parked — `PROFILE_AUTO_OPEN` (lib/features.js) is `false`, so this
+// never arms and the modal opens only from the drawer.
+const profileAutoOpenArmed = ref(PROFILE_AUTO_OPEN && !!props.entry?.freshLogin)
 
 /**
  * ⚠ THE HYDRATE GATE, and it is a `hasOwnProperty`, not a truthiness test.

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { nanoid } from 'nanoid';
 import db, { generateUid, generateInviteCode } from '../db/schema.js';
-import { validateFriendAuth, requireFriendOwner, createFriendSession, presentedSessionExpiry, presentedSessionVia, invalidateFriendSessions, invalidateLoginTokens, getAuthMode, validateUsername, isUsernameTaken, hashPassword, comparePassword } from '../middleware/friend-auth.js';
+import { validateFriendAuth, requireFriendOwner, createFriendSession, setSessionCookie, clearSessionCookie, readSessionCookie, presentedSessionExpiry, presentedSessionVia, invalidateFriendSessions, invalidateLoginTokens, getAuthMode, validateUsername, isUsernameTaken, hashPassword, comparePassword } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { authLimiter } from '../middleware/rate-limit.js';
 import { getPlaceholderCycleId } from '../helpers/friend-create.js';
@@ -192,6 +192,7 @@ router.post('/auth', authLimiter, (req, res) => {
     // Remember-me (09 §UC-ML-002): 60 days on an explicit opt-in, 24 h otherwise.
     // ⚠ `=== true`, never a truthy check — the string "false" must not buy 60 days.
     const session = createFriendSession(friend.id, { remember: req.body.remember === true });
+    setSessionCookie(res, session); // 2026-10-07 — the ITP-proof backup copy
     // ⚠ 18 §UC-PI-013 (PI-T9) — `explainer_seen_at` rides the FRIEND OBJECT of every
     // LOGIN response, and only of a login. FOUR sites, named so a grep for one finds
     // the set: this branch, the shared-password branch below, `/auth/google`, and
@@ -267,6 +268,7 @@ router.post('/auth', authLimiter, (req, res) => {
     // shared-password login mints a per-friend session too, so it must honour
     // the opt-in identically (09 §UC-ML-002 mint-site inventory item 1).
     const session = createFriendSession(friend.id, { remember: req.body.remember === true });
+    setSessionCookie(res, session); // 2026-10-07 — the ITP-proof backup copy
     return res.json({
       success: true,
       // 18 §UC-PI-013 — login payload 2 of 4 (`explainer_seen_at`); the personal
@@ -391,6 +393,7 @@ router.post('/auth/google', authLimiter, async (req, res) => {
     // The client no longer sends `remember` on this route; a stale client that
     // still does is ignored either way. Password branches are UNCHANGED.
     const session = createFriendSession(friend.id, { remember: true });
+    setSessionCookie(res, session); // 2026-10-07 — the ITP-proof backup copy
 
     // ⚠ HAND-PICKED, NEVER A `SELECT *` SPREAD. `friend` above is a full row and holds
     // `password_hash`, `access_token`, `invite_code` and `google_sub`; every one of them
@@ -434,6 +437,56 @@ router.post('/auth/google', authLimiter, async (req, res) => {
     return res.status(500).json({ error: 'Prihlásenie zlyhalo' });
   }
 });
+
+// ---------------------------------------------------------------------------
+// 2026-10-07 — SESSION RESTORE + LOGOUT off the session COOKIE
+// (`middleware/friend-auth.js` §the session COOKIE explains why it exists).
+//
+// `POST /session/restore` — called by `FriendPortal.vue` ONLY when localStorage holds
+// no session (the iOS Safari 7-day wipe, a second origin, a cleared site). It answers
+// the cookie's still-valid session as `{ friend: {id, name, uid}, token, expiresAt }`
+// — the SAME token, never a new one, so restoring mints nothing and a revoked row
+// (password change, admin reset, logout) cannot come back. ⚠ A RESTORE IS NOT A
+// LOGIN: no `explainer_seen_at`, no `mustChangePassword`, no Google-prompt fields —
+// the client takes its existing restore path, which opens no gate (18 §UC-PI-013).
+// Every miss (no cookie, bad shape, expired/deleted row, inactive friend) is ONE
+// uniform 401 that also clears the cookie. POST + `no-store`: a token in a body must
+// not be cacheable or prefetchable. No limiter: the only input is a 256-bit token.
+//
+// `POST /session/logout` — deletes the presented cookie's session row and clears the
+// cookie. Idempotent 200 (no cookie ⇒ nothing to do). HttpOnly means the client
+// cannot clear the cookie itself, so `switchUser()` calls this; without it a logout
+// followed by a reload would restore the session it just ended.
+// ---------------------------------------------------------------------------
+router.post('/session/restore', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const token = readSessionCookie(req);
+  const row = token
+    ? db.prepare(
+      `SELECT s.token, s.expires_at, f.id, f.name, f.uid, f.active
+         FROM friend_sessions s JOIN friends f ON f.id = s.friend_id
+        WHERE s.token = ? AND s.expires_at > ?`
+    ).get(token, Date.now())
+    : null;
+  if (!row || !row.active) {
+    clearSessionCookie(res);
+    return res.status(401).json({ error: 'Žiadne uložené prihlásenie' });
+  }
+  return res.json({
+    friend: { id: row.id, name: row.name, uid: row.uid },
+    token: row.token,
+    expiresAt: row.expires_at,
+  });
+});
+
+router.post('/session/logout', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const token = readSessionCookie(req);
+  if (token) db.prepare('DELETE FROM friend_sessions WHERE token = ?').run(token);
+  clearSessionCookie(res);
+  return res.json({ success: true });
+});
+
 
 // GET /friends/login-list - Public minimal list for the legacy/transition login
 // dropdown: id + name + hasCredentials only (no contact data, balances or
@@ -555,6 +608,7 @@ router.post('/:id/setup-credentials', (req, res) => {
   invalidateFriendSessions(friendId);
   // ⚠ `via` is deliberately NOT carried over — see change-password below.
   const session = createFriendSession(friendId, { expiresAt: carryExpiry });
+  setSessionCookie(res, session); // 2026-10-07 — the ITP-proof backup copy
 
   const updated = db.prepare('SELECT id, name, uid, username FROM friends WHERE id = ?').get(friendId);
   res.json({ success: true, friend: updated, token: session.token, expiresAt: session.expiresAt });
@@ -655,6 +709,7 @@ router.put('/:id/change-password', (req, res) => {
   // retires the §UC-ML-008 `currentPassword` waiver. Carrying 'magic_link'
   // across a password change would keep the waiver alive indefinitely.
   const session = createFriendSession(friendId, { expiresAt: carryExpiry });
+  setSessionCookie(res, session); // 2026-10-07 — the ITP-proof backup copy
 
   res.json({ success: true, token: session.token, expiresAt: session.expiresAt });
 });
@@ -872,6 +927,7 @@ router.post('/:id/set-password', (req, res) => {
   // ⚠ `via` is deliberately NOT carried over — see `change-password`: a NULL `via` is
   // what retires the §UC-ML-008 `currentPassword` waiver.
   const session = createFriendSession(friendId, { expiresAt: carryExpiry });
+  setSessionCookie(res, session); // 2026-10-07 — the ITP-proof backup copy
 
   // ⚠ HAND-PICKED, NEVER A `SELECT *` SPREAD (11 §UC-FC-005's strip rule, inherited).
   // `hasCredentials` rides along so the client can flip the profile modal's fold from

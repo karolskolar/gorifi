@@ -11,6 +11,7 @@ import { ADMIN_PASSWORD, FRIENDS_PASSWORD } from '../fixtures.js'
 import { collectAppCopy } from '../helpers/copy-sweep.js'
 import { makeAdmin } from '../helpers/admin.js'
 import { stripComments } from '../helpers/source-pins.js'
+import { PROFILE_AUTO_OPEN, PROFILE_AUTO_OPEN_PARKED } from '../helpers/features.js'
 
 // FUP-T20's source-grep guard needs the checkout's own path (see that test).
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -1493,6 +1494,7 @@ test.describe('⚠ PI-T10 — the profile modal auto-opens until Mobil is filled
   }
 
   test('a LOGIN by a friend with no stored phone opens it by itself', async ({ page }) => {
+    test.skip(!PROFILE_AUTO_OPEN, PROFILE_AUTO_OPEN_PARKED)
     const who = await makePhonelessFriend('auto')
     await cardLogin(page, who)
 
@@ -1516,6 +1518,7 @@ test.describe('⚠ PI-T10 — the profile modal auto-opens until Mobil is filled
   })
 
   test('⚠ dismissing it is PER SESSION — it does not come back in the same session', async ({ page }) => {
+    test.skip(!PROFILE_AUTO_OPEN, PROFILE_AUTO_OPEN_PARKED)
     const who = await makePhonelessFriend('dismiss')
     await cardLogin(page, who)
     const dialog = page.getByRole('dialog')
@@ -1533,6 +1536,7 @@ test.describe('⚠ PI-T10 — the profile modal auto-opens until Mobil is filled
   })
 
   test('⚠ a RESTORE is not a login: a reload does NOT re-open it', async ({ page }) => {
+    test.skip(!PROFILE_AUTO_OPEN, PROFILE_AUTO_OPEN_PARKED)
     const who = await makePhonelessFriend('restore')
     await cardLogin(page, who)
     await expect(page.getByRole('dialog').locator('.m-title')).toHaveText(PROFILE_TITLE)
@@ -1556,6 +1560,7 @@ test.describe('⚠ PI-T10 — the profile modal auto-opens until Mobil is filled
   })
 
   test('⚠ it comes back at the NEXT login — and stops once Mobil is saved', async ({ page }) => {
+    test.skip(!PROFILE_AUTO_OPEN, PROFILE_AUTO_OPEN_PARKED)
     const who = await makePhonelessFriend('next')
     await cardLogin(page, who)
     await page.getByRole('dialog').getByRole('button', { name: 'Zrušiť' }).click()
@@ -1590,6 +1595,7 @@ test.describe('⚠ PI-T10 — the profile modal auto-opens until Mobil is filled
   // document — the gate is alone while it is up, and the profile modal arrives the
   // moment it is satisfied — because either half alone passes on the wrong build.
   test('⚠ it waits for the forced-password gate, and arrives when that gate clears', async ({ page }) => {
+    test.skip(!PROFILE_AUTO_OPEN, PROFILE_AUTO_OPEN_PARKED)
     const who = await makePhonelessFriend('gate')
     // An admin reset raises `must_change_password` — UC-FL-012's gate.
     expect((await admin(`/api/friends/${who.id}/reset-password`, { method: 'put', data: { password: 'tempPass2' } })).status()).toBe(200)
@@ -1620,6 +1626,7 @@ test.describe('⚠ PI-T10 — the profile modal auto-opens until Mobil is filled
   // §UC-PI-013 owns that login: the explainer is a VIEW the friend must be shown, and a
   // modal over it would be the first thing they see instead.
   test('⚠ it waits for the FIRST-LOGIN explainer gate, and arrives when that gate clears', async ({ page }) => {
+    test.skip(!PROFILE_AUTO_OPEN, PROFILE_AUTO_OPEN_PARKED)
     const who = await makeFriend('gatex', { phone: null, ack: false })
     await cardLogin(page, who)
 
@@ -1642,6 +1649,7 @@ test.describe('⚠ PI-T10 — the profile modal auto-opens until Mobil is filled
   // `NeoModal` raised straight from the handshake — so without it in the trigger this
   // modal stacks on it, scrim over scrim, for a credential-less friend with no phone.
   test('⚠ it waits for the AUTO-RAISED credential-setup dialog too', async ({ page }) => {
+    test.skip(!PROFILE_AUTO_OPEN, PROFILE_AUTO_OPEN_PARKED)
     const who = await makePlainFriend('setupgate', { phone: null })
 
     await muteGuestCounts(page)
@@ -1694,6 +1702,7 @@ test.describe('⚠ PI-T10 — the profile modal auto-opens until Mobil is filled
   }
 
   test('⚠ it waits for the CLOSED landing\'s state modal — never two modals at once', async ({ page }) => {
+    test.skip(!PROFILE_AUTO_OPEN, PROFILE_AUTO_OPEN_PARKED)
     const who = await makePhonelessFriend('closed')
     // One `completed` round and nothing else ⇒ `resolveLanding()` reports `closed`,
     // which auto-mounts `LandingStateModal` (§UC-PI-006).
@@ -1722,6 +1731,7 @@ test.describe('⚠ PI-T10 — the profile modal auto-opens until Mobil is filled
   // itself would otherwise be a silent mutation — this row's own standing lesson.
   // §UC-PI-007's „locked, NO own order" branch is the same treatment with another title.
   test('⚠ …and for the LOCKED landing\'s state modal, which is a separate term', async ({ page }) => {
+    test.skip(!PROFILE_AUTO_OPEN, PROFILE_AUTO_OPEN_PARKED)
     const who = await makePhonelessFriend('locked')
     await page.route('**/api/friends/cycles*', (route) => route.fulfill({
       status: 200,
@@ -1968,6 +1978,7 @@ test.describe('⚠ PI-T10 — the profile modal auto-opens until Mobil is filled
   // decision underneath is one-shot and irreversible („Toto rozhodnutie je jednorazové
   // a nedá sa zmeniť"), with no dismiss, only accept or decline.
   test('⚠ it waits for the PENDING-VOUCHER overlay, which it would otherwise paint over', async ({ page }) => {
+    test.skip(!PROFILE_AUTO_OPEN, PROFILE_AUTO_OPEN_PARKED)
     const who = await makePhonelessFriend('voucher')
     await page.route('**/api/vouchers/pending*', (route) => route.fulfill({
       status: 200,
@@ -2026,6 +2037,7 @@ test.describe('⚠ PI-T10 — the profile modal auto-opens until Mobil is filled
   // `signIn()` (a RESTORE), so `freshLogin` is false and the trigger never arms. This
   // one logs in through the card, which is the only way the two can collide.
   test('⚠ a late hydrate must NOT re-prefill a modal the friend already has open', async ({ page }) => {
+    test.skip(!PROFILE_AUTO_OPEN, PROFILE_AUTO_OPEN_PARKED)
     const who = await makePhonelessFriend('reprefill')
 
     // Hold the profile GET so the friend can get in front of it. The PATCH on the same
@@ -2065,5 +2077,20 @@ test.describe('⚠ PI-T10 — the profile modal auto-opens until Mobil is filled
     // …and exactly one modal is open — it was not re-opened on top of itself.
     await expect(page.getByRole('dialog')).toHaveCount(1)
     await expect(page.locator('.modal-layer')).toHaveCount(1)
+  })
+
+  // PO 2026-10-07 — PARKED (`lib/features.js PROFILE_AUTO_OPEN = false`): „nezobrazujme
+  // naďalej modal ako default po prihlásení". The same phone-less LOGIN that the first
+  // test above makes open the modal must leave the landing alone.
+  test('PARKED: a LOGIN by a friend with no stored phone does NOT open it', async ({ page }) => {
+    test.skip(PROFILE_AUTO_OPEN, 'auto-open is ON')
+    const who = await makePhonelessFriend('parked')
+    await cardLogin(page, who)
+    await expect(page.getByTestId('portal-landing')).toBeVisible()
+    await expect(page.getByRole('dialog'), 'no modal on its own').toHaveCount(0)
+    // …and it still opens from the drawer, with Mobil still required to save.
+    await portalOpenProfile(page)
+    await expect(page.getByRole('dialog').locator('.m-title')).toHaveText(PROFILE_TITLE)
+    await expect(page.getByRole('dialog').getByRole('button', { name: 'Uložiť' })).toBeDisabled()
   })
 })

@@ -269,6 +269,39 @@ async function loadInitialData() {
       // is scoped to the write side and touches the six-leak session-boundary surface.
       // If a future row removes it, `FriendOrder.vue`'s twin (its `getFriendsAuthInfo`
       // fallback) goes with it, or the two disagree about what a session is.
+      //
+      // ⚠ 2026-10-07 — FIRST, THE SESSION COOKIE. localStorage is empty, but that no
+      // longer means „logged out": iOS Safari wipes a site's storage after 7 days
+      // without a visit, and a second origin (www) never had it. The server's
+      // HttpOnly cookie still holds the token, so ask for it back. A hit is written
+      // to localStorage and takes the SAME restore path as a stored payload — a
+      // restore, not a login: no `freshLogin`, no explainer gate, no profile prompt.
+      // A miss (401: no cookie / expired / logged out) falls through unchanged.
+      try {
+        const restored = await api.restoreFriendSession()
+        if (restored?.token && restored.friend?.id) {
+          const payload = {
+            friendId: restored.friend.id,
+            friendName: restored.friend.name,
+            friendUid: restored.friend.uid,
+            token: restored.token,
+            expiresAt: restored.expiresAt,
+          }
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
+          savedAuth.value = payload
+          currentFriend.value = { id: payload.friendId, name: payload.friendName, uid: payload.friendUid }
+          selectedFriendId.value = String(payload.friendId)
+          setFriendsToken(payload.token)
+          setFriendsAuthInfo({ friendId: payload.friendId, friendName: payload.friendName, friendUid: payload.friendUid })
+          await beginSession({})
+          hydrateCurrentFriend(payload.friendId)
+          return
+        }
+      } catch {
+        // No usable cookie — the ordinary anonymous path below.
+        localStorage.removeItem(STORAGE_KEY)
+        clearFriendsPassword()
+      }
       const memoryToken = getFriendsToken()
       const memoryPassword = getFriendsPassword()
       const memoryAuthInfo = getFriendsAuthInfo()
@@ -978,6 +1011,11 @@ function switchUser() {
   // the key cannot cover it, and it carries the plaintext password of the
   // forced-change path. And `error`, whose one writer is `loadInitialData` —
   // kept for the same reason as the form refs: it is this component's own.
+  // ⚠ 2026-10-07 — plus the server's session COOKIE, the one credential store this
+  // component cannot clear itself (HttpOnly). The route deletes this device's
+  // session row and the cookie. Fire-and-forget, like every other line here: if it
+  // fails offline, the next load may restore that one session once more.
+  api.endFriendSession().catch(() => {})
   clearFriendsPassword()
   localStorage.removeItem(STORAGE_KEY)
   savedAuth.value = null

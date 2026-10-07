@@ -38,7 +38,7 @@
 
 import { Router } from 'express';
 import db, { generateLoginToken, hashLoginToken, LOGIN_TOKEN_TTL_MS } from '../db/schema.js';
-import { getAuthMode, createFriendSession } from '../middleware/friend-auth.js';
+import { getAuthMode, createFriendSession, setSessionCookie } from '../middleware/friend-auth.js';
 import { magicLinkLimiter, authLimiter } from '../middleware/rate-limit.js';
 import { renderEmail } from '../helpers/email-templates.js';
 import { sendMail } from '../helpers/mailer.js';
@@ -401,6 +401,7 @@ router.post('/redeem', authLimiter, (req, res) => {
   // treats it that way. Any future consumer of these two fields inherits that rule.
   // (Same reasoning covers `/friends/auth`'s legacy shared-password branch, which
   // also omits them: the prompt is modern-mode only.)
+  setSessionCookie(res, session); // 2026-10-07 — the ITP-proof backup copy
   res.json({
     success: true,
     friend: {

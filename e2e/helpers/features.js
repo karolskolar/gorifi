@@ -25,3 +25,8 @@ export const GUEST_WAITLIST = flag('GUEST_WAITLIST', false)
 export const WAITLIST_PARKED = 'guest waitlist form parked (frontend/src/lib/features.js, PO 2026-09-29)'
 
 export const STANDING_PARKED = 'standing guest link parked (frontend/src/lib/features.js, PO 2026-09-29)'
+
+/** 18 §UC-PI-015's profile-modal auto-open after a login (PO 2026-10-07: parked). */
+export const PROFILE_AUTO_OPEN = flag('PROFILE_AUTO_OPEN', false)
+
+export const PROFILE_AUTO_OPEN_PARKED = 'profile modal auto-open parked (frontend/src/lib/features.js, PO 2026-10-07)'

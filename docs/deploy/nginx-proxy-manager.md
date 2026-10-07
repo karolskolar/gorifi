@@ -277,6 +277,12 @@ The app is also served on **podpultovka.biz** / **www.podpultovka.biz** (prod) a
 nginx configs list the new names in `server_name`, and the backend CORS
 allowlist includes the three HTTPS origins.
 
+> ⚠ 2026-10-07: **www.podpultovka.biz no longer serves the app** — the LXC nginx answers it with a
+> `301` to `https://podpultovka.biz$request_uri` (its own `server` block in `deploy/nginx-gorifi.conf`).
+> The friend login lives in per-origin browser storage and iOS Safari hides „www.", so two origins
+> meant two separate logins (learnings 04 §session-cookie). Keep the NPM proxy host + certificate for
+> `www` — it must still reach the LXC nginx for the redirect to happen.
+
 NPM setup — **extend the two existing proxy hosts** rather than creating new
 ones (one host = one upstream = one Advanced-tab config to keep in sync):
 

@@ -4,7 +4,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ADMIN_PASSWORD, FRIENDS_PASSWORD } from '../fixtures.js'
 import { assertReadable, code, HAS_SRC, NEEDS_SRC } from '../helpers/source-pins.js'
-import { expectLanding, menuGo } from '../helpers/portal.js'
+import { expectLanding, menuGo, logout } from '../helpers/portal.js'
 import { makeAdmin } from '../helpers/admin.js'
 
 // PI-T8 — 18 §UC-PI-012 („Ako to funguje") and §UC-PI-014 (`lib/roasters.js` + the
@@ -804,6 +804,9 @@ test.describe('PI-T9 · 18 §UC-PI-013 — the first-login explainer gate', () =
 
   /** A fresh document with no stored session, so the next entry is a real LOGIN. */
   async function freshVisit(page) {
+    // A FRESH visit has no session at all — since 2026-10-07 that includes the server's
+    // `pp_session` cookie, which would otherwise restore the last session (by design).
+    await page.context().clearCookies()
     await page.addInitScript(() => localStorage.clear())
     await page.goto('/')
   }
@@ -941,7 +944,7 @@ test.describe('PI-T9 · 18 §UC-PI-013 — the first-login explainer gate', () =
     await expect(explainer(page).getByRole('checkbox')).toHaveCount(0)
   })
 
-  test('⚠ the gate is ONE-SHOT: re-entering from the drawer in the same session shows no checkbox', async ({ page }) => {
+  test('⚠ the gate is ONE-SHOT: leaving by the chevron STAMPS it (PO 2026-10-07); the drawer re-entry writes nothing more', async ({ page }) => {
     const friend = await gateFixture(page, 'GateOnce')
     const stamps = countStamps(page, friend.id)
     await freshVisit(page)
@@ -950,9 +953,12 @@ test.describe('PI-T9 · 18 §UC-PI-013 — the first-login explainer gate', () =
 
     // Leave the gate WITHOUT answering it — the appbar's back chevron, which
     // §UC-PI-003 puts where the hamburger is on the other three views.
+    // ~~the chevron answers nothing, so it writes nothing~~ — PO 2026-10-07: that is
+    // how the PO's own account met the explainer at EVERY login. Walking away from the
+    // gate means it has been shown; only „Rozumiem" with the box UNTICKED asks for it again.
     await page.locator('.appbar [aria-label="Späť"]').click()
     await expect(page).toHaveURL(/\/$/)
-    expect(stamps, 'the chevron answers nothing, so it writes nothing').toHaveLength(0)
+    await expect.poll(() => stamps.length, { message: 'the chevron exit stamps exactly once' }).toBe(1)
 
     // Back in from the drawer: the SAME session, now the menu-mode page.
     await menuGo(page, 'Ako to funguje')
@@ -963,8 +969,24 @@ test.describe('PI-T9 · 18 §UC-PI-013 — the first-login explainer gate', () =
     // ⚠ THE POINT: `PortalExplainer` emits `{ hide: true }` in BOTH modes (one payload
     // shape), so a handler that read the payload without checking the gate flag would
     // stamp HERE — silently retiring an explainer the friend never acknowledged.
-    expect(stamps, 'a menu-opened explainer never writes').toHaveLength(0)
-    expect(await storedStamp(friend), 'the column is still NULL').toBeNull()
+    expect(stamps, 'a menu-opened explainer never writes — still the ONE chevron stamp').toHaveLength(1)
+    expect(await storedStamp(friend), 'the column is stamped').not.toBeNull()
+  })
+
+  test('PO 2026-10-07: a gate left by the chevron does NOT come back at the next login', async ({ page }) => {
+    const friend = await gateFixture(page, 'GateChevron')
+    await freshVisit(page)
+    await uiLogin(page, friend)
+    await expect(page).toHaveURL(/\/ako-to-funguje$/)
+    await page.locator('.appbar [aria-label="Späť"]').click()
+    await expect(page).toHaveURL(/\/$/)
+    await expect.poll(() => storedStamp(friend)).not.toBeNull()
+
+    await logout(page)
+    await freshVisit(page)
+    await uiLogin(page, friend)
+    await expectLanding(page)
+    await expect(page, 'straight to the current state, not the explainer').toHaveURL(/\/$/)
   })
 
   test('precedence: the forced password change is met FIRST, with the explainer underneath', async ({ page }) => {
