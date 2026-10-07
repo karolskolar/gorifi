@@ -88,7 +88,8 @@ function payableAmount(amount) {
  * `note` (PO 2026-10-07) is the payment note — the SAME server-owned reference the modal
  * shows under „Poznámka k platbe" — sent as `&note=`, which Revolut prefills as the
  * transfer's note — the PO's working example is `revolut.me/<user>?currency=EUR&amount=1300
- * &note=2x%206,50` (⚠ undocumented by Revolut, like the amount variant). A friend reported the amount prefilled but the note empty, so the payee could not tell
+ * &note=2x%206,50` (⚠ undocumented by Revolut, like the amount variant; VERIFIED by the PO on
+ * a real phone, 2026-10-07). A friend reported the amount prefilled but the note empty, so the payee could not tell
  * whose transfer it was. It is a VALUE, so it is encoded; a blank note adds no key. It is
  * appended LAST, so the `?amount=` the modal's label reads stays where it was, and it
  * rides on the flag-off profile link too (the note does not depend on the amount format).
