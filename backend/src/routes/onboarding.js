@@ -4,6 +4,7 @@ import { nanoid } from 'nanoid';
 import db, { generateUid, generateInviteCode } from '../db/schema.js';
 import {
   createFriendSession,
+  setSessionCookie,
   validateUsername,
   isUsernameTaken,
   hashPassword,
@@ -401,6 +402,7 @@ router.post('/onboarding/:token', abuseLimiter, (req, res) => {
   // `{ remember: req.body.remember === true }` here — the primitive already
   // supports it and nothing else needs to change.
   const session = createFriendSession(friendId);
+  setSessionCookie(res, session); // 2026-10-07 — the ITP-proof backup copy
 
   // ⚠ 18 §UC-PI-013 (PI-T9) — THIS PAYLOAD CARRIES NO `explainer_seen_at`, AND THAT
   // IS A DECISION, NOT AN OVERSIGHT. §UC-PI-013 names FOUR login payloads (both

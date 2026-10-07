@@ -40,6 +40,7 @@ cd frontend && npm run dev     # :5173
 - Nginx Proxy Manager (TLS) → LXC nginx → PM2 `gorifi-backend:3000` (gorifi.skolar.sk, podpultovka.biz) /
   `gorifi-staging:3001` (gorifi-dev.skolar.sk, dev.podpultovka.biz). Files: `deploy/ecosystem.config.cjs`,
   `deploy/nginx-gorifi*.conf`, `docs/deploy/nginx-proxy-manager.md`. `VITE_STAGING=true` shows the amber banner.
+- `www.podpultovka.biz` 301-redirects to `podpultovka.biz` in `deploy/nginx-gorifi.conf` — ONE origin, because the friend login lives in per-origin storage (2026-10-07).
 - Backend restart is required for DB migrations. New domains need `server_name` in both nginx confs AND the
   `CORS_ORIGIN` default in `backend/src/index.js`, or every XHR 500s and the SPA renders blank.
 - `backend/public` is git-ignored build output used only for the local prod-like e2e gate; prod serves `frontend/dist`.
@@ -105,6 +106,7 @@ append the full write-up to the matching learnings file and add at most one line
   CLOSED until PRODUCTION carries the GL-T1/GL-T3 migrations (`e2e/README.md`, learnings 11 §GL-T6).
   Admin surfaces never RENDER it (`FriendDetail.vue` copies `origin + url_path` at click); opening that page MINTS it — a PO-visible back-fill (GL-T6).
 - `guest_waitlist` (19, GL-T3): `helpers/guest-waitlist.js` is its ONLY writer (signup/re-arm, both purges, admin DELETE); `notified_at` gets a timestamp from module 21 ONLY (19 resets it to NULL); `helpers/phone.js toE164()` is the ONE E.164 normaliser (`parsePhoneNumber` nowhere else); the public `POST /api/guest/:token/waitlist` answers ONE 200 for create AND duplicate (no oracle) and never joins `ADMIN_ENDPOINTS`; its rows are non-member PII — ~~⚠ not in the e2e scrub yet, exact lines on the GL-T6 row (BLOCKING).~~ **scrubbed since GL-T6a (name/phone/e164 — learnings 11 §GL-T6).** No COMMENT in `routes/guest.js` may say async/await either: the D11 pin greps it raw.
+- Friend sessions have an ITP-proof backup: every mint sets the HttpOnly `pp_session` cookie (Path `/api/friends/session`, the row's horizon) via `setSessionCookie()`; ONLY `POST /friends/session/restore` (same token, restore ≠ login) and `…/logout` (deletes the row) read it. A „fresh visit" in e2e must `clearCookies()` too (learnings 04 §session-cookie).
 - Rate limits: FIVE separate buckets in `middleware/rate-limit.js` (`auth`, `abuse`, `guestRead`, `guestWrite`,
   `magicLink`). Never collapse them.
 - `trust proxy` is **2** hops (NPM → LXC nginx → Node): with 1, `req.ip` was NPM's address and ALL friends shared one limiter bucket (2026-09-30 login lock-out; learnings 04 §trust-proxy). Pinned by `rate-limit-proxy-hops.spec.js`.
@@ -260,7 +262,7 @@ append the full write-up to the matching learnings file and add at most one line
 - SQLite: `WHERE col = ""` is an identifier and throws — use `''`. Single-row picks on second-resolution
   `created_at` need `, id DESC`. `orders` has no `UNIQUE(friend_id, cycle_id)` — get-or-create relies on `instances: 1`.
 - Friend creation via `POST /api/friends` sets no credentials; logins come only from approve / set-username / reset.
-- The profile modal AUTO-OPENS for a friend with an empty `phone` (18 §UC-PI-015, PO 2026-09-19).
+- ⚠ **PARKED (PO 2026-10-07): `lib/features.js PROFILE_AUTO_OPEN = false` — the auto-open below never arms; its 11 behaviour tests skip off the same flag, a `PARKED:` test pins the off state (learnings 10 §PO 2026-10-07).** The profile modal AUTO-OPENS for a friend with an empty `phone` (18 §UC-PI-015, PO 2026-09-19).
   ⚠ Trigger = `entry.freshLogin`, which `beginSession` takes from the THREE **login** paths only —
   a RESTORE is not a login, so a reload/deep link never re-opens it (§UC-PI-013's boundary, and the
   measured difference between 16 and 53 exposed spec files). The decision waits on
@@ -282,7 +284,7 @@ append the full write-up to the matching learnings file and add at most one line
   and the exact derived term set, so a term added or dropped reds too; each term also has a behaviour test
   that reds when that ONE term is deleted. `showInviteModal`/`showBalancePayment`/the drawer need a click;
   `showPasswordChange`/`showPasswordSet` are folds; `showMagicPrompt` is a banner — none are terms.
-- `friends.explainer_seen_at` (18 §UC-PI-013): NO back-fill, ever — every existing friend meets the explainer once.
+- `friends.explainer_seen_at` (18 §UC-PI-013): NO back-fill, ever — every existing friend meets the explainer once. ⚠ PO 2026-10-07: leaving the gate ANY way (chevron, drawer) stamps it; only „Rozumiem" with the box UNTICKED asks for it again.
   `POST /:id/explainer-seen` is the ONE writer (`requireFriendOwner` + the `friendId: null` 401, `COALESCE` so a
   second call never moves the stamp, no body, no limiter); nothing clears it and no admin route touches it. It rides
   the friend object of the FOUR **login** payloads only (`friends.js` ×3 + `magic-link.js`) — a session RESTORE is

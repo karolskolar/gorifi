@@ -29,3 +29,14 @@ export const STANDING_GUEST_LINK = false
  * sentence, preview) stays. The public signup route is untouched.
  */
 export const GUEST_WAITLIST = false
+
+/**
+ * 18 §UC-PI-015's AUTO-OPEN of the profile modal after a LOGIN by a friend with no
+ * stored phone (PI-T10, PO 2026-09-19). `false` — PO 2026-10-07: „Aj keď som
+ * nedoplnil všetky [údaje], nezobrazujme naďalej modal ako default po prihlásení."
+ * While it is off, `FriendPortalSession.vue` never arms `profileAutoOpenArmed`, so the
+ * modal opens only from the drawer. The trigger, its derived term list and its source
+ * pins stay in place (flip this to restore it); the `Mobil *` requirement on SAVE and
+ * the route's 400 are untouched.
+ */
+export const PROFILE_AUTO_OPEN = false

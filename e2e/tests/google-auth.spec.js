@@ -2618,6 +2618,8 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
 
       // ⚠ AND IT IS A REAL LOGIN, not just a 200. Out of the portal and back in through
       // the modern login card, with nothing but the name and password just chosen.
+      // (2026-10-07: the session cookie would restore the session — clear it too.)
+      await page.context().clearCookies()
       await page.evaluate(() => localStorage.clear())
       await loginModern(page, backend, { username, password })
       await expectLanding(page)

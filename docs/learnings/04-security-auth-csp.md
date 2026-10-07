@@ -500,3 +500,52 @@ socket address.
 server and reads `RateLimit: remaining=` instead of waiting for a 429, so it runs at the full-suite
 maxima. With `TRUST_PROXY_HOPS=1` the „separate buckets" test fails (measured); the forged-entry test
 guards against `true`.
+
+## §session-cookie — 2026-10-07: the friend session survives a wiped localStorage
+
+**Report (PO, iPhone).** „Login sa mi stále neukladá a keď sa prihlásim po pár dňoch musím opäť
+vypĺňať meno/heslo alebo Google účet."
+
+**Measured.** The PO's account (Lego, id 29, Google-linked) held SIX live server sessions, every one
+a 60-day Google horizon (`auth/google` always mints 60 days). The server never lost them — the
+BROWSER did, two ways:
+1. **Two origins.** Google logins came from `www.podpultovka.biz` (29.9.), `podpultovka.biz` (30.9.)
+   and `www.` again (7.10.). localStorage is per ORIGIN, and iOS Safari hides „www." in the address
+   bar, so the friend cannot see which one they are on. 56 of ~350 recent Referers were www.
+2. **iOS Safari ITP** deletes all script-writable storage of a site after 7 days of browsing
+   without visiting it. 29.9. 20:39 → 7.10. 04:37 is 7.3 days; rounds are monthly, so most iPhone
+   friends meet this every round.
+
+**Fix 1 — one origin.** `deploy/nginx-gorifi.conf`: `www.podpultovka.biz` is its own `server` block
+answering `301 https://podpultovka.biz$request_uri` (NPM forwards the Host). It carries no
+`add_header`, so `self-hosted-fonts.spec.js`'s „3 CSP lines per conf" count is unchanged.
+(`gorifi.skolar.sk` is still served as a separate origin — not redirected, nobody uses it.)
+
+**Fix 2 — a server-set cookie as the ITP-proof backup.** Every session MINT that answers with a token
+also sets `pp_session=<the same token>; Path=/api/friends/session; Max-Age=<the row's horizon>;
+HttpOnly; Secure; SameSite=Lax` — `setSessionCookie(res, session)` in `middleware/friend-auth.js`,
+called at all EIGHT mint sites: `/auth` (personal + shared-password), `/auth/google`,
+`setup-credentials`, `change-password`, `set-password` (the three re-mints carry the horizon),
+magic-link redemption and onboarding. A cookie set by the SERVER is not capped by ITP.
+- `POST /api/friends/session/restore` reads ONLY that cookie and answers the still-valid row as
+  `{friend:{id,name,uid}, token, expiresAt}` — the SAME token, nothing minted, so a revoked row
+  (password change/reset, logout) cannot come back. ⚠ A restore is NOT a login: none of the login
+  fields (`explainer_seen_at`, `mustChangePassword`, Google prompt) — the client takes its existing
+  restore path, which opens no gate (pinned: key set exactly `expiresAt, friend, token`). Every miss
+  is one uniform 401 + a cleared cookie; `Cache-Control: no-store`; no limiter (input = 256-bit token).
+- `POST /api/friends/session/logout` deletes the cookie's session row and clears the cookie
+  (idempotent 200). Friend logout used to be client-only; HttpOnly means JS cannot clear the
+  cookie, so `switchUser()` now calls it fire-and-forget (offline ⇒ one more restore possible).
+  A logout now really ends that device's session server-side.
+- Client: `FriendPortal.vue`'s no-localStorage branch asks `restoreFriendSession()` FIRST, writes the
+  answer back to `gorifi_friend_auth` and runs the stored-restore path (`beginSession({})`).
+- The cookie is NOT an auth credential for any other route — requests still use the Bearer header;
+  the path scope keeps it off every other request. `SameSite=Lax` keeps it off cross-site fetches.
+
+**E2E consequence.** A „fresh visit" is no longer just `localStorage.clear()`: the cookie restores the
+last session BY DESIGN. `freshVisit()` in `modern-login`/`portal-explainer` and the GA-T11 re-login in
+`google-auth` now call `page.context().clearCookies()` first. Playwright gives every test a new
+context, so cross-test leakage is impossible; only same-test „log out by clearing storage" needed it.
+Pinned by `e2e/tests/session-cookie.spec.js` (attributes + horizons, restore = same token, logout
+kills the Bearer token too, forged cookies, the browser wipe → restore, restore opens no explainer,
+logout → reload shows the login card).

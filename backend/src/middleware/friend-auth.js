@@ -55,6 +55,60 @@ export function createFriendSession(friendId, opts = {}) {
   return { token, expiresAt };
 }
 
+// ---------------------------------------------------------------------------
+// The session COOKIE — a backup of the Bearer token the browser cannot lose
+// (2026-10-07).
+//
+// ⚠ WHY: the client keeps its session in localStorage, and iOS Safari (ITP) DELETES
+// all script-writable storage of a site after 7 days of browsing without visiting
+// it. Rounds are ~monthly, so a „remembered" 60-day session vanished client-side
+// within a week while its server row stayed valid (measured: the PO's account held
+// six live 60-day rows and still had to log in again). A cookie SET BY THE SERVER is
+// not capped that way. It carries the SAME token as the login response; the client
+// still authenticates with the Bearer header — the cookie is read by exactly TWO
+// routes (`POST /api/friends/session/restore` and `…/logout`), which is why its
+// `Path` is scoped to them and it never rides on any other request.
+//   HttpOnly  — no script can read it (the localStorage copy is the one JS uses).
+//   Secure    — HTTPS only (Chromium treats http://localhost as secure for e2e).
+//   SameSite=Lax — never sent on a cross-site subrequest, so a foreign page cannot
+//                  make the restore route answer with the token.
+// Max-Age = the session row's own horizon (24 h, or 60 days on remember/Google).
+// ---------------------------------------------------------------------------
+export const SESSION_COOKIE = 'pp_session';
+const SESSION_COOKIE_PATH = '/api/friends/session';
+const TOKEN_SHAPE = /^[a-f0-9]{64}$/;
+
+function cookieLine(value, maxAgeSeconds) {
+  return `${SESSION_COOKIE}=${value}; Path=${SESSION_COOKIE_PATH}; Max-Age=${maxAgeSeconds}; HttpOnly; Secure; SameSite=Lax`;
+}
+
+// Attach the cookie for a freshly minted session (every mint site that answers
+// with `token` calls this before `res.json`).
+export function setSessionCookie(res, session) {
+  if (!session || typeof session.token !== 'string' || !TOKEN_SHAPE.test(session.token)) return;
+  const maxAge = Math.max(0, Math.floor((Number(session.expiresAt) - Date.now()) / 1000));
+  res.append('Set-Cookie', cookieLine(session.token, maxAge));
+}
+
+export function clearSessionCookie(res) {
+  res.append('Set-Cookie', cookieLine('', 0));
+}
+
+// The token in the request's session cookie, or null. Shape-checked, so nothing
+// but 64 hex characters ever reaches a statement.
+export function readSessionCookie(req) {
+  const header = req.headers?.cookie;
+  if (typeof header !== 'string' || !header) return null;
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() !== SESSION_COOKIE) continue;
+    const value = part.slice(eq + 1).trim();
+    return TOKEN_SHAPE.test(value) ? value : null;
+  }
+  return null;
+}
+
 // The expiry of the session row the request is presenting, or null when the
 // caller has no session (the legacy X-Friends-Password header resolves no row).
 //

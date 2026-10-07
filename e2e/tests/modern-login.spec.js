@@ -149,6 +149,9 @@ test.beforeEach(async ({ page }) => {
 })
 
 async function freshVisit(page) {
+  // A FRESH visit has no session at all — since 2026-10-07 that includes the server's
+  // `pp_session` cookie, which would otherwise restore the last session (by design).
+  await page.context().clearCookies()
   await page.addInitScript(() => localStorage.clear())
   await page.goto('/')
 }
