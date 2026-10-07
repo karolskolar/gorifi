@@ -117,14 +117,15 @@ const coarsePointer = useMediaQuery('(pointer: coarse)')
 const paymeHref = computed(() => paymeLink({
   iban: props.iban,
   amount: props.amount,
-  variableSymbol: props.variableSymbol,
   reference: props.reference,
   creditorName: props.creditorName
 }))
 
 const showPayme = computed(() => !!paymeHref.value && coarsePointer.value)
 
-const revolutHref = computed(() => revolutLink(props.revolutUsername, props.amount))
+// PO 2026-10-07: the note travels in the link, so the payer's Revolut opens with the
+// reference already typed — the same string the „Poznámka k platbe" row shows.
+const revolutHref = computed(() => revolutLink(props.revolutUsername, props.amount, props.reference))
 
 // The amount rides in the LABEL as well as the link, so what the tap will do is legible
 // before the app opens. `EUR` after a total, per CLAUDE.md §Frontend; `€` is for item
@@ -188,8 +189,9 @@ function formatPrice(price) {
 // · SECTION ORDER IS FIXED — Revolut → PayMe → QR/IBAN → reference (prototype
 //   `ui.jsx PaymentModal`, with PayMe inserted by 15 §UC-PL-006). `.m-body` is a
 //   12px-gap flex column, so each section is one direct child and there is no
-//   wrapper to space them. The VS copy row goes INSIDE the reference section
-//   rather than beside it, so the section count stays what the prototype has.
+//   wrapper to space them. ~~The VS copy row goes INSIDE the reference section~~
+//   — the VS row is GONE (PO 2026-10-07, see the template); the reference section
+//   is one copy row again.
 // · The PayMe bar deliberately wears the DEFAULT `.btn` ink/paper colours: there
 //   is no prototype screen for it and no PayMe brand asset is self-hosted —
 //   pulling a remote logo would break the zero-external-requests CSP sweep
@@ -272,16 +274,12 @@ function formatPrice(price) {
       <label class="field-lbl">Poznámka k platbe (uveďte ju pri platbe)</label>
       <NeoCopyRow :value="reference" small data-testid="payment-reference" />
 
-      <!-- R6.3 — the variable symbol, for anyone typing the transfer by hand. It sits
-           INSIDE the reference section (so `.m-body` keeps its three prototype
-           children) and gets its OWN testid: `payment-reference` reads the reference
-           row's text and its single button, and must keep meaning only that.
-           ⚠ A surface whose payload carries no `variable_symbol` (a stale cached
-           response) renders today's modal rather than a made-up symbol. -->
-      <template v-if="variableSymbol">
-        <label class="field-lbl" style="margin-top:10px">Variabilný symbol</label>
-        <NeoCopyRow :value="variableSymbol" small data-testid="payment-vs" />
-      </template>
+      <!-- ~~R6.3 — the variable symbol row (`data-testid="payment-vs"`)~~ REMOVED, PO
+           2026-10-07: „Poznámka k platbe" and „Variabilný symbol" are merged into this
+           ONE row. Everything the payee needs to match a transfer is the note (it names
+           the order); Revolut and PayMe now prefill it, and the symbol is not asked of
+           anyone. The `variableSymbol` prop STAYS (additive API) — the QR still carries
+           it, silently, where it costs the payer nothing. -->
     </div>
 
     <template #footer>

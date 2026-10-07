@@ -316,8 +316,11 @@ test.describe('RD-GX-2 · the Platba modal shell (§UC-GX-005)', () => {
     // sum than the one they read. Pinned as one assertion for both.
     const minorUnits = Math.round(guestOrder.payment.amount * 100)
     expect(minorUnits, 'non-vacuity: a real amount, not 0').toBeGreaterThan(0)
+    // PO 2026-10-07: the note rides too (`&note=` = the server's reference), so the
+    // payee's statement names the order.
     expect(await rev.getAttribute('href'))
-      .toBe(`https://revolut.me/${guestOrder.payment.revolut_username}?amount=${minorUnits}&currency=EUR`)
+      .toBe(`https://revolut.me/${guestOrder.payment.revolut_username}?amount=${minorUnits}&currency=EUR`
+        + `&note=${encodeURIComponent(guestOrder.payment.reference)}`)
     await expect(rev, 'the label carries the same amount as the link').toContainText('25.00 EUR')
     await expect(rev.locator('span.mono'), 'money renders mono (02 §UC-DS-012)').toHaveText('(25.00 EUR)')
     const revStyle = await rev.evaluate((el) => {
@@ -380,9 +383,10 @@ test.describe('RD-GX-2 · the Platba modal shell (§UC-GX-005)', () => {
     // WEAKENED: the array form pins both labels AND their order, which is strictly more
     // than the single string pinned. The reference label itself is unchanged
     // (§UC-PL-006 item 3).
+    // ~~…and „Variabilný symbol" as the second label~~ — PO 2026-10-07 merged the two
+    // rows into this ONE note; the array form still pins the exact label set.
     await expect(d.locator('.field-lbl')).toHaveText([
       'Poznámka k platbe (uveďte ju pri platbe)',
-      'Variabilný symbol',
     ])
 
     // The 2 s flip, with the exclamation mark (resolved conflict #6, UC-DS-011).
@@ -705,7 +709,7 @@ async function blankPaymentField(page, field) {
 test.describe('PL-T3 §UC-PL-006 — the PayMe bar, on a phone', () => {
   test.use({ ...IPHONE, viewport: PHONE })
 
-  test('⚠ it renders, and its href carries the IBAN, the amount, the VS, the note and the payee', async ({ page }) => {
+  test('⚠ it renders, and its href carries the IBAN, the amount, the note and the payee — no VS', async ({ page }) => {
     const d = await openOnDevice(page)
     expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches),
       'non-vacuity: the emulated device must really report a coarse pointer').toBe(true)
@@ -720,7 +724,7 @@ test.describe('PL-T3 §UC-PL-006 — the PayMe bar, on a phone', () => {
     const url = new URL(href)
     expect(url.origin + url.pathname).toBe('https://payme.sk/')
     expect([...url.searchParams.keys()], 'the exact documented parameter set, in order')
-      .toEqual(['V', 'IBAN', 'AM', 'CC', 'DT', 'PI', 'MSG', 'CN'])
+      .toEqual(['V', 'IBAN', 'AM', 'CC', 'DT', 'MSG', 'CN'])
     expect(url.searchParams.get('V')).toBe('1')
     expect(url.searchParams.get('IBAN'), 'whitespace-free, upper-case')
       .toBe(guestOrder.payment.iban.replace(/\s/g, '').toUpperCase())
@@ -733,12 +737,11 @@ test.describe('PL-T3 §UC-PL-006 — the PayMe bar, on a phone', () => {
       + (t.getMonth() + 1).toString().padStart(2, '0')
       + t.getDate().toString().padStart(2, '0'),
     )
-    expect(url.searchParams.get('PI')).toBe(`/VS${guestOrder.payment.variable_symbol}/SS/KS`)
-    // ⚠ On the RENDERED href too: the triplet's slashes must reach the bank app bare. A
-    // parsed read decodes, so it cannot tell `PI=/VS…/SS/KS` from `PI=%2FVS…%2FSS%2FKS` —
-    // and a bank app that splits the raw query rather than decoding it very much can.
-    expect(href.split('?')[1].split('&').find((p) => p.startsWith('PI=')))
-      .toBe(`PI=/VS${guestOrder.payment.variable_symbol}/SS/KS`)
+    // ~~`PI=/VS…/SS/KS`, slashes bare on the rendered href~~ — PO 2026-10-07: the
+    // variable symbol is not filled; the note below is the whole identification.
+    expect(url.searchParams.has('PI')).toBe(false)
+    expect(guestOrder.payment.variable_symbol, 'non-vacuity: the server still has one').toBeTruthy()
+    expect(href).not.toContain(guestOrder.payment.variable_symbol)
     expect(url.searchParams.get('MSG'), 'the SERVER-owned reference, never recomposed')
       .toBe(guestOrder.payment.reference)
     expect(url.searchParams.get('CN')).toBe(guestOrder.payment.creditor_name)
@@ -775,7 +778,7 @@ test.describe('PL-T3 §UC-PL-006 — the PayMe bar, on a phone', () => {
       'non-vacuity: still a coarse pointer, so the absence is the NAME’s doing').toBe(true)
     // Non-vacuity, the other half: the payment surface really rendered.
     await expect(d.getByRole('link', { name: /Revolut/ })).toBeVisible()
-    await expect(d.getByTestId('payment-vs')).toBeVisible()
+    await expect(d.getByTestId('payment-reference')).toBeVisible()
 
     await expect(d.getByTestId('payme-link'), '§UC-PL-002 rule 1: no payee, no PayMe').toHaveCount(0)
     expect(await bodySections(d)).toEqual(['revolut', 'qr', 'reference'])
@@ -813,33 +816,28 @@ test.describe('PL-T3 §UC-PL-006 — no PayMe on a fine pointer', () => {
   })
 })
 
-test.describe('PL-T3 §UC-PL-006 item 2 — the variable-symbol copy row', () => {
-  test('⚠ it shows the server VS and copies exactly that string', async ({ page, context }) => {
+// ~~PL-T3 §UC-PL-006 item 2 — the variable-symbol copy row~~ — MERGED AWAY, PO 2026-10-07:
+// „Poznámka k platbe" and „Variabilný symbol" are one row now, the note.
+test.describe('PO 2026-10-07 — one note row, no variable-symbol row', () => {
+  test('⚠ the modal shows ONE copy row — the server reference — and copies exactly that', async ({ page, context }) => {
     await context.grantPermissions(['clipboard-read', 'clipboard-write'])
     const d = await openFromStatus(page)
+    expect(guestOrder.payment.variable_symbol, 'non-vacuity: the payload still carries a VS').toBeTruthy()
 
-    const row = d.getByTestId('payment-vs')
-    await expect(row).toHaveClass(/\bcopyrow\b/)
-    await expect(row.locator('.val')).toHaveText(guestOrder.payment.variable_symbol)
-    expect(await row.locator('.val').evaluate((el) => getComputedStyle(el).fontFamily)).toMatch(/Courier/i)
+    await expect(d.getByTestId('payment-vs')).toHaveCount(0)
+    await expect(d.getByText('Variabilný symbol')).toHaveCount(0)
+    await expect(d.locator('.copyrow'), 'exactly one copy row').toHaveCount(1)
 
-    // ⚠ The reference row keeps its OWN testid and its own meaning: `payment-reference`
-    // is read for its text and its single button by three shipped specs, and it must
-    // never start resolving to two rows.
-    await expect(d.getByTestId('payment-reference')).toHaveCount(1)
-    await expect(d.getByTestId('payment-reference').locator('.val')).toHaveText(guestOrder.payment.reference)
-
-    // What the guest actually types into their bank — read back off the clipboard, not
-    // inferred from the label flip.
+    const row = d.getByTestId('payment-reference')
+    await expect(row.locator('.val')).toHaveText(guestOrder.payment.reference)
     const copy = row.getByRole('button')
-    await expect(copy).toHaveText('Kopírovať')
     await copy.click()
     await expect(copy).toHaveText('Skopírované!')
     expect(await page.evaluate(() => navigator.clipboard.readText()))
-      .toBe(guestOrder.payment.variable_symbol)
+      .toBe(guestOrder.payment.reference)
   })
 
-  test('a payload WITHOUT a variable symbol renders today’s modal, never a made-up one', async ({ page }) => {
+  test('a payload WITHOUT a variable symbol renders the same modal and a VS-less QR, never a made-up one', async ({ page }) => {
     await blankPaymentField(page, 'variable_symbol')
     const d = await openFromStatus(page)
     // Non-vacuity: the section it lives in is on screen.
@@ -863,7 +861,7 @@ test.describe('PL-T3 §UC-PL-006 item 2 — the variable-symbol copy row', () =>
 })
 
 test.describe('PL-T3 §UC-PL-007 item 2 — the g-confirm modal is wired too', () => {
-  test('⚠ the auto-opened confirmation modal carries the VS and the amount link, from the SUBMIT response', async ({ page }) => {
+  test('⚠ the auto-opened confirmation modal carries the note and the amount link, from the SUBMIT response', async ({ page }) => {
     // ⚠ The OTHER guest surface. `GuestOrder.vue` takes its payment data ONLY from the
     // submit response (06 §UC-GX-004) — never from a second fetch — so a wiring that
     // worked on the status page can still be missing here. This is a fresh sub-order
@@ -884,15 +882,17 @@ test.describe('PL-T3 §UC-PL-007 item 2 — the g-confirm modal is wired too', (
     const d = page.getByRole('dialog')
     await expect(d.locator('.m-title')).toHaveText('Platba')
 
-    const vs = (await d.getByTestId('payment-vs').locator('.val').textContent()).trim()
-    expect(vs, 'the guest scheme, on a sub-order this test never saw the id of').toMatch(/^9\d{6}$/)
-    expect(vs, 'and NOT the one the rest of the file uses — this is its own order')
-      .not.toBe(guestOrder.payment.variable_symbol)
+    const note = (await d.getByTestId('payment-reference').locator('.val').textContent()).trim()
+    expect(note, 'the guest reference, on a sub-order this test never saw the id of')
+      .toMatch(/^G\d+ \/ Vlado Confirm \//)
+    expect(note, 'and NOT the one the rest of the file uses — this is its own order')
+      .not.toBe(guestOrder.payment.reference)
 
-    // 12.50 = one 250 g bag at 10.00 × the cycle's 1.25 markup.
+    // 12.50 = one 250 g bag at 10.00 × the cycle's 1.25 markup; the note rides along.
     const rev = d.getByRole('link', { name: /Revolut/ })
     expect(await rev.getAttribute('href'))
-      .toBe(`https://revolut.me/${guestOrder.payment.revolut_username}?amount=1250&currency=EUR`)
+      .toBe(`https://revolut.me/${guestOrder.payment.revolut_username}?amount=1250&currency=EUR`
+        + `&note=${encodeURIComponent(note)}`)
     await expect(rev).toContainText('12.50 EUR')
     await expect(d.locator('.m-head .sub')).toHaveText('Suma na úhradu: 12.50 EUR')
   })

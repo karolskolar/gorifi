@@ -1319,7 +1319,10 @@ async function generateSuccessQr() {
 // a link to the current URL, which reloads the page. Same one-predicate reasoning as
 // `PaymentModal`'s, and the amount label reads the href for the same reason (the
 // `REVOLUT_AMOUNT_LINK` fallback then needs no second place to remember).
-const successRevolutHref = computed(() => revolutLink(paymentRevolutUsername.value, paymentTotal.value))
+// PO 2026-10-07: with the note (`paymentReference`) prefilled too, same as the modal's.
+const successRevolutHref = computed(() =>
+  revolutLink(paymentRevolutUsername.value, paymentTotal.value, paymentReference.value)
+)
 const successRevolutAmountLabel = computed(() =>
   (successRevolutHref.value.includes('?amount=') ? `(${fmtEur(paymentTotal.value)})` : '')
 )
@@ -2434,6 +2437,8 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
          sum, the Revolut link, the QR that now carries the symbol); the two things a
          friend TYPES — the reference and the VS — have their one home in the Platba
          modal, which „Zaplatiť“ in the cart bar opens. No PayMe button here either.
+         (PO 2026-10-07: the Platba modal no longer shows a VS row — the note is the
+         one thing to type, and the Revolut link here prefills it.)
 
          ⚠ CLOSING BY ANY ROUTE NAVIGATES TO THE PORTAL. `@close` is NeoModal's one
          event for ×, scrim and Esc, and the OK button calls the same handler, so all
@@ -2512,8 +2517,9 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
     </NeoModal>
 
     <!-- Payment Modal (for footer button) — THE full payment surface for this order:
-         the Revolut link, the PayMe deep link on a phone, the QR, the reference AND the
-         variable-symbol copy row. The success modal above is a confirmation with a
+         the Revolut link, the PayMe deep link on a phone, the QR and the reference
+         (~~AND the variable-symbol copy row~~ — merged into the note, PO 2026-10-07).
+         The success modal above is a confirmation with a
          shortcut, which is why it carries neither the VS row nor PayMe (§UC-PL-007
          item 1).
          ⚠ `variableSymbol` is the SERVER's, quoted from the last order response; this

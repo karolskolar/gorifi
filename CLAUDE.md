@@ -200,9 +200,11 @@ append the full write-up to the matching learnings file and add at most one line
   plain `node` can drive it; never imported by an admin view). ⚠ EVERY value interpolated into a URL goes
   through `encodeURIComponent` — the creditor name is length-validated only, so `&`/`#`/`+`/`%`/newline are
   this file's problem; pin the parameter KEY SET, not the value (raw interpolation grows a key). ⚠ But encode
-  VALUES, never STRUCTURE: PayMe's `PI=/VS<vs>/SS/KS` slashes stay BARE (a bank app may split the raw query),
-  only the symbol between them is encoded — and a `searchParams.get()` assertion DECODES, so a wire format
-  needs a raw-segment pin, never a round-trip one. Gate each control on its composed href, never on the raw
+  VALUES, never STRUCTURE — and a `searchParams.get()` assertion DECODES, so a wire format needs a raw-segment
+  pin, never a round-trip one. ~~PayMe's `PI=/VS<vs>/SS/KS`~~ **PO 2026-10-07: no link carries a VS any more —
+  the NOTE is the identification: Revolut `&note=` (after `amount`/`currency`, so the label's `?amount=` read
+  holds) and PayMe `MSG`, both = the server's `reference`; `PaymentModal` has ONE copy row (`payment-vs` is
+  gone). The QR still carries the VS silently (learnings 07 §Revolut note).** Gate each control on its composed href, never on the raw
   prop: an empty `href` is a link to the current URL, i.e. a reload that discards g-confirm's state.
 - `PaymentModal.vue` props are ADDITIVE, not frozen (15 D4: `variableSymbol`, `creditorName`; the struck claim
   is rewritten in ALL SIX copies — 06 §UC-GX-005, the component header, 15's header, 18's §Out of scope + its

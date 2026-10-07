@@ -279,6 +279,9 @@ the same order (same helper, asserted across the two surfaces); a settled friend
 
 ## UC-PL-004 `frontend/src/lib/payment-links.js` — the one client home (system)
 
+> ⚠ **AMENDED — PO 2026-10-07** (see the block at the end of this file): `revolutLink(username, amount, note)`
+> appends `&note=<encoded reference>`; `paymeLink` no longer takes or emits a variable symbol (no `PI`).
+
 **Goal:** ONE implementation of "turn a payment block into links and a bysquare payload",
 consumed by `PaymentModal.vue` (UC-PL-005/006) and by the friend success modal (UC-PL-007
 item 1). No new dependency (01-architecture §Dependencies).
@@ -317,6 +320,9 @@ creditor name into `beneficiary.name`.
 ---
 
 ## UC-PL-005 `PaymentModal.vue` — amount-prefilled Revolut button (Friend, Guest)
+
+> ⚠ **AMENDED — PO 2026-10-07:** the href also carries `&note=` = the `reference` prop (and so does the
+> friend success modal's shortcut).
 
 **Goal:** R6.1 — one tap opens Revolut with the amount already filled in.
 
@@ -360,7 +366,11 @@ manual check, not e2e) the href is the plain profile link and the label has no a
 
 ---
 
-## UC-PL-006 `PaymentModal.vue` — PayMe.sk button (mobile only) + VS copy row (Friend, Guest)
+## UC-PL-006 `PaymentModal.vue` — PayMe.sk button (mobile only) + ~~VS copy row~~ (Friend, Guest)
+
+> ⚠ **AMENDED — PO 2026-10-07:** item 2's VS copy row (`payment-vs`) is REMOVED — „Poznámka k platbe“ and
+> „Variabilný symbol“ are merged into the ONE note row — and the PayMe link carries no `PI` (the note, `MSG`,
+> is the whole identification). Every `payment-vs` / `PI=` acceptance criterion below is superseded.
 
 **Goal:** R6.2 — on a phone, a bank-app deep link with IBAN, amount, VS and message
 prefilled; on desktop the QR stays the primary path. R6.3 — the VS is visible and copyable
@@ -601,3 +611,20 @@ new spec must pin. Money paths use the pixel-QR technique (01-architecture §Tes
 - **Verification tasks, not decisions (PO does them on a phone before pinning):** Revolut `?amount=&currency=` format (keep the `REVOLUT_AMOUNT_LINK` fallback flag until verified); PayMe `CN` 70 / `MSG` 140 caps against payme.sk.
 - **Module 18 seam** stands: the balance „Zaplatiť“ trigger is relocated by 18, not duplicated.
 - R6.5 „Zaplatil(a) som“ stays deferred.
+
+## PO decisions 2026-10-07 — the note is the identification
+
+> Trigger: a friend paid through the Revolut button and the app prefilled the AMOUNT but not the note, so the
+> payee could not tell whose transfer it was.
+
+- **Revolut** — the link carries the note: `https://revolut.me/<user>?amount=<minor>&currency=EUR&note=<encoded
+  reference>` (the PO's working example: `?currency=EUR&amount=1300&note=2x%206,50`). `note` is undocumented
+  by Revolut, like the amount variant — a phone check is the acceptance. A blank reference adds no key; the
+  `REVOLUT_AMOUNT_LINK=false` fallback drops only the amount, the note stays.
+- **No variable symbol to fill.** „Everything for the payee goes into the note.“ PayMe's `PI=/VS…/SS/KS` is
+  dropped (optional in the standard); `MSG` = the reference stays. The Platba modal's two rows „Poznámka k
+  platbe“ + „Variabilný symbol“ are MERGED into the one note row.
+- **Unchanged:** the server still derives and publishes `variable_symbol` (payloads only grow), the admin
+  surfaces and the guest confirmation mail still quote it, and the Pay-by-Square QR still carries it in
+  `variableSymbol` (invisible to the payer, harmless to a bank app). The references already name the order:
+  guest `G{id} / {meno} / {objednávka}`, friend `{meno} / {objednávka}`, balance `{meno} / zostatok`.

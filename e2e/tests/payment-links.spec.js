@@ -1136,7 +1136,10 @@ const NEEDS_FRONTEND = 'needs the frontend source + node_modules beside e2e/ (sk
 // see. 70 characters or fewer, so it is a name the admin can really save.
 const HOSTILE_CREDITOR = 'A & B #1 +50% =x\nKaviareň'
 const HOSTILE_HANDLE = 'kar ol&x#y'
-const PAYME_KEYS = ['V', 'IBAN', 'AM', 'CC', 'DT', 'PI', 'MSG', 'CN']
+// PO 2026-10-07: no `PI` (variable symbol) any more — the note (`MSG`) carries everything.
+const PAYME_KEYS = ['V', 'IBAN', 'AM', 'CC', 'DT', 'MSG', 'CN']
+// The PO's working example (2026-10-07): `?currency=EUR&amount=1300&note=2x%206,50`.
+const NOTE = 'G123 / Marek / Objednávka 7'
 
 let links = null
 let linksFlagOff = null
@@ -1176,6 +1179,11 @@ async function runLinks(entryUrl) {
     "    atOnly: m.revolutLink('@', 26.19),",
     "    hostile: m.revolutLink(hostileHandle, 26.19),",
     "    sub1c: m.revolutLink('karolskolar', 0.004),",
+    "    withNote: m.revolutLink('karolskolar', 26.19, process.env.NOTE),",
+    "    noteNoAmount: m.revolutLink('karolskolar', 0, process.env.NOTE),",
+    "    blankNote: m.revolutLink('karolskolar', 26.19, '   '),",
+    "    hostileNote: m.revolutLink('karolskolar', 26.19, 'G1 & G2 #3 +50%'),",
+    "    noteBlankHandle: m.revolutLink('   ', 26.19, process.env.NOTE),",
     "  },",
     "  payme: {",
     "    full: m.paymeLink({ iban: 'SK31 1200 0000 1987 4263 7541', amount: 26.19, variableSymbol: '9000123', reference: 'G123 / Marek / Cyklus 7', creditorName: 'Karol Skolar', date: '20260919' }),",
@@ -1214,6 +1222,7 @@ async function runLinks(entryUrl) {
       LINKS_URL: entryUrl,
       HOSTILE_CREDITOR,
       HOSTILE_HANDLE,
+      NOTE,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -1305,12 +1314,41 @@ test.describe('PL-T3 §UC-PL-004 — lib/payment-links.js, the one client home',
     expect([...url.searchParams.keys()], 'the `&` did not invent a parameter').toEqual(['amount', 'currency'])
   })
 
+  // ── the note (PO 2026-10-07) ───────────────────────────────────────────────
+  test('revolutLink: the payment note rides as `&note=`, AFTER the amount, encoded', () => {
+    // A friend paid through Revolut with the amount prefilled and the note EMPTY, so the
+    // payee could not tell whose transfer it was. The note is the modal's reference.
+    expect(links.revolut.withNote)
+      .toBe(`https://revolut.me/karolskolar?amount=2619&currency=EUR&note=${encodeURIComponent(NOTE)}`)
+    const url = new URL(links.revolut.withNote)
+    expect([...url.searchParams.keys()]).toEqual(['amount', 'currency', 'note'])
+    expect(url.searchParams.get('note'), 'round-trips to the reference').toBe(NOTE)
+    // `?amount=` must stay FIRST: the modal's amount label reads `href.includes('?amount=')`.
+    expect(links.revolut.withNote).toContain('?amount=')
+  })
+
+  test('revolutLink: a note without a payable amount still travels; a blank one adds no key', () => {
+    expect(links.revolut.noteNoAmount).toBe(`https://revolut.me/karolskolar?note=${encodeURIComponent(NOTE)}`)
+    expect(links.revolut.blankNote).toBe('https://revolut.me/karolskolar?amount=2619&currency=EUR')
+    expect(links.revolut.noteBlankHandle, 'a note never buys a link without a handle').toBe('')
+  })
+
+  test('⚠ revolutLink ENCODES the note — `&`, `#`, `+` and `%` are values, not structure', () => {
+    const url = new URL(links.revolut.hostileNote)
+    expect([...url.searchParams.keys()], 'the `&` invented no parameter').toEqual(['amount', 'currency', 'note'])
+    expect(url.hash, 'the `#` opened no fragment').toBe('')
+    expect(url.searchParams.get('note')).toBe('G1 & G2 #3 +50%')
+    expect(links.revolut.hostileNote).not.toContain('+50%')
+  })
+
   // ── the flag ───────────────────────────────────────────────────────────────
   test('⚠ REVOLUT_AMOUNT_LINK=false is a ONE-LINE fallback to the shipped profile link', () => {
     expect(linksFlagOff.flag).toBe(false)
     for (const key of ['withAmount', 'atStripped', 'drift', 'sub1c']) {
       expect(linksFlagOff.revolut[key], `${key} drops the amount entirely`).toBe('https://revolut.me/karolskolar')
     }
+    expect(linksFlagOff.revolut.withNote, 'the flag gates the AMOUNT; the note stays')
+      .toBe(`https://revolut.me/karolskolar?note=${encodeURIComponent(NOTE)}`)
     // Everything else is untouched by the flag — it gates the amount, not the link.
     expect(linksFlagOff.revolut.blank).toBe('')
     expect(linksFlagOff.payme.full, 'PayMe does not ride on the Revolut flag').toBe(links.payme.full)
@@ -1318,30 +1356,23 @@ test.describe('PL-T3 §UC-PL-004 — lib/payment-links.js, the one client home',
   })
 
   // ── paymeLink ──────────────────────────────────────────────────────────────
-  test('paymeLink: the exact documented parameter set, in order', () => {
-    // ⚠ THE `PI` SLASHES ARE BARE, AND THAT IS THE POINT OF WRITING THIS OUT RAW.
-    // `/` is legal unencoded in a query string, §UC-PL-006 writes the triplet literally,
-    // and a bank app that splits the RAW query instead of URL-decoding it would read
-    // `%2FVS…%2FSS%2FKS` verbatim — a malformed identifier on the one field that makes a
-    // statement match a person. A parsed assertion CANNOT see this (`searchParams.get`
-    // decodes, so both forms look identical), so the raw string is the only witness.
+  test('paymeLink: the exact documented parameter set, in order — NO variable symbol', () => {
+    // ~~`PI=/VS…/SS/KS`, structural slashes bare~~ — REMOVED, PO 2026-10-07: everything
+    // the payee needs goes in the note (`MSG`); the symbol is not filled. The fixture
+    // still PASSES `variableSymbol: '9000123'`, so this also proves the argument is
+    // ignored rather than merely absent.
     expect(links.payme.full).toBe(
       'https://payme.sk/?V=1&IBAN=SK3112000000198742637541&AM=26.19&CC=EUR&DT=20260919'
-      + '&PI=/VS9000123/SS/KS'
       + `&MSG=${encodeURIComponent('G123 / Marek / Cyklus 7')}`
       + '&CN=Karol%20Skolar',
     )
-    // Stated a second way, segment by segment, so a change to any OTHER parameter cannot
-    // be "fixed" by rewriting the whole literal above without noticing this one.
-    const rawParams = links.payme.full.split('?')[1].split('&')
-    expect(rawParams.find((p) => p.startsWith('PI=')), 'structure bare, value encoded')
-      .toBe('PI=/VS9000123/SS/KS')
     const url = new URL(links.payme.full)
     expect(url.origin + url.pathname).toBe('https://payme.sk/')
     expect([...url.searchParams.keys()]).toEqual(PAYME_KEYS)
+    expect(url.searchParams.has('PI'), 'no payment identification at all').toBe(false)
+    expect(links.payme.full, 'the symbol reaches the link nowhere').not.toContain('9000123')
     expect(url.searchParams.get('AM'), 'two decimals, always').toBe('26.19')
     expect(url.searchParams.get('CC')).toBe('EUR')
-    expect(url.searchParams.get('PI')).toBe('/VS9000123/SS/KS')
     expect(url.searchParams.get('MSG')).toBe('G123 / Marek / Cyklus 7')
     expect(url.searchParams.get('CN')).toBe('Karol Skolar')
   })
@@ -1353,11 +1384,11 @@ test.describe('PL-T3 §UC-PL-004 — lib/payment-links.js, the one client home',
     expect(new URL(links.payme.drift).searchParams.get('AM')).toBe('26.19')
   })
 
-  test('paymeLink: no VS ⇒ no `PI` at all; no reference ⇒ no `MSG`; the message is capped at 140', () => {
-    expect([...new URL(links.payme.noVs).searchParams.keys()], 'an empty `PI=/VS/SS/KS` is malformed, not absent')
-      .toEqual(['V', 'IBAN', 'AM', 'CC', 'DT', 'MSG', 'CN'])
+  test('paymeLink: never a `PI`; no reference ⇒ no `MSG`; the message is capped at 140', () => {
+    // `lowerIban` passes `variableSymbol: '9000123'`, `noVs` passes `''`; otherwise equal.
+    expect(links.payme.noVs, 'with or without a symbol, the same link').toBe(links.payme.lowerIban)
     expect([...new URL(links.payme.noReference).searchParams.keys()])
-      .toEqual(['V', 'IBAN', 'AM', 'CC', 'DT', 'PI', 'CN'])
+      .toEqual(['V', 'IBAN', 'AM', 'CC', 'DT', 'CN'])
     expect(new URL(links.payme.longReference).searchParams.get('MSG')).toBe('x'.repeat(140))
   })
 
@@ -1389,18 +1420,14 @@ test.describe('PL-T3 §UC-PL-004 — lib/payment-links.js, the one client home',
     expect(links.payme.hostile.split('\n'), 'no raw newline in a URL').toHaveLength(1)
   })
 
-  test('⚠ paymeLink encodes the VALUE inside `PI` while leaving the STRUCTURE bare', () => {
-    // The converse of the test above, and the distinction the over-encoding fix turned
-    // on: encode values, never structure. A symbol carrying `/`, `&` and `#` must not be
-    // able to forge a triplet, invent a parameter or open a fragment — while the two
-    // slashes that ARE the triplet stay literal.
-    const raw = links.payme.hostileVs.split('?')[1].split('&')
-    expect(raw.find((p) => p.startsWith('PI=')))
-      .toBe(`PI=/VS${encodeURIComponent('9/0&0#1')}/SS/KS`)
+  // ~~⚠ paymeLink encodes the VALUE inside `PI` while leaving the STRUCTURE bare~~ — the
+  // `PI` parameter is gone (PO 2026-10-07); what is left of that test is that a hostile
+  // symbol cannot reach the link at all.
+  test('paymeLink: a hostile variable symbol is ignored outright', () => {
     const url = new URL(links.payme.hostileVs)
-    expect([...url.searchParams.keys()], 'the `&` in the symbol invented nothing').toEqual(PAYME_KEYS)
-    expect(url.hash, 'the `#` in the symbol opened no fragment').toBe('')
-    expect(url.searchParams.get('PI'), 'and it round-trips').toBe('/VS9/0&0#1/SS/KS')
+    expect([...url.searchParams.keys()]).toEqual(PAYME_KEYS)
+    expect(url.hash).toBe('')
+    expect(links.payme.hostileVs).not.toContain('VS')
   })
 
   // ── payBySquarePayload ─────────────────────────────────────────────────────
@@ -1677,7 +1704,7 @@ test.describe('PL-T4 §UC-PL-007 item 4 — the balance „Zaplatiť“', () => 
     await expect(page.getByText('Môj účet'), 'the card does not follow onto the landing').toHaveCount(0)
   })
 
-  test('it opens the SHARED Platba modal, carrying the balance VS and the creditor name', async ({ page }) => {
+  test('it opens the SHARED Platba modal, carrying the balance note and the creditor name', async ({ page }) => {
     test.skip(!CAN_IMPORT_LINKS, NEEDS_FRONTEND)
     await signInAs(page, debtor)
     await openBalanceView(page)
@@ -1696,12 +1723,14 @@ test.describe('PL-T4 §UC-PL-007 item 4 — the balance „Zaplatiť“', () => 
     await expect(d.locator('.m-title')).toHaveText('Platba')
     await expect(d).toContainText('26.19 EUR')
 
-    // ⚠ `.val`, not the row: `NeoCopyRow`'s root also carries the copy button's label,
-    // so a text assertion on the testid reads „…Kopírovať“ (the guest spec's idiom).
-    await expect(page.getByTestId('payment-vs').locator('.val')).toHaveText(balanceVs(debtor.id))
+    // PO 2026-10-07: ONE note row — the VS row is merged away (the QR below still
+    // carries the symbol silently) and the Revolut link prefills the note.
     await expect(page.getByTestId('payment-reference')).toContainText(`${debtor.name} / zostatok`)
+    await expect(d.getByTestId('payment-vs')).toHaveCount(0)
+    await expect(d.getByText('Variabilný symbol')).toHaveCount(0)
     expect(await d.getByRole('link', { name: 'Zaplatiť cez Revolut' }).getAttribute('href'))
-      .toBe(`https://revolut.me/${PL2_REVOLUT}?amount=${PL4_AMOUNT_CENTS}&currency=EUR`)
+      .toBe(`https://revolut.me/${PL2_REVOLUT}?amount=${PL4_AMOUNT_CENTS}&currency=EUR`
+        + `&note=${encodeURIComponent(`${debtor.name} / zostatok`)}`)
 
     await expect(d.locator('.qr img')).toBeVisible()
     await expectScannedQr(page, {
@@ -1868,7 +1897,7 @@ test.describe('PL-T4 §UC-PL-007 item 1 — the friend order screen', () => {
     submitterOrderId = (await cart.json()).order.id
   })
 
-  test('the cart-bar „Zaplatiť“ modal carries the ORDER ID as its VS', async ({ page }) => {
+  test('the cart-bar „Zaplatiť“ modal carries the order note — in its row AND in the Revolut link', async ({ page }) => {
     await signInAs(page, fx.host)
     await gotoCycle(page, fx.cycle)
 
@@ -1876,10 +1905,12 @@ test.describe('PL-T4 §UC-PL-007 item 1 — the friend order screen', () => {
     const d = page.getByRole('dialog')
     await expect(d.locator('.m-title')).toHaveText('Platba')
 
-    await expect(page.getByTestId('payment-vs').locator('.val')).toHaveText(String(fx.friendOrder.id))
+    // PO 2026-10-07: the VS row is merged into the note; the QR still carries the VS.
+    await expect(d.getByTestId('payment-vs')).toHaveCount(0)
     await expect(page.getByTestId('payment-reference')).toContainText(`${fx.host.name} / ${fx.cycle.name}`)
     expect(await d.getByRole('link', { name: 'Zaplatiť cez Revolut' }).getAttribute('href'))
-      .toBe(`https://revolut.me/${PL2_REVOLUT}?amount=2000&currency=EUR`)
+      .toBe(`https://revolut.me/${PL2_REVOLUT}?amount=2000&currency=EUR`
+        + `&note=${encodeURIComponent(`${fx.host.name} / ${fx.cycle.name}`)}`)
   })
 
   test('the success modal builds ITS QR and ITS Revolut link through the shared helper', async ({ page }) => {
@@ -1899,8 +1930,10 @@ test.describe('PL-T4 §UC-PL-007 item 1 — the friend order screen', () => {
 
     // R6.1 — the amount rides in the link AND in the label, from one composed value.
     const rev = d.getByRole('link', { name: 'Zaplatiť cez Revolut' })
+    // PO 2026-10-07: …and the note, the same reference the Platba modal shows.
     expect(await rev.getAttribute('href'))
-      .toBe(`https://revolut.me/${PL2_REVOLUT}?amount=2000&currency=EUR`)
+      .toBe(`https://revolut.me/${PL2_REVOLUT}?amount=2000&currency=EUR`
+        + `&note=${encodeURIComponent(`${submitter.name} / ${fx.cycle.name}`)}`)
     await expect(rev.locator('.mono')).toHaveText('(20.00 EUR)')
 
     // ⚠ THE WHOLE POINT OF PL-T4: the friend's FIRST QR carries the symbol.
@@ -1920,15 +1953,16 @@ test.describe('PL-T4 §UC-PL-007 item 1 — the friend order screen', () => {
     })
 
     // The success modal is a confirmation with a shortcut, not the payment surface:
-    // no VS copy row and no PayMe button (§UC-PL-007 item 1).
-    await expect(d.getByTestId('payment-vs')).toHaveCount(0)
+    // no note copy row and no PayMe button (§UC-PL-007 item 1; the VS row is gone
+    // everywhere since PO 2026-10-07).
+    await expect(d.getByTestId('payment-reference')).toHaveCount(0)
     await expect(d.getByTestId('payme-link')).toHaveCount(0)
 
-    // Non-vacuity for those two absences: the FULL surface for the same order does
-    // carry the row, one click away.
+    // Non-vacuity for the row's absence: the FULL surface for the same order does
+    // carry it, one click away.
     await d.getByRole('button', { name: 'OK', exact: true }).click()
     await gotoCycle(page, fx.cycle)
     await page.locator('.app .cartbar').getByRole('button', { name: 'Zaplatiť' }).click()
-    await expect(page.getByTestId('payment-vs').locator('.val')).toHaveText(String(submitterOrderId))
+    await expect(page.getByTestId('payment-reference')).toContainText(`${submitter.name} / ${fx.cycle.name}`)
   })
 })

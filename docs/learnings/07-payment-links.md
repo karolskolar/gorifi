@@ -694,3 +694,32 @@ NULL, payment +38.17. Re-toggling it (unpaid → paid) reverses 38.17 by the fal
 
 Pinned by `e2e/tests/ledger-packeta-fee.spec.js` (paid / packed / both reversals / the packed switch /
 a legacy pre-migration row via `DB_PATH`); 2 of its 4 tests fail against the old code (measured).
+
+## Revolut note — the note is the identification (PO 2026-10-07, `fix/revolut-note`)
+
+**Trigger.** A friend paid through „Zaplatiť cez Revolut“: the amount was prefilled, the note EMPTY, so the
+payee's statement did not say whose transfer it was. Cause: `revolutLink()` only ever emitted
+`?amount=&currency=` — by design, 15 §UC-PL-004/005 asked for the amount alone.
+
+**PO decision.** Revolut has a `note` parameter (the PO's working example
+`revolut.me/<user>?currency=EUR&amount=1300&note=2x%206,50`); put the order identification there. More
+generally „everything goes into the note for the payee; the variable symbol need not be filled“ — so the
+Platba modal's „Poznámka k platbe“ + „Variabilný symbol“ rows are merged into ONE, and PayMe drops `PI`.
+
+**What shipped.**
+- `lib/payment-links.js revolutLink(username, amount, note)` — `note` = the modal's `reference`, encoded
+  (a VALUE), appended AFTER `amount`/`currency` so `PaymentModal`/`FriendOrder`'s label check
+  `href.includes('?amount=')` still holds; a blank note adds no key; with `REVOLUT_AMOUNT_LINK=false` the
+  amount goes and the note stays (`revolut.me/<user>?note=…`). Callers: `PaymentModal` and the
+  `FriendOrder` success-modal shortcut (both pass the same reference they show).
+- `paymeLink()` takes no `variableSymbol` and never emits `PI` — key set `V IBAN AM CC DT MSG CN`. The
+  struck „slashes stay BARE“ discussion above is history; the encode-values-not-structure rule stands.
+- `PaymentModal.vue`: the `payment-vs` row is gone; ONE copy row (`payment-reference`). The
+  `variableSymbol` PROP stays (additive API) and still feeds the Pay-by-Square QR — the server keeps
+  deriving/publishing the VS, the admin views and the guest mail keep quoting it. Nothing server-side moved.
+
+**Not verified here.** Revolut's `note` is undocumented (like `amount`); the acceptance is the PO's phone.
+No length cap is applied to the Revolut note (none is known); references are short in practice.
+
+**Gate.** `payment-links`, `guest-payment-modal`, `portal-landing`, `portal-session-boundary`,
+`money-rounding`, `order-modals` — 181 passed / 3 skipped (the parked standing-link tests), 6/6 files ran.
