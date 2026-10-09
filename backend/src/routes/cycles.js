@@ -797,6 +797,8 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
            o.handed_over_at,
            o.pickup_location_id, o.pickup_location_note, pl.name as pickup_location_name,
            o.delivery_fee, o.packeta_address,
+           -- „Som na suchu!" (PO 2026-10-09): the friend's urgent-delivery wish, read-only here.
+           o.urgent_at,
            COALESCE((SELECT SUM(amount) FROM transactions WHERE friend_id = f.id), 0) as balance
     FROM orders o
     JOIN friends f ON f.id = o.friend_id
@@ -919,6 +921,8 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
       ...readPickup(req.params.id, hostFriendId),
       delivery_fee: 0,
       packeta_address: null,
+      // No own order ⇒ nothing the friend could have flagged „Som na suchu!".
+      urgent_at: null,
       balance: balance ? balance.balance : 0,
       items: [],
       guest_orders: subOrders

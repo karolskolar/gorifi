@@ -408,6 +408,11 @@ export const api = {
     method: 'POST',
     body: pickupData
   }),
+  // „Som na suchu!" (PO 2026-10-09) — the friend's urgent-delivery wish on their submitted order.
+  setOrderUrgent: (cycleId, friendId, urgent) => request(`/orders/cycle/${cycleId}/friend/${friendId}/urgent`, {
+    method: 'PATCH',
+    body: { urgent }
+  }),
 
   // Orders (admin)
   getOrders: (cycleId) => request(`/orders/cycle/${cycleId}`),

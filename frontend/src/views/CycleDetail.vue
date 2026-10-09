@@ -192,6 +192,12 @@ function isOrdered(order) {
   return order.status === 'submitted'
 }
 
+// „Som na suchu!" (PO 2026-10-09) — the friend's urgent-delivery wish, read off
+// `orders.urgent_at` (written only by the friend's own PATCH). A draft never counts.
+function isUrgent(order) {
+  return isOrdered(order) && !!order.urgent_at
+}
+
 // The heading count: parties who actually ordered something — a submitted own order,
 // or live guest bags (a host with no own order is still a party, §Edge Cases). A
 // draft-only row is listed but not counted, because it is not an order.
@@ -2551,7 +2557,13 @@ function getStatusVariant(status) {
               </TableHeader>
               <TableBody>
                 <template v-for="order in listedOrders" :key="order.id || order.friend_id">
-                  <TableRow>
+                  <!-- „Som na suchu!" (PO 2026-10-09): the friend asked for this order
+                       first — the whole row is tinted light red, plus the badge under
+                       the name. Only an ORDERED row (a draft is not an order). -->
+                  <TableRow
+                    :class="isUrgent(order) ? 'bg-red-50 hover:bg-red-100/70' : ''"
+                    :data-urgent="isUrgent(order) ? 'true' : 'false'"
+                  >
                     <TableCell class="p-2">
                       <!-- Only an ORDERED row has items to expand. A draft's cart
                            lines are not shown here at all (see `isOrdered`). -->
@@ -2573,6 +2585,13 @@ function getStatusVariant(status) {
                     </TableCell>
                     <TableCell class="font-medium">
                       {{ order.friend_name }}
+                      <Badge
+                        v-if="isUrgent(order)"
+                        variant="outline"
+                        class="ml-1.5 text-xs border-red-500 bg-red-100 text-red-700"
+                        :data-testid="`urgent-badge-${order.friend_id}`"
+                        title="Priateľovi dochádza káva — doručiť prednostne"
+                      >Na suchu</Badge>
                       <!-- §UC-GR-008 — the host's SHARE link, so the admin can forward
                            it to a friend who lost theirs (PO requirement 1). It sits
                            under the name rather than in a column of its own: a new

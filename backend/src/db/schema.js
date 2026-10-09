@@ -549,6 +549,15 @@ function initDb() {
     db.run('ALTER TABLE orders ADD COLUMN paid_amount REAL');
   } catch (e) {}
 
+  // „Som na suchu!" (PO 2026-10-09): the friend asks for this order to be delivered
+  // first because they are running out of coffee. NULL = not asked; a timestamp = when
+  // they flagged it. A WISH, never a promise and never money: no ledger row, no status,
+  // no stage. Written ONLY by `PATCH /orders/cycle/:cycleId/friend/:friendId/urgent`
+  // (the friend themself); the admin only READS it (orders tab + /distribution).
+  try {
+    db.run('ALTER TABLE orders ADD COLUMN urgent_at DATETIME');
+  } catch (e) {}
+
   // Create transactions table for balance tracking
   db.run(`
     CREATE TABLE IF NOT EXISTS transactions (

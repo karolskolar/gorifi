@@ -1491,8 +1491,12 @@ async function confirmHandover() {
             // §UC-DP-012 step 4: the rows the SERVER named in its 409, so the
             // admin knows which bag to go back to. `print:ring-0` — a highlight is
             // a screen tool, the sheet is the bags.
-            isRefused(friend) ? 'ring-2 ring-destructive print:ring-0' : ''
+            isRefused(friend) ? 'ring-2 ring-destructive print:ring-0' : '',
+            // „Som na suchu!“ (PO 2026-10-09): the friend asked for this bag first —
+            // light red, like the orders tab. Screen only; the sheet keeps the badge.
+            friend.urgent_at ? 'bg-red-50 print:bg-transparent' : ''
           ]"
+          :data-urgent="friend.urgent_at ? 'true' : 'false'"
         >
           <CardContent class="p-4">
             <!-- ── the five columns ──────────────────────────────────────── -->
@@ -1526,6 +1530,17 @@ async function confirmHandover() {
                 >
                   <h3 class="text-lg font-semibold">{{ friend.name }}</h3>
                   <div class="flex items-center gap-1.5 flex-wrap mt-0.5">
+                    <!-- „Som na suchu!" — on screen AND on the printed sheet (packing
+                         order is decided with the sheet in hand). -->
+                    <Badge
+                      v-if="friend.urgent_at"
+                      variant="outline"
+                      class="text-xs border-red-500 bg-red-100 text-red-700"
+                      :data-testid="`bag-urgent-badge-${rowTid(friend)}`"
+                      title="Priateľovi dochádza káva — doručiť prednostne"
+                    >
+                      Na suchu
+                    </Badge>
                     <Badge
                       v-if="guestCount(friend) > 0"
                       variant="outline"

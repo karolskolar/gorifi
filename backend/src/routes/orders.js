@@ -488,6 +488,57 @@ router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
   });
 });
 
+// „Som na suchu!" (PO 2026-10-09) — the friend flags THEIR submitted order as urgent
+// (they are running out of coffee) from the „Hotovo!" modal, or takes the flag back.
+//
+// The same auth pair as the submit (password/Bearer + SEC-A3 ownership): a friend
+// flags only their own order. `urgent` is a STRICT boolean — `{}`, `true`, `[1]`,
+// `'abc'`, `{urgent: 1}` all 400 (CLAUDE.md: unbindable shapes never reach a write).
+// ⚠ A WISH, NOT MONEY AND NOT A STAGE: it writes `orders.urgent_at` and nothing else —
+// no `transactions` row, no `status`, no `order_cycles` write. Re-flagging keeps the
+// FIRST timestamp (`COALESCE`), un-flagging clears it.
+// Open AND locked rounds accept it (the admin is still packing a locked one); a
+// completed round is history (409). Only a SUBMITTED order can be urgent — a draft is
+// not an order yet (409).
+router.patch('/cycle/:cycleId/friend/:friendId/urgent', (req, res) => {
+  const { cycleId, friendId } = req.params;
+
+  const validation = validateCyclePassword(req, cycleId);
+  if (validation.error) {
+    return res.status(validation.status).json({ error: validation.error });
+  }
+  const ownership = enforceOrderOwnership(req, friendId);
+  if (ownership.error) {
+    return res.status(ownership.status).json({ error: ownership.error });
+  }
+
+  const body = req.body;
+  const urgent = body && typeof body === 'object' && !Array.isArray(body) ? body.urgent : undefined;
+  if (typeof urgent !== 'boolean') {
+    return res.status(400).json({ error: 'Neplatná hodnota' });
+  }
+
+  const cycle = validation.cycle;
+  if (cycle.status !== 'open' && cycle.status !== 'locked') {
+    return res.status(409).json({ error: 'Táto objednávka je už ukončená', reason: 'cycle_closed' });
+  }
+
+  const order = db.prepare('SELECT id, status FROM orders WHERE friend_id = ? AND cycle_id = ?')
+    .get(friendId, cycleId);
+  if (!order || order.status !== 'submitted') {
+    return res.status(409).json({ error: 'Objednávka ešte nebola odoslaná', reason: 'not_submitted' });
+  }
+
+  db.prepare(`
+    UPDATE orders
+    SET urgent_at = CASE WHEN ? = 1 THEN COALESCE(urgent_at, CURRENT_TIMESTAMP) ELSE NULL END
+    WHERE id = ?
+  `).run(urgent ? 1 : 0, order.id);
+
+  const updated = db.prepare('SELECT * FROM orders WHERE id = ?').get(order.id);
+  res.json({ order: updated });
+});
+
 // Admin: Mark order as paid/unpaid (creates payment transaction)
 router.patch('/:id/paid', requireAdmin, (req, res) => {
   const { paid } = req.body;
