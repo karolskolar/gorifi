@@ -29,7 +29,7 @@ gate. `FriendOrder.setUrgent()` PATCHes and adopts the server's `urgent_at` — 
 a refusal shows `role="alert"` and the card stays unflagged. ~~⚠ COPY IS VY-FORM … rendered
 „Dochádza vám káva? / Dajte vedieť…"~~ **⚠ COPY IS PO COPY, TY-FORM (PO 2026-10-10, after the
 staging look)** — a sanctioned exception like „Ako to funguje": off = „NEMÁŠ UŽ ŽIADNU KÁVU?" /
-„Klikni „SOM NA SUCHU!“ a ja sa to pokúsim kávu doniesť prednostne. Použi len v prípade núdze!" /
+„Klikni „SOM NA SUCHU!“ a ja sa ti pokúsim kávu doručiť prednostne (v rámci možností). Použi len v prípade núdze!" (PO-corrected the same day) /
 button „SOM NA SUCHU!"; on = „SI NA SUCHU - Viem." / „Držme si palce, aby si mal/a kávu čo
 najskôr!" + „Zrušiť". Reproduce, never improve (the PO's straight quotes became „…“ only). The phone `stack` layout is a `max-width: 520px` query instead of a `phone` prop.
 

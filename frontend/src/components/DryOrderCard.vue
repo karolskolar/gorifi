@@ -45,7 +45,7 @@ const emit = defineEmits(['change'])
     <div v-else class="dry-card">
       <div style="min-width:0;flex:1">
         <b>NEMÁŠ UŽ ŽIADNU KÁVU?</b>
-        <div class="sub">Klikni „SOM NA SUCHU!“ a ja sa to pokúsim kávu doniesť prednostne. Použi len v prípade núdze!</div>
+        <div class="sub">Klikni „SOM NA SUCHU!“ a ja sa ti pokúsim kávu doručiť prednostne (v rámci možností). Použi len v prípade núdze!</div>
       </div>
       <button
         type="button"

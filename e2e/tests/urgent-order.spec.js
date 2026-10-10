@@ -242,7 +242,7 @@ test.describe('„Hotovo!" — the „Som na suchu!" card', () => {
     await expect(card).toHaveAttribute('data-on', 'false')
     // PO copy (2026-10-10), TY-form, verbatim.
     await expect(card).toContainText('NEMÁŠ UŽ ŽIADNU KÁVU?')
-    await expect(card).toContainText('Klikni „SOM NA SUCHU!“ a ja sa to pokúsim kávu doniesť prednostne. Použi len v prípade núdze!')
+    await expect(card).toContainText('Klikni „SOM NA SUCHU!“ a ja sa ti pokúsim kávu doručiť prednostne (v rámci možností). Použi len v prípade núdze!')
 
     await card.getByRole('button', { name: 'SOM NA SUCHU!', exact: true }).click()
     await expect(card).toHaveAttribute('data-on', 'true')
