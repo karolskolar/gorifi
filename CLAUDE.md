@@ -5,6 +5,7 @@ Group coffee + bakery order management for a circle of friends. UI is **Slovak, 
 **Exceptions (PO 2026-09-29) speak in the TY-form:** „Ako to funguje" (`PortalExplainer.vue`, learnings 10 §PO-copy) and the
 WHOLE GUEST surface — `GuestOrder.vue`, `GuestOrderStatus.vue`, the `Guest*` components, the guest-facing `routes/guest.js`
 strings and the confirmation mail (learnings 11 §TY-guest). Shared components (`PaymentModal`, `CycleTimeline`) stay vy-form.
+**PO 2026-10-10:** the „Som na suchu!" card (`DryOrderCard.vue`) is TY-form PO copy too (learnings 14).
 
 ## Stack & layout
 

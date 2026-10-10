@@ -240,11 +240,14 @@ test.describe('„Hotovo!" — the „Som na suchu!" card', () => {
     await expect(d).toContainText('Hotovo!')
     const card = d.getByTestId('dry-card')
     await expect(card).toHaveAttribute('data-on', 'false')
-    await expect(card).toContainText('Dochádza vám káva?')
+    // PO copy (2026-10-10), TY-form, verbatim.
+    await expect(card).toContainText('NEMÁŠ UŽ ŽIADNU KÁVU?')
+    await expect(card).toContainText('Klikni „SOM NA SUCHU!“ a ja sa to pokúsim kávu doniesť prednostne. Použi len v prípade núdze!')
 
-    await card.getByRole('button', { name: 'Som na suchu!' }).click()
+    await card.getByRole('button', { name: 'SOM NA SUCHU!', exact: true }).click()
     await expect(card).toHaveAttribute('data-on', 'true')
-    await expect(card).toContainText('Ste na suchu — beriem na vedomie.')
+    await expect(card).toContainText('SI NA SUCHU - Viem.')
+    await expect(card).toContainText('Držme si palce, aby si mal/a kávu čo najskôr!')
     expect(await storedUrgentAt(cycle, friend), 'the server has it, not only the screen').toBeTruthy()
 
     await card.getByRole('button', { name: 'Zrušiť' }).click()
@@ -260,9 +263,9 @@ test.describe('„Hotovo!" — the „Som na suchu!" card', () => {
     await page.locator('.app .cartbar').getByRole('button', { name: /Odoslať|Aktualizovať/ }).click()
 
     const card = page.getByRole('dialog').getByTestId('dry-card')
-    await card.getByRole('button', { name: 'Som na suchu!' }).click()
+    await card.getByRole('button', { name: 'SOM NA SUCHU!', exact: true }).click()
     await expect(card.getByRole('alert')).toBeVisible()
-    await expect(card, 'no optimistic „beriem na vedomie"').toHaveAttribute('data-on', 'false')
+    await expect(card, 'no optimistic „SI NA SUCHU"').toHaveAttribute('data-on', 'false')
   })
 })
 

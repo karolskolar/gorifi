@@ -4,10 +4,10 @@
 // `friends/portal2.jsx DryCard` + `friends/portal2.css` §Som na suchu (variant B — the
 // card AFTER sending; the cart-bar chip variant A was not chosen).
 //
-// ⚠ COPY IS VY-FORM, NOT THE PROTOTYPE'S TY-FORM. The friend surface speaks
-// impersonal vy (CLAUDE.md, top); only „Ako to funguje" and the guest surface are TY.
-// „Dochádza ti káva? / Daj vedieť…" became „Dochádza vám káva? / Dajte vedieť…"; the
-// first person („pokúsim sa", „beriem na vedomie") is Karol's and stays.
+// ⚠ COPY IS PO COPY, IN THE TY-FORM (PO 2026-10-10) — a sanctioned exception to the
+// friend surface's vy-form, like „Ako to funguje" (CLAUDE.md, top). ~~The first cut
+// rendered the prototype's text in vy („Dochádza vám káva?…")~~ — the PO replaced it
+// with the strings below. Reproduce, never improve (uppercase headings included).
 //
 // The card only PRESENTS and EMITS; the owner (`FriendOrder.vue`) does the request,
 // owns `pending`/`error`, and decides `on` from the server's `orders.urgent_at`.
@@ -30,8 +30,8 @@ const emit = defineEmits(['change'])
         </span>
       </span>
       <div style="min-width:0;flex:1">
-        <b>Ste na suchu — beriem na vedomie.</b>
-        <div class="sub">Pokúsim sa vám kávu doručiť čo najskôr. Termín ale nesľubujem.</div>
+        <b>SI NA SUCHU - Viem.</b>
+        <div class="sub">Držme si palce, aby si mal/a kávu čo najskôr!</div>
       </div>
       <button
         type="button"
@@ -44,8 +44,8 @@ const emit = defineEmits(['change'])
 
     <div v-else class="dry-card">
       <div style="min-width:0;flex:1">
-        <b>Dochádza vám káva?</b>
-        <div class="sub">Dajte vedieť a pokúsim sa vám túto objednávku doručiť prednostne. Termín nesľubujem.</div>
+        <b>NEMÁŠ UŽ ŽIADNU KÁVU?</b>
+        <div class="sub">Klikni „SOM NA SUCHU!“ a ja sa to pokúsim kávu doniesť prednostne. Použi len v prípade núdze!</div>
       </div>
       <button
         type="button"
@@ -53,7 +53,7 @@ const emit = defineEmits(['change'])
         data-testid="dry-on"
         :disabled="pending"
         @click="!pending && emit('change', true)"
-      >Som na suchu!</button>
+      >SOM NA SUCHU!</button>
     </div>
 
     <div v-if="error" class="dry-err" role="alert">{{ error }}</div>

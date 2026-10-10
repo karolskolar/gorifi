@@ -26,10 +26,12 @@ cart-bar chip variant A exists in the prototype but was not chosen) + `friends/p
 **Friend UI.** `components/DryOrderCard.vue` (presents + emits `change`), mounted ONCE in
 `FriendOrder.vue`'s „Hotovo!" modal right under the sum and OUTSIDE the `hasPaymentSettings`
 gate. `FriendOrder.setUrgent()` PATCHes and adopts the server's `urgent_at` — no optimistic flip,
-a refusal shows `role="alert"` and the card stays unflagged. ⚠ COPY IS VY-FORM: the prototype is
-TY („Dochádza ti káva? / Daj vedieť…"), the friend surface is vy (CLAUDE.md, top) — rendered
-„Dochádza vám káva? / Dajte vedieť…"; Karol's first person („pokúsim sa", „beriem na vedomie")
-stays. The phone `stack` layout is a `max-width: 520px` query instead of a `phone` prop.
+a refusal shows `role="alert"` and the card stays unflagged. ~~⚠ COPY IS VY-FORM … rendered
+„Dochádza vám káva? / Dajte vedieť…"~~ **⚠ COPY IS PO COPY, TY-FORM (PO 2026-10-10, after the
+staging look)** — a sanctioned exception like „Ako to funguje": off = „NEMÁŠ UŽ ŽIADNU KÁVU?" /
+„Klikni „SOM NA SUCHU!“ a ja sa to pokúsim kávu doniesť prednostne. Použi len v prípade núdze!" /
+button „SOM NA SUCHU!"; on = „SI NA SUCHU - Viem." / „Držme si palce, aby si mal/a kávu čo
+najskôr!" + „Zrušiť". Reproduce, never improve (the PO's straight quotes became „…“ only). The phone `stack` layout is a `max-width: 520px` query instead of a `phone` prop.
 
 **Admin UI.** `CycleDetail.vue isUrgent(order)` = `isOrdered && urgent_at` (a draft never
 counts) → `TableRow` `bg-red-50` + `data-urgent` + `urgent-badge-<friendId>` „Na suchu".
