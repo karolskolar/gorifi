@@ -281,8 +281,9 @@ performs exactly two writes inside its transaction.
   WHERE active = 1` → „41 z 43 priateľov“ (UC-WA-012).
 - Guests (`guest_orders`) have NO opt-in column — Decision D6: a guest is messaged only
   about their OWN sub-order (`host`/`packeta` templates) — operational, legitimate
-  interest; the guest checkout gains the sentence **„Na toto číslo vám pošleme správu,
-  keď bude objednávka pripravená.“** under the phone field (module 06/20 surface — one
+  interest; the guest checkout gains the sentence ~~**„Na toto číslo vám pošleme správu,
+  keď bude objednávka pripravená.“**~~ → **„Na toto číslo ti pošleme správu, keď bude
+  objednávka pripravená.“** (PO 2026-10-22: TY-form, the guest surface's register) under the phone field (module 06/20 surface — one
   string, seam noted for the orchestrator). Waitlist rows carry their own explicit
   `whatsapp_opt_in` from module 19's checkbox („Súhlasím so správou cez WhatsApp“).
 

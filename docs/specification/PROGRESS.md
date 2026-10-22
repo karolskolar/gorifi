@@ -492,7 +492,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
   `parseWhatsappOptIn` on both PATCHes; under shared-password auth the profile route 401s an opt-in write
   (consent is the person's own). `outbox.js isQueuedOnceConflict()` keeps DP-T3's enqueue from 500ing on the new
   index (two orders in one cycle). UI: profile checkbox in PI-T10's slot; guest checkout D6 sentence shipped
-  VERBATIM in vy-form on the TY-form guest surface — **PO call pending** (ty-form = „…ti pošleme…"). Scrub/verify
+  ~~VERBATIM in vy-form on the TY-form guest surface — **PO call pending**~~ → **PO 2026-10-22: TY-form**, „Na toto číslo ti pošleme správu…". Scrub/verify
   NULL both new phone_e164 columns (GL-T6 precedent: `make-test-db.sh` fails closed until prod boots WA-T1).
   Retargeted pins (supersessions, strike notes): `distribution-foundation`, `portal-profile-modal`,
   `guest-packeta` ×2, `google-auth` volatile set. Gate: new `whatsapp-schema.spec.js` 22/22; targeted batches

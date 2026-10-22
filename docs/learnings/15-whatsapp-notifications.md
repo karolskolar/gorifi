@@ -108,10 +108,12 @@ Spec: `docs/specification/21-whatsapp-notifications.md`. Tests: `e2e/tests/whats
 
 ### Open / for the PO
 
-- ⚠ **Register mismatch.** The D6 guest sentence „Na toto číslo **vám** pošleme správu…" is module 21's
+- ~~⚠ **Register mismatch.** The D6 guest sentence „Na toto číslo **vám** pošleme správu…" is module 21's
   fixed copy in the vy-form. The guest surface is TY-form (PO 2026-09-29, learnings 11 §TY-guest). It
   is shipped VERBATIM as the row instructed. If the PO wants it in the ty-form, „Na toto číslo ti
   pošleme správu, keď bude objednávka pripravená." is one string in `GuestOrder.vue` plus its pin in
-  `whatsapp-schema.spec.js`.
+  `whatsapp-schema.spec.js`.~~ **→ RESOLVED PO 2026-10-22: TY-form.** `GuestOrder.vue` now says „Na toto
+  číslo **ti** pošleme správu, keď bude objednávka pripravená.", pinned by `GUEST_SENTENCE`; spec 21
+  §UC-WA-003 carries the strike.
 - 21 §UC-WA-014 obligations that belong to later rows are not here. These include composer, release,
   the D5 e-mail rows, and the `not_ordered` exclusion.

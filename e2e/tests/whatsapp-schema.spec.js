@@ -46,7 +46,8 @@ const url = (rel) => 'file://' + join(BACKEND_SRC, rel)
 // Module 21's fixed strings (21 §UC-WA-003 + D6) — reproduced, never improved.
 const OPT_IN_LABEL = 'Chcem dostávať správy o objednávke cez WhatsApp'
 const PRIVACY = 'Vaše číslo používame len na správy o vašej objednávke a jej odovzdaní. Súhlas môžete kedykoľvek zrušiť tu v profile.'
-const GUEST_SENTENCE = 'Na toto číslo vám pošleme správu, keď bude objednávka pripravená.'
+// PO 2026-10-22: TY-form, like the rest of the guest surface (spec 21 D6's vy-form „vám“ struck).
+const GUEST_SENTENCE = 'Na toto číslo ti pošleme správu, keď bude objednávka pripravená.'
 const OPT_IN_400 = { error: 'Neplatný formát údajov (súhlas so správami cez WhatsApp)', field: 'whatsapp_opt_in' }
 const NO_IDENTITY_401 = 'Prihláste sa svojím menom a heslom'
 
