@@ -2,6 +2,9 @@ import Database from 'better-sqlite3';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import crypto from 'crypto';
+// WA-T1: the one-time `phone_e164` back-fill below normalises with THE one normaliser
+// (21 §UC-WA-002 — no second E.164 computation anywhere in backend/src).
+import { toE164 } from '../helpers/phone.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -933,6 +936,38 @@ function initDb() {
     console.error('Migration error (idx_friends_guest_link_token):', e.message);
   }
 
+  // Migration: 21 §UC-WA-001 / §UC-WA-003 (WA-T1) — the two module-21 columns on
+  // `friends`.
+  //
+  // - `phone_e164`      DERIVED from `phone` by `helpers/phone.js toE164()` at EVERY
+  //                     phone writer (21 §UC-WA-002's table: admin `POST /` + `PATCH /:id`,
+  //                     friend `PATCH /:id/profile`, invitations approve, onboarding) and
+  //                     by the one-time back-fill below the guest_orders ALTERs. NULL when
+  //                     the phone does not normalise — normalisation NEVER refuses a write.
+  //                     `phone` itself stays exactly as entered.
+  // - `whatsapp_opt_in` the WhatsApp consent. ⚠ The DEFAULT 1 is the MIGRATION's tool:
+  //                     it gives every EXISTING friend 1 (R5.5 — they already receive the
+  //                     PO's WhatsApp messages). The creation paths write it EXPLICITLY:
+  //                     approve + onboarding ⇒ 0 (new people are off until they tick it),
+  //                     admin `POST /api/friends` ⇒ 1 (PO 2026-09-19 — the PO creates
+  //                     friends he already messages). A new INSERT INTO friends that omits
+  //                     it silently opts its person IN; name it.
+  //
+  // ⚠ ALTER ONLY, NOT ALSO IN THE `CREATE TABLE IF NOT EXISTS friends` ABOVE — the
+  // PI-T9 convention stated at `explainer_seen_at` (that CREATE is the original 2024
+  // shape; every later column arrives by ALTER and a fresh database runs the ALTER too).
+  // Two separate try/catches so an already-present first column cannot skip the second.
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN phone_e164 TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN whatsapp_opt_in INTEGER DEFAULT 1');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
   // Create invitations table
   db.run(`
     CREATE TABLE IF NOT EXISTS invitations (
@@ -1015,6 +1050,17 @@ function initDb() {
   const rewardsThreshold = db.exec("SELECT * FROM settings WHERE key = 'rewards_threshold_kg'");
   if (!rewardsThreshold.length || !rewardsThreshold[0].values.length) {
     db.run("INSERT INTO settings (key, value) VALUES ('rewards_threshold_kg', '10')");
+  }
+
+  // 21 §UC-WA-001 (WA-T1) — the two module-21 operational settings, seeded at boot
+  // ONLY when missing (the `rewards_threshold_kg` idiom above): the admin's value
+  // survives every restart. `whatsapp_test_phone` = where the settings page's test
+  // message goes ('' = none set); `whatsapp_paused` = '0' | '1', re-read by the
+  // `gorifi-wa` process before each send. The six `wa_template:*` keys are WA-T2's.
+  for (const [key, value] of [['whatsapp_test_phone', ''], ['whatsapp_paused', '0']]) {
+    if (!db.prepare('SELECT 1 FROM settings WHERE key = ?').get(key)) {
+      db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(key, value);
+    }
   }
 
   // Initialize friends_password if not exists (empty string means not set)
@@ -1132,6 +1178,7 @@ function initDb() {
       delivery_fee REAL DEFAULT 0,
       packeta_address TEXT,
       delivery_fee_paid REAL,
+      phone_e164 TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (link_id) REFERENCES guest_order_links(id) ON DELETE CASCADE
     )
@@ -1186,6 +1233,26 @@ function initDb() {
   } catch (e) {
     // Column already exists, ignore
   }
+
+  // Module 21 (WA-T1, 21 §UC-WA-001/002) — `guest_orders.phone_e164`, derived from
+  // `guest_phone` by `helpers/phone.js toE164()` at the ONE writer of `guest_phone`
+  // (`routes/guest.js` checkout INSERT — identity is frozen at submit, no PUT writes
+  // it). CREATE above AND this ALTER (the `handed_over_at` rule: the table is in prod).
+  // NULL when the phone does not normalise; the checkout never refuses on it.
+  try {
+    db.run('ALTER TABLE guest_orders ADD COLUMN phone_e164 TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // The ONE-TIME back-fill of both `phone_e164` columns (21 §UC-WA-001 business rule
+  // 3), AFTER both tables' ALTERs. In JS because the normaliser is JS. Idempotent by
+  // construction: it only reads rows whose `phone_e164 IS NULL`, so a row that
+  // normalised is never touched again, and a row that does NOT normalise stays NULL
+  // and is merely re-tried on the next boot (a few dozen rows — negligible). It never
+  // writes `phone` / `guest_phone`. Not exported: the e2e proves it through a
+  // real boot (`whatsapp-schema.spec.js`).
+  backfillPhoneE164();
 
   // Guest line items. `packed` mirrors order_items.packed — the persisted
   // per-item distribution checkbox.
@@ -1366,15 +1433,20 @@ function initDb() {
   //
   // ⚠ THIS ROW DECLARES THE TABLE AND NOTHING ELSE. There is no writer yet:
   // DP-T3 (hand-over) is the first, and `body` / `phone_e164` are NULLABLE
-  // precisely because it writes them as NULL (§UC-DP-008). No index either —
-  // §UC-DP-002 requires none and module 21 may add one on (status, channel).
+  // precisely because it writes them as NULL (§UC-DP-008). ~~No index either —
+  // §UC-DP-002 requires none and module 21 may add one on (status, channel).~~
+  // → SUPERSEDED by WA-T1: three indexes now follow the table (see the
+  // „RESOLVED BY WA-T1" block below).
   //
-  // ⚠ MODULE 21 (WA-T1) OWNS EVERY LATER COLUMN AND ADDS THEM WITH ITS OWN
+  // ~~⚠ MODULE 21 (WA-T1) OWNS EVERY LATER COLUMN AND ADDS THEM WITH ITS OWN
   // try/catch ALTERs — `sent_via`, its indexes, the partial unique
   // `idx_notifications_queued_once`. It must NOT re-declare this CREATE: this
   // table will already exist on every deployed database by then, so a second
   // CREATE would be a silent no-op and the columns would exist only on fresh
-  // files (the exact trap the `handed_over_at` ALTERs above avoid).
+  // files (the exact trap the `handed_over_at` ALTERs above avoid).~~
+  // → SUPERSEDED by WA-T1: the CREATE is now the FULL module-21 shape
+  // (`notificationsTableSql()`), and the two new columns ALSO arrive by ALTER,
+  // so fresh and deployed files converge (see the „RESOLVED BY WA-T1" block).
   //
   // ⚠ AND THREE THINGS THAT ARE *NOT* ALTERs. Module 21's own table definition
   // (`21-whatsapp-notifications.md` §Data model) differs from this CREATE in
@@ -1410,14 +1482,107 @@ function initDb() {
   // the three above: it is POLYMORPHIC (`friends.id` / `guest_orders.id` /
   // `guest_waitlist.id`, and NULL for `'admin'`), so there is no single table it
   // could point at. Module 21's own table agrees on that one.
+  //
+  // ⚠⚠ RESOLVED BY WA-T1 (module 21, orchestrator decisions 2026-10-22) — the three
+  // non-ALTER differences above, one by one:
+  //   1. CHECK WIDENING ⇒ the table-RECREATE below, guarded on the STORED
+  //      `sqlite_master.sql` lacking `'admin'` (a no-op on every later boot), every
+  //      row and every id preserved, `sqlite_sequence` carried over so a deleted top
+  //      id is never re-issued.
+  //   2. `segment_key` / `body` STAY NULLABLE — module 16 writes `body = NULL` rows
+  //      (§UC-DP-008) and keeps doing so; module 21's own writers (WA-T4 onwards)
+  //      enforce non-NULL themselves.
+  //   3. NO FOREIGN KEYS, permanently: `DELETE /cycles/:id` exists, and an FK would
+  //      either block it or CASCADE away outbox history. Neither is wanted.
+  // The CREATE below is therefore the FULL module-21 shape (a fresh database never
+  // needs the recreate), the two new columns ALSO arrive by try/catch ALTER (so a
+  // pre-WA-T1 table converges on the same column ORDER: the DP-T1 sixteen, then
+  // `sent_via`, then `email`), and the indexes are (re)created AFTER the recreate,
+  // because `DROP TABLE` drops them.
   // ===================================================================
-  db.run(`
-    CREATE TABLE IF NOT EXISTS notifications (
+  db.run(notificationsTableSql('IF NOT EXISTS notifications'));
+
+  // ⚠ ORDERING: these ALTERs sit BEFORE the recreate on purpose. The recreate copies
+  // a HARD-CODED column list (`NOTIFICATION_COLUMNS`), so every column in that list
+  // must already exist on the old table when it fires — the `_check_test` lesson for
+  // `order_cycles`, inverted. A FUTURE column goes into `notificationsTableSql`, into
+  // `NOTIFICATION_COLUMNS` and into an ALTER placed HERE, above the recreate.
+  try {
+    db.run("ALTER TABLE notifications ADD COLUMN sent_via TEXT CHECK (sent_via IN ('bot','wa_me','email'))");
+  } catch (e) {
+    // Column already exists, ignore
+  }
+  try {
+    db.run('ALTER TABLE notifications ADD COLUMN email TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // The CHECK widening (`recipient_kind` += 'admin', the UC-WA-012 test message).
+  // LOGGED, never silent: a skipped recreate leaves a table that refuses the test
+  // message, and that must be visible in the server log.
+  try {
+    const stored = db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'"
+    ).get();
+    if (stored && !String(stored.sql).includes("'admin'")) {
+      const cols = NOTIFICATION_COLUMNS.join(', ');
+      bdb.transaction(() => {
+        const seq = bdb.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'notifications'").get();
+        bdb.exec('DROP TABLE IF EXISTS notifications_new');
+        bdb.exec(notificationsTableSql('notifications_new'));
+        bdb.exec(`INSERT INTO notifications_new (${cols}) SELECT ${cols} FROM notifications`);
+        bdb.exec('DROP TABLE notifications');
+        bdb.exec('ALTER TABLE notifications_new RENAME TO notifications');
+        // AUTOINCREMENT's high-water mark: the copy only knows the highest SURVIVING
+        // id, and `cancelForUnHandOver` deletes rows — so carry the old mark over.
+        if (seq) {
+          bdb.prepare("DELETE FROM sqlite_sequence WHERE name = 'notifications'").run();
+          bdb.prepare(
+            "INSERT INTO sqlite_sequence (name, seq) VALUES ('notifications', MAX(?, COALESCE((SELECT MAX(id) FROM notifications), 0)))"
+          ).run(seq.seq);
+        }
+      })();
+    }
+  } catch (e) {
+    console.error('Migration error (notifications recipient_kind admin):', e.message);
+  }
+
+  // 21 §UC-WA-001 indexes — each its OWN try/catch, LOGGED (the GA-T1 / GA-T5
+  // lessons at idx_friends_google_sub). `idx_notifications_queued_once` is the
+  // DB-level half of enqueue idempotency: one QUEUED row per (template, recipient,
+  // cycle). It is PARTIAL — a released/sent/failed/skipped row never blocks a new
+  // queued one — and SQLite unique indexes ignore NULLs, so `'admin'` test rows
+  // (recipient_id NULL) never collide. Writers translate the constraint, never 500:
+  // `helpers/outbox.js isQueuedOnceConflict()`.
+  for (const [name, sql] of [
+    ['idx_notifications_status', 'CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status)'],
+    ['idx_notifications_group', 'CREATE INDEX IF NOT EXISTS idx_notifications_group ON notifications(cycle_id, segment_key)'],
+    ['idx_notifications_queued_once',
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_queued_once ON notifications(template_key, recipient_kind, recipient_id, cycle_id) WHERE status = 'queued'"],
+  ]) {
+    try {
+      db.run(sql);
+    } catch (e) {
+      console.error(`Migration error (${name}):`, e.message);
+    }
+  }
+
+}
+
+// ── The outbox table's ONE definition (WA-T1) ───────────────────────────────────
+// Used by the fresh CREATE and by the CHECK-widening recreate, so the two paths
+// cannot drift. `target` is `'IF NOT EXISTS notifications'` or `'notifications_new'`.
+// Column ORDER is the contract the ALTER path also produces: DP-T1's sixteen, then
+// `sent_via`, then `email` (`NOTIFICATION_COLUMNS` below, same order).
+function notificationsTableSql(target) {
+  return `
+    CREATE TABLE ${target} (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       channel TEXT NOT NULL CHECK (channel IN ('whatsapp','email')),
       template_key TEXT NOT NULL,
       segment_key TEXT,
-      recipient_kind TEXT NOT NULL CHECK (recipient_kind IN ('friend','guest','waitlist')),
+      recipient_kind TEXT NOT NULL CHECK (recipient_kind IN ('friend','guest','waitlist','admin')),
       recipient_id INTEGER,
       phone_e164 TEXT,
       body TEXT,
@@ -1428,10 +1593,45 @@ function initDb() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       released_at DATETIME,
       sent_at DATETIME,
-      error TEXT
+      error TEXT,
+      sent_via TEXT CHECK (sent_via IN ('bot','wa_me','email')),
+      email TEXT
     )
-  `);
+  `;
+}
 
+const NOTIFICATION_COLUMNS = [
+  'id', 'channel', 'template_key', 'segment_key', 'recipient_kind', 'recipient_id',
+  'phone_e164', 'body', 'status', 'cycle_id', 'order_id', 'guest_order_id',
+  'created_at', 'released_at', 'sent_at', 'error', 'sent_via', 'email',
+];
+
+// ── The one-time `phone_e164` back-fill (WA-T1, 21 §UC-WA-001 rule 3) ───────────
+// See the call site in initDb. Reads only `phone_e164 IS NULL` rows, writes only
+// `phone_e164`, and only when `toE164()` normalises — so it is idempotent and never
+// touches the phone as entered. LOGGED, not thrown: a back-fill that fails must not
+// stop the API from booting (every row it missed is retried on the next boot).
+function backfillPhoneE164() {
+  const targets = [
+    ['friends', 'phone'],
+    ['guest_orders', 'guest_phone'],
+  ];
+  for (const [table, phoneColumn] of targets) {
+    try {
+      const rows = bdb.prepare(
+        `SELECT id, ${phoneColumn} AS phone FROM ${table} WHERE phone_e164 IS NULL AND ${phoneColumn} IS NOT NULL`
+      ).all();
+      const update = bdb.prepare(`UPDATE ${table} SET phone_e164 = ? WHERE id = ? AND phone_e164 IS NULL`);
+      bdb.transaction(() => {
+        for (const row of rows) {
+          const e164 = toE164(row.phone);
+          if (e164) update.run(e164, row.id);
+        }
+      })();
+    } catch (e) {
+      console.error(`Migration error (${table}.phone_e164 back-fill):`, e.message);
+    }
+  }
 }
 
 // Retained as a no-op for backward compatibility. better-sqlite3 persists every

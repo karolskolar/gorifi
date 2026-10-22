@@ -16,6 +16,8 @@ import { resolveLoginUrl } from '../helpers/credentials-message.js';
 import { uniqueGuestToken, currentOpenCycle } from '../helpers/standing-link.js';
 // 19 §UC-GL-004/005: the waitlist's one writer home (signup + the on-order purge).
 import { joinWaitlist, purgeWaitlistOnOrder } from '../helpers/guest-waitlist.js';
+// WA-T1 (21 §UC-WA-002): the checkout INSERT derives `guest_orders.phone_e164`.
+import { toE164 } from '../helpers/phone.js';
 
 const router = Router();
 
@@ -1280,11 +1282,16 @@ router.post('/:token/orders', guestWriteLimiter, (req, res) => {
     // Literal columns (never a spread body). Packeta: the fee + the trimmed point;
     // otherwise 0 / NULL. `total` is written exactly as before — product-only.
     const deliveryFee = delivery.packeta ? roundMoney(Number(current.parcel_fee) || 0) : 0;
+    // WA-T1 (21 §UC-WA-002): `phone_e164` = THE normaliser's answer, NULL when the
+    // phone does not normalise. ⚠ It never refuses the submit: `validateIdentity` (the
+    // length rule above) is still the only phone validation, so `0000000000` orders.
+    // This is the ONE writer of `guest_phone` — identity is frozen at submit.
     const result = db.prepare(`
       INSERT INTO guest_orders (link_id, order_token, guest_name, guest_phone, guest_email, status, total,
-                                delivery_fee, packeta_address)
-      VALUES (?, ?, ?, ?, ?, 'submitted', 0, ?, ?)
-    `).run(link.id, uniqueOrderToken(), guestName, guestPhone, guestEmail, deliveryFee, delivery.address);
+                                delivery_fee, packeta_address, phone_e164)
+      VALUES (?, ?, ?, ?, ?, 'submitted', 0, ?, ?, ?)
+    `).run(link.id, uniqueOrderToken(), guestName, guestPhone, guestEmail, deliveryFee, delivery.address,
+      toE164(guestPhone));
     const guestOrderId = result.lastInsertRowid;
 
     const total = replaceItems(guestOrderId, lines);

@@ -12,6 +12,8 @@ import {
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { abuseLimiter } from '../middleware/rate-limit.js';
 import { getPlaceholderCycleId } from '../helpers/friend-create.js';
+// WA-T1 (21 §UC-WA-002): the registration INSERT derives `phone_e164`.
+import { toE164 } from '../helpers/phone.js';
 
 const router = Router();
 
@@ -355,6 +357,9 @@ router.post('/onboarding/:token', abuseLimiter, (req, res) => {
   }
   const accessToken = nanoid(12);
   const cycleId = getPlaceholderCycleId();
+  // WA-T1 (21 §UC-WA-002): NULL when the phone does not normalise — never a refusal
+  // (the length/presence rule above is the only phone validation, unchanged).
+  const phoneE164 = toE164(phone);
 
   // DELIBERATE NON-WRITE:
   //   • NO `invalidateLoginTokens` — an EXPLICIT EXEMPTION from 09 §UC-ML-009 rule 2,
@@ -367,14 +372,18 @@ router.post('/onboarding/:token', abuseLimiter, (req, res) => {
   //     guaranteed no-op, and adding it would put a third write inside this
   //     transaction.
   const insertFriendWithBakerySubscription = db.transaction(() => {
+    // WA-T1 (21 §UC-WA-003): `whatsapp_opt_in = 0` EXPLICITLY — a registration is a
+    // new person, OFF until they tick the profile checkbox (the column's DEFAULT 1 is
+    // the migration's tool for existing friends, not this path's). Two columns on the
+    // same INSERT; still two statements in this transaction.
     const result = db.prepare(`
       INSERT INTO friends
         (cycle_id, name, uid, access_token, invite_code, active,
-         phone, email, onboarding_source, username, password_hash)
-      VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+         phone, email, onboarding_source, username, password_hash, phone_e164, whatsapp_opt_in)
+      VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 0)
     `).run(
       cycleId, name, uid, accessToken, inviteCode,
-      phone, email || null, link.note, usernameRaw, passwordHash
+      phone, email || null, link.note, usernameRaw, passwordHash, phoneE164
     );
     const newId = result.lastInsertRowid;
     db.prepare(

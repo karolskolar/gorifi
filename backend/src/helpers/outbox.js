@@ -99,6 +99,17 @@ function rowFor(bag) {
   return null;
 }
 
+// Is this error the outbox's partial unique index (WA-T1, 21 §UC-WA-001)? BOTH
+// halves, and the message half COLUMN-SPECIFIC (the `isWaitlistConflict` /
+// `isStandingTokenConflict` precedent): a different constraint must never be read as
+// „already queued". better-sqlite3 names the COLUMNS of a unique index, not the index.
+export function isQueuedOnceConflict(e) {
+  return typeof e?.code === 'string'
+    && e.code.startsWith('SQLITE_CONSTRAINT')
+    && /UNIQUE constraint failed: notifications\.template_key, notifications\.recipient_kind, notifications\.recipient_id, notifications\.cycle_id/
+      .test(String(e?.message || ''));
+}
+
 /**
  * Queue the messages a hand-over owes. Returns how many rows were INSERTed.
  *
@@ -143,10 +154,24 @@ export function enqueueForHandOver(bags) {
       row.template_key, row.recipient_kind, row.recipient_id, row.order_id, row.guest_order_id
     );
     if (hit) continue;
-    insert.run(
-      row.template_key, row.segment_key, row.recipient_kind, row.recipient_id,
-      row.cycle_id, row.order_id, row.guest_order_id
-    );
+    try {
+      insert.run(
+        row.template_key, row.segment_key, row.recipient_kind, row.recipient_id,
+        row.cycle_id, row.order_id, row.guest_order_id
+      );
+    } catch (e) {
+      // ⚠ WA-T1: the partial unique index `idx_notifications_queued_once` keys on
+      // (template, recipient, CYCLE), the SELECT above on (template, recipient, BAG).
+      // They agree for every bag this module mints except a friend holding TWO orders
+      // in one cycle (`orders` has no UNIQUE(friend_id, cycle_id)) — there the second
+      // bag already has its message queued, so this is „already queued", COUNTED as
+      // not queued and never thrown: a throw here would roll back the hand-over stamp
+      // around it and 500 the admin's button. SQLite aborts only the failing
+      // STATEMENT, so the enclosing transaction carries on. Any OTHER error is a real
+      // fault and still throws. WA-T4 replaces this pre-check with the index itself.
+      if (isQueuedOnceConflict(e)) continue;
+      throw e;
+    }
     queued += 1;
   }
   return queued;

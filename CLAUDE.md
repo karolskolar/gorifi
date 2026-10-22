@@ -64,6 +64,7 @@ cd frontend && npm run dev     # :5173
 | Standing guest link: `friends.guest_link_token`, `helpers/standing-link.js`, the host + admin standing routes, `guest_waitlist`, `waiting_count`, cross-space token uniqueness (module 19) | `docs/learnings/11-guest-standing-link.md` |
 | Guest Packeta: `guest_orders.delivery_fee` / `packeta_address` / `delivery_fee_paid`, the submit's delivery block, `guestPaymentBlock().amount = total + fee`, the mail fee/point rows (module 20) | `docs/learnings/12-guest-packeta.md` |
 | „Som na suchu!" urgent-delivery wish: `orders.urgent_at`, the friend `PATCH …/urgent`, `DryOrderCard.vue` in „Hotovo!", the admin tint + „Na suchu" badge | `docs/learnings/14-som-na-suchu.md` |
+| WhatsApp module 21: the `notifications` outbox completion (recreate + partial unique index), `phone_e164` at every phone writer + back-fill, `whatsapp_opt_in` defaults/strict boolean, the profile opt-in row, the guest D6 sentence | `docs/learnings/15-whatsapp-notifications.md` |
 | Catalog: product-image FILES (`backend/src/db/uploads`, the 2026-09-30 loss + restore recipe), photos from the supplier sheet's XLSX, the multirow parser's skip rules (module 12) | `docs/learnings/13-catalog-images-import.md` |
 
 Specs: `docs/specification/*.md`, `docs/superpowers/specs/*.md`. Spec text that cites "CLAUDE.md GSO-T3" /
@@ -321,6 +322,8 @@ append the full write-up to the matching learnings file and add at most one line
   honours a supplied one only while NULL. That branch is not dead code; deleting it reintroduces FUP-T20's
   portal-side rename on a credential route.
 
+- Every write of a phone column also writes its `phone_e164` via `helpers/phone.js toE164()` (NULL ⇒ never a refusal) — the six writers are `friends.js` POST/PATCH/profile PATCH, approve, onboarding, guest checkout (+ the waitlist); a new INSERT INTO friends names `whatsapp_opt_in` explicitly (admin 1, registrations 0 — the DEFAULT 1 is the migration's) (WA-T1, learnings 15).
+- `notifications` has NO FKs and nullable `body`/`segment_key` (module 16 writes NULL bodies); a new column goes into `schema.js notificationsTableSql` + `NOTIFICATION_COLUMNS` + an ALTER ABOVE the `'admin'` recreate; any INSERT into it translates `idx_notifications_queued_once` via `outbox.js isQueuedOnceConflict()`, never a 500 (WA-T1).
 - `orders.urgent_at` („Som na suchu!", PO 2026-10-09) has ONE writer, the friend's own `PATCH /orders/cycle/:c/friend/:f/urgent` (strict boolean, submitted orders, open/locked rounds); it is a wish, never money — no ledger row, no status/stage write — and the admin only reads it (learnings 14).
 
 - Guest Packeta surfaces (GP-T4) key on `packeta_address`, never the fee: the status-page edit SAVE always sends `use_parcel_delivery` (`parcelEnabled && method==='packeta'`, else `false`; cancel stays literal `{items: []}`), and the host card renders NO `guest-delivered` tick on a Packeta row (JS guard too), drops it from `pendingDelivery`, and keeps `totals` product-only (learnings 12 §23–28).

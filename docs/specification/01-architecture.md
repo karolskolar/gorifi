@@ -156,6 +156,21 @@ spec, so this documents the **existing** system, not a greenfield design.
     21) — the outbox. Rows are **queued** by hand-over (module 16 hook) or the composer,
     **released** by one admin „Poslať“ per group, **sent** by the `gorifi-wa` process. The
     API never sends.
+  - **Module 21 D12 additions (mirrored by WA-T1, 2026-10-22):** `notifications.sent_via
+    TEXT NULL CHECK IN ('bot','wa_me','email')` and `notifications.email TEXT NULL`
+    (appended after `error`, by ALTER on a deployed table and in the CREATE on a fresh
+    one); `recipient_kind` widened to `('friend','guest','waitlist','admin')` by a guarded
+    table RECREATE (rows + ids + the AUTOINCREMENT mark kept); `segment_key`/`body` stay
+    NULLABLE (module 16 writes NULL bodies) and the table has NO foreign keys
+    (`DELETE /cycles/:id` must neither block nor cascade outbox history); indexes
+    `idx_notifications_status (status)`, `idx_notifications_group (cycle_id, segment_key)`
+    and the PARTIAL UNIQUE `idx_notifications_queued_once (template_key, recipient_kind,
+    recipient_id, cycle_id) WHERE status = 'queued'`; `guest_orders.phone_e164 TEXT`
+    (CREATE + ALTER). `friends.whatsapp_opt_in` creation-path values: admin `POST
+    /api/friends` writes `1` (PO 2026-09-19), approve + onboarding write `0`. Settings seeds
+    `whatsapp_test_phone = ''`, `whatsapp_paused = '0'` (boot, never overwritten). Both
+    `phone_e164` columns are derived by `helpers/phone.js toE164()` at every phone writer
+    plus a one-time idempotent boot back-fill.
 
 ## Permissions & roles
 

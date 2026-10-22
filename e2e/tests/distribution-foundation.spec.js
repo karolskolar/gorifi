@@ -68,11 +68,16 @@ const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
 // The 01-architecture §Roadmap column list, in order. The CREATE is required to be
 // this list VERBATIM — module 21 grows it with ALTERs of its own.
-const NOTIFICATION_COLUMNS = [
+// ⚠ SUPERSEDED BY WA-T1 (module 21, 2026-10-22), exactly as the line above promised:
+// DP-T1's sixteen are kept VERBATIM AND IN ORDER, and module 21 APPENDS `sent_via` and
+// `email` (by ALTER on a deployed table, in the CREATE on a fresh one — same order
+// both ways). `whatsapp-schema.spec.js` §1 owns the full module-21 shape.
+const DP_T1_NOTIFICATION_COLUMNS = [
   'id', 'channel', 'template_key', 'segment_key', 'recipient_kind', 'recipient_id',
   'phone_e164', 'body', 'status', 'cycle_id', 'order_id', 'guest_order_id',
   'created_at', 'released_at', 'sent_at', 'error',
 ]
+const NOTIFICATION_COLUMNS = [...DP_T1_NOTIFICATION_COLUMNS, 'sent_via', 'email']
 
 // ─── child-process plumbing ──────────────────────────────────────────────────
 
@@ -221,7 +226,11 @@ test.describe('DP-T1 · 16 §UC-DP-002 schema', () => {
     }
   })
 
-  test('the notifications CREATE carries the three CHECK lists and no index', async () => {
+  // ⚠ RETARGETED BY WA-T1 (21 §UC-WA-001): ~~„and no index"~~ — module 21 adds the
+  // three indexes DP-T1 left to it, and widens `recipient_kind` by `'admin'`. The
+  // properties THIS row protected survive and are still pinned: the three CHECK lists
+  // (the recipient list now as module 21's superset), `body` / `phone_e164` nullable.
+  test('the notifications CREATE carries the three CHECK lists (indexes: module 21\'s)', async () => {
     const dbPath = tmpDbPath('notif')
     try {
       await bootSchema(dbPath)
@@ -229,7 +238,8 @@ test.describe('DP-T1 · 16 §UC-DP-002 schema', () => {
       expect(shape.notificationColumns).toEqual(NOTIFICATION_COLUMNS)
       const sql = shape.notificationsSql.replace(/\s+/g, ' ')
       expect(sql, 'channel CHECK').toContain("channel IN ('whatsapp','email')")
-      expect(sql, 'recipient_kind CHECK').toContain("recipient_kind IN ('friend','guest','waitlist')")
+      // ~~`('friend','guest','waitlist')`~~ — WA-T1 appends 'admin' (the test message).
+      expect(sql, 'recipient_kind CHECK').toContain("recipient_kind IN ('friend','guest','waitlist','admin')")
       expect(sql, 'status CHECK').toContain("status IN ('queued','released','sent','failed','skipped')")
       // `body` / `phone_e164` are NULLABLE — UC-DP-008 writes them as NULL.
       const db = new DatabaseSync(dbPath)
@@ -256,7 +266,10 @@ test.describe('DP-T1 · 16 §UC-DP-002 schema', () => {
         db.close()
       }
       // §UC-DP-002: "No index is required by this module; module 21 may add one."
-      expect(shape.notificationIndexes, 'no index ships with DP-T1').toEqual([])
+      // ~~`toEqual([])`~~ — module 21 did (WA-T1): exactly its three, nothing of 16's.
+      expect(shape.notificationIndexes.sort(), 'only module 21\'s indexes').toEqual(
+        ['idx_notifications_group', 'idx_notifications_queued_once', 'idx_notifications_status']
+      )
     } finally {
       removeDb(dbPath)
     }

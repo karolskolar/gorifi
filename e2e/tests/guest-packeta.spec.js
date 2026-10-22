@@ -1180,8 +1180,11 @@ test.describe('GP-T1 · source pins', () => {
       /db\.transaction\(\(\) => \{[\s\S]*?SELECT status, parcel_fee FROM order_cycles[\s\S]*?INSERT INTO guest_orders/
     )
     // …and THAT const is what is bound: the INSERT's `.run(...)` names `deliveryFee`.
+    // ⚠ GROWN BY WA-T1 (21 §UC-WA-002): the same INSERT now also binds
+    // `toE164(guestPhone)` LAST (~~`delivery.address)`~~ → `delivery.address,
+    // toE164(guestPhone))`). The protected property — `deliveryFee` in its slot — is untouched.
     expect(guest).toMatch(
-      /\.run\(link\.id, uniqueOrderToken\(\), guestName, guestPhone, guestEmail, deliveryFee, delivery\.address\)/)
+      /\.run\(link\.id, uniqueOrderToken\(\), guestName, guestPhone, guestEmail, deliveryFee, delivery\.address,\s*toE164\(guestPhone\)\)/)
     // …and the CHARGED fee is that in-tx read (`current`), never the resolver's `cycle`
     // row — over HTTP the two always agree (sync handlers), so only this pin can see it.
     expect(guest).toMatch(/const deliveryFee = delivery\.packeta \? roundMoney\(Number\(current\.parcel_fee\) \|\| 0\) : 0;/)
@@ -1338,7 +1341,11 @@ test.describe('GP-T3 · 20 §UC-GP-003 — a parcel-OFF round renders today\'s p
     await expect(dialog.getByTestId('guest-packeta-address')).toHaveCount(0)
     await expect(dialog.getByText(GP3_GROUP_LBL)).toHaveCount(0)
     // PO 2026-09-29: the optional e-mail carries ONE help line — what it buys.
-    await expect(dialog.locator('.field-help')).toHaveCount(1)
+    // ⚠ GROWN BY WA-T1 (21 Decision D6): ~~1~~ → 2 — Mobil now carries the guest consent
+    // sentence (`guest-phone-help`, inside the phone wrapper, so the body SHAPE above is
+    // unchanged). The e-mail's own line is still exactly one, pinned by its test id below.
+    await expect(dialog.locator('.field-help')).toHaveCount(2)
+    await expect(dialog.getByTestId('guest-phone-help')).toHaveCount(1)
     await expect(dialog.getByTestId('guest-email-confirm-help')).toHaveText(GP3_EMAIL_CONFIRM_HELP)
     await expect(dialog.locator('label.field-lbl[for="guest-email"]')).toHaveText(GP3_EMAIL_OPT)
     await expect(dialog.locator('.m-head .sub')).toHaveText(GP3_SUB_HOST('24.90 EUR', s.first))

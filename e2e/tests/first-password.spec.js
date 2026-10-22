@@ -57,7 +57,8 @@ import { CAN_SPAWN_BACKEND, startBackend } from '../mailgun-harness.js'
 // (`friends.js:1679`) writes `username` and never touches `password_hash`, and it is
 // the ONLY writer that does (every `UPDATE friends SET` / `INSERT INTO friends` in
 // `backend/src` was walked; the admin PATCH's allow-list is
-// name/display_name/active/phone/email only). So a supplied `username` is honoured ONLY
+// name/display_name/active/phone/email only — WA-T1 adds whatsapp_opt_in + the derived
+// phone_e164, still no username). So a supplied `username` is honoured ONLY
 // while `friends.username IS NULL` and NEVER as a rename — FUP-T20's product decision
 // keeps the username read-only in the portal; the admin renames. The "honoured ONLY
 // while NULL" test below builds precisely that row, through that admin route.

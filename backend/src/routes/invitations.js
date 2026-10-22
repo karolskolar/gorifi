@@ -11,6 +11,9 @@ import { requireAdmin } from '../middleware/admin-auth.js';
 import { abuseLimiter } from '../middleware/rate-limit.js';
 import { bindValue } from '../helpers/bind-value.js';
 import { getPlaceholderCycleId } from '../helpers/friend-create.js';
+// WA-T1 (21 §UC-WA-002): the approve INSERT derives `phone_e164` — a COLUMN of the
+// friend INSERT, never a third statement in its two-write transaction.
+import { toE164 } from '../helpers/phone.js';
 import { sendMail } from '../helpers/mailer.js';
 import { renderEmail } from '../helpers/email-templates.js';
 import {
@@ -618,6 +621,10 @@ router.post('/:id/approve', requireAdmin, async (req, res) => {
     const displayName = note || null;
     const adminNote = note !== undefined ? note : (invitation.admin_note ?? null);
 
+    // WA-T1 (21 §UC-WA-002/003): the E.164 twin of the applicant's phone, computed
+    // HERE, outside the transaction (a pure function — nothing to hold a lock for).
+    const phoneE164 = toE164(invitation.phone);
+
     // ONE transaction, EXACTLY TWO WRITES. better-sqlite3 rolls back on throw, so a
     // failure anywhere inside leaves neither the friend nor the invitation touched —
     // there is no state in which credentials exist but the invitation still reads
@@ -646,16 +653,21 @@ router.post('/:id/approve', requireAdmin, async (req, res) => {
       // ⚠ `google_prompt_dismissed` is deliberately absent in either direction: the
       // applicant never dismissed anything, and its DEFAULT 0 is what keeps the
       // §UC-GA-006 prompt available to a friend created without a link.
+      // ⚠ 21 §UC-WA-002/003 (WA-T1) widens it by TWO MORE COLUMNS and nothing else:
+      // `phone_e164` (derived above) and `whatsapp_opt_in = 0` — a new person is OFF
+      // until they tick the profile checkbox (R5.5); the column's DEFAULT 1 exists only
+      // for the migration of existing friends, so it is written explicitly here.
+      // Still ONE insert: the transaction still holds exactly the two writes.
       const result = db.prepare(`
         INSERT INTO friends
           (cycle_id, name, display_name, uid, access_token, invite_code, active,
            phone, email, username, password_hash, must_change_password, onboarding_source,
-           google_sub, google_email)
-        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 1, ?, ?, ?)
+           google_sub, google_email, phone_e164, whatsapp_opt_in)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0)
       `).run(
         cycleId, invitation.name, displayName, uid, accessToken, inviteCode,
         invitation.phone, invitation.email || null, username, passwordHash, onboardingSource,
-        googleSub, googleEmail
+        googleSub, googleEmail, phoneE164
       );
       const newFriendId = result.lastInsertRowid;
 

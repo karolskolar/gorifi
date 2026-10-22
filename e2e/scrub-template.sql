@@ -70,6 +70,18 @@ UPDATE guest_waitlist SET
   phone_e164 = CASE WHEN phone_e164 IS NULL THEN NULL
                     ELSE '+4219' || substr('00000000' || ((40000000 + id * 4973) % 100000000), -8) END;
 
+-- 21 §UC-WA-001/002 (WA-T1) — the DERIVED E.164 twins of `friends.phone` and
+-- `guest_orders.guest_phone`. A real number in its normalised spelling is the same PII
+-- as the raw one, so it cannot survive the scrub above. NULLed rather than re-derived in
+-- SQL: the gate server's first boot re-derives both from the SCRUBBED phone through
+-- `helpers/phone.js` (the one-time back-fill reads exactly the `phone_e164 IS NULL`
+-- rows), so the template stays consistent with no second E.164 computation here.
+-- ⚠ Their OWN statements (the GL-T6a rule): on a snapshot from a production that has not
+-- booted WA-T1 yet the columns do not exist, and these fail ALONE, after everything
+-- above has run — `make-test-db.sh` then FAILS CLOSED until production carries them.
+UPDATE friends      SET phone_e164 = NULL;
+UPDATE guest_orders SET phone_e164 = NULL;
+
 -- ── CREDENTIALS ───────────────────────────────────────────────────────────────
 -- ⚠ EVERY ONE OF THESE IS LIVE AGAINST THE PRODUCTION SITE. This is the half that
 -- matters most and the easiest to forget: without it, a template file sitting in a

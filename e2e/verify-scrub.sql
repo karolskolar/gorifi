@@ -69,6 +69,11 @@ UNION ALL
   -- tied to the SCRUBBED phone, so a real number cannot survive in it
   SELECT 'guest_waitlist.phone_e164',  COUNT(*) FROM guest_waitlist
    WHERE phone_e164 IS NOT NULL AND phone_e164 <> '+421' || substr(phone, 2)
+UNION ALL
+  -- WA-T1: NULLed by the scrub (re-derived from the scrubbed phone on first boot)
+  SELECT 'friends.phone_e164',         COUNT(*) FROM friends WHERE phone_e164 IS NOT NULL
+UNION ALL
+  SELECT 'guest_orders.phone_e164',    COUNT(*) FROM guest_orders WHERE phone_e164 IS NOT NULL
 
 -- ── CREDENTIALS ───────────────────────────────────────────────────────────────
 UNION ALL

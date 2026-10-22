@@ -281,12 +281,17 @@ test.describe('Profile modal — structure on NeoModal (UC-FL-009)', () => {
     // verbatim AND in the documented order", so the assertion grows into the whole
     // sequence rather than being re-pointed at two of five — an nth() pin that does
     // not cover the tail cannot see a field that moved past it.
-    await expect(dialog.locator('.field-help')).toHaveCount(5)
+    // ⚠ GROWN BY WA-T1 (21 §UC-WA-003) — the MODULE 21 SLOT between Mobil and E-mail
+    // now renders the WhatsApp opt-in row, whose privacy sentence is a `.field-help`:
+    // ~~5~~ → 6, inserted at nth(3), E-mail and Packeta shift by one. The slot marker
+    // existed precisely so this is an insertion and not a reorder.
+    await expect(dialog.locator('.field-help')).toHaveCount(6)
     await expect(dialog.locator('.field-help').nth(0)).toHaveText('Meno, ktorým sa prihlasujete. Nemení sa.')
     await expect(dialog.locator('.field-help').nth(1)).toHaveText('Celé meno. Uvádza sa na zásielke pri doručení Packetou a vidí ho správca aj kolegovia.')
     await expect(dialog.locator('.field-help').nth(2)).toHaveText('Pre koordináciu objednávky a odovzdanie.')
-    await expect(dialog.locator('.field-help').nth(3)).toHaveText('Voliteľné. Packeta naň posiela informácie o zásielke; slúži aj na obnovenie prístupu.')
-    await expect(dialog.locator('.field-help').nth(4)).toHaveText('Predvolená adresa pre doručenie Packetou (voliteľné).')
+    await expect(dialog.locator('.field-help').nth(3)).toHaveText('Vaše číslo používame len na správy o vašej objednávke a jej odovzdaní. Súhlas môžete kedykoľvek zrušiť tu v profile.')
+    await expect(dialog.locator('.field-help').nth(4)).toHaveText('Voliteľné. Packeta naň posiela informácie o zásielke; slúži aj na obnovenie prístupu.')
+    await expect(dialog.locator('.field-help').nth(5)).toHaveText('Predvolená adresa pre doručenie Packetou (voliteľné).')
     // The help the E-mail row REPLACES (§UC-PI-015 row 4) is really gone.
     await expect(dialog).not.toContainText('Bez e-mailu vám nevieme poslať odkaz na obnovenie prístupu.')
 
