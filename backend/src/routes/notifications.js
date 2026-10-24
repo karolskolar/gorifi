@@ -279,7 +279,7 @@ router.get('/', (req, res) => {
 
 // ═════════════════════════════════════════════════════════════════════════════
 // WA-T5 (21 §UC-WA-008, §UC-WA-007 compose + release) — the WRITE routes. Every write
-// statement lives in `helpers/outbox.js` (the one `notifications` writer); these
+// statement lives in `helpers/outbox.js` (the one `notifications` writer in the API); these
 // handlers validate, call one helper, and READ THE ROWS BACK (no optimistic echo).
 //
 //   POST   /compose              { cycle_id, segment_key } ⇒ 200 { …counts, counts }

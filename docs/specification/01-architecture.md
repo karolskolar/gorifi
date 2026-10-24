@@ -150,12 +150,14 @@ spec, so this documents the **existing** system, not a greenfield design.
     whatsapp_opt_in, created_at, notified_at)` (module 19) — public write through the
     `guestWrite` bucket with the guest bounds; idempotent per (host, phone_e164).
   - `notifications(id, channel CHECK IN ('whatsapp','email'), template_key, segment_key,
-    recipient_kind CHECK IN ('friend','guest','waitlist'), recipient_id, phone_e164,
+    recipient_kind CHECK IN ('friend','guest','waitlist'~~)~~ **,'admin')** — D12, below), recipient_id, phone_e164,
     body, status CHECK IN ('queued','released','sent','failed','skipped'), cycle_id,
     order_id NULL, guest_order_id NULL, created_at, released_at, sent_at, error)` (module
     21) — the outbox. Rows are **queued** by hand-over (module 16 hook) or the composer,
     **released** by one admin „Poslať“ per group, **sent** by the `gorifi-wa` process. The
-    API never sends.
+    API never sends ~~.~~ **a WhatsApp message; it hands `channel='email'` rows to the
+    existing mailer after the release commits (`helpers/outbox.js handOffEmailRows()`,
+    21 §UC-WA-010, WA-T6).**
   - **Module 21 D12 additions (mirrored by WA-T1, 2026-10-22):** `notifications.sent_via
     TEXT NULL CHECK IN ('bot','wa_me','email')` and `notifications.email TEXT NULL`
     (appended after `error`, by ALTER on a deployed table and in the CREATE on a fresh
@@ -277,7 +279,9 @@ Prototype copy is final — transcribe it verbatim, don't rewrite it.
   session on disk under `/var/www/gorifi{,-staging}/wa-session`, Puppeteer args
   `--no-sandbox --disable-dev-shm-usage`). It talks to the API only through the
   `notifications` table in the same SQLite file (WAL; short transactions; it is the ONLY
-  second writer to the DB and it writes only `notifications.status/sent_at/error`). It
+  second writer to the DB and it writes only ~~`notifications.status/sent_at/error`~~
+  **`notifications.status/sent_at/sent_via/error`** — 21 §UC-WA-011 step 6 / D12; shipped
+  WA-T9 as two conditional UPDATEs in `wa/src/db.js`). It
   polls `released` rows, sends with pacing (random 3–10 s gap, ≤ 30/hour), stops on an
   auth error, and exposes `GET :3010/health` (state, number, queue counts, last error)
   which the API proxies to the admin settings page along with the pairing QR. The API
@@ -321,7 +325,10 @@ templating engine dependency.
 
 For module 21, **`whatsapp-web.js`** (+ its `puppeteer` peer, `qrcode-terminal` optional) is
 pre-approved, installed ONLY in the `gorifi-wa` process's own `package.json`
-(`backend-wa/` or `wa/`), never in `backend/`. **`libphonenumber-js`** is pre-approved for
+(`backend-wa/` or `wa/`), never in `backend/`. **→ Shipped as `wa/` (WA-T9): deps
+`better-sqlite3` + `qrcode`; `whatsapp-web.js` is an OPTIONAL PEER (not installed) until
+WA-T10 moves it to `dependencies` — reached only by the whatsapp sender's dynamic
+`import()`; `git grep whatsapp-web -- backend/` is empty (pinned).** **`libphonenumber-js`** is pre-approved for
 E.164 normalisation in `backend/` (small, no network). For module 15 no new package: URL
 composition only; `bysquare` gains the `variableSymbol` field it already supports.
 
@@ -345,9 +352,10 @@ Baseline before the redesign effort: **238 passed / 3 skipped** (the skips need 
 Every new admin route joins `ADMIN_ENDPOINTS`; every new public guest route joins the
 zero-external-requests sweep in `self-hosted-fonts.spec.js`. Ledger-neutrality of
 hand-over, the 409 `not_packed` refusal, guest inheritance from host, waitlist
-idempotency and the outbox never-sends-from-API rule each need a spec that reads the
-row back. The `gorifi-wa` process is NOT exercised by the e2e suite (no Chromium-in-
-Chromium, no real number): its contract is covered by testing the outbox transitions
+idempotency and the outbox never-sends-~~from-API~~-**a-WhatsApp-message-from-the-API** rule (→ 21 §UC-WA-010 / WA-T6: e-mail rows go through the API's mailer) each need a spec that reads the
+row back. The ~~`gorifi-wa` process~~ **REAL whatsapp-web.js sender** is NOT exercised by the e2e suite (no Chromium-in-
+Chromium, no real number — the `gorifi-wa` process ITSELF is, with the stub sender, through
+`e2e/wa-harness.js`, WA-T9): its contract is covered by testing the outbox transitions
 the API owns (`queued → released`) and a **stub sender** (`WA_SENDER=stub`) that flips
 `released → sent` without network, so the composer flow is e2e-testable. Money paths
 (payment link amounts, guest Packeta fee) reuse `guest-payment-modal.spec.js`'s pixel-QR
@@ -357,3 +365,5 @@ module.
 ## Deployment
 
 Nginx Proxy Manager (TLS) → LXC container (nginx) → PM2 apps: `gorifi-backend` (prod, :3000) and `gorifi-staging` (:3001). Deploy: `./deploy/deploy.sh staging|production` (rsync-over-ssh to Tailscale host `gorifi`; requires the operator's tailnet access — the sandbox cannot deploy autonomously). Backend restart runs the `try/catch ALTER TABLE` migrations.
+
+**Module 21 (pending — WA-T11 `[!]`, 21 §UC-WA-013):** two more PM2 apps, `gorifi-wa` and `gorifi-wa-staging` (the `wa/` package, `instances: 1`), and a `deploy.sh … wa` component — NOT built yet (operator LXC resize + the bot number are open). Once they exist: `DB_PATH` is REQUIRED in BOTH `.env`s (the WA process exits 1 without it, and on a file the backend has not migrated), the start order is backend → wa, and both are restarted after a schema change. Staging runs `WA_SENDER=stub` (D9).

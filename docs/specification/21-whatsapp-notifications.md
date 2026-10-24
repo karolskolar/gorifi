@@ -21,7 +21,7 @@
 > the `gorifi-wa` process — a SEPARATE PM2 app with its own `package.json` running
 > **whatsapp-web.js** (`LocalAuth` on disk, headless Chromium), polling `released` rows
 > with pacing (random 3–10 s gap, ≤ 30 per rolling hour), stopping on an auth error,
-> writing ONLY `status/sent_at/error`, exposing `GET :3010/health` which the API proxies to
+> writing ONLY ~~`status/sent_at/error`~~ `status/sent_at/sent_via/error` (D12, §UC-WA-011 step 6), exposing `GET :3010/health` which the API proxies to
 > the settings page (`a-wa-settings`: state, number, QR pairing, pacing, opt-in count, test
 > message), with a `WA_SENDER=stub` mode for the e2e suite; (h) deploy changes (ecosystem
 > entries, `deploy.sh wa` component, `.env` keys, server sizing 8 GB / 4 vCPU / +2 GB disk /
@@ -1052,3 +1052,34 @@ procedure is the acceptance for whatsapp-web.js itself.
 - **Waitlist on round open** = auto-COMPOSE the `waitlist:<cycle>` group (never auto-release).
 - **Tasks for the PO (not decisions):** buy/activate the bot number before UC-WA-013's production step; write the bot's WhatsApp profile text („Na správy odpovedá Karol na čísle …“).
 - **Orchestrator clarification 2026-09-19 (`{suma}` when nothing is owed):** a literal placeholder blocks release (D10), so „omitted“ means the renderer DROPS the whole sentence containing `{suma}` (from the preceding sentence boundary to the next `.`) when the friend's ledger balance is ≥ 0 or the guest sub-order is paid. D4's `už uhradené` substitution is retired in favour of this rule; the seed bodies keep `Suma na úhradu: {suma}.` as their own sentence so the drop is clean.
+
+## Module status at the closeout (WA-T12, 2026-10-24)
+
+> Recorded by the module-21 closeout row. Full write-up, the §UC-WA-014 obligation → test
+> map and the ONE list of PO-pending items: `docs/learnings/15-whatsapp-notifications.md`
+> §WA-T12.
+
+- **Shipped (WA-T1..T9):** UC-WA-001..012 except the whatsapp-web.js branch of UC-WA-011 —
+  schema + E.164 + opt-in, templates, segments, the hand-over enqueue, the outbox write API,
+  the e-mail fallback, the settings page, the composer, and the `gorifi-wa` process with the
+  STUB sender (the default `whatsapp` sender is a marked shell that reports `disconnected`).
+  §UC-WA-014 items 1–5 are each mapped to a passing test; item 1 is now also walked FROM
+  SOURCE (`api-security.spec.js`, WA-T12), so a route added later without its row reds. ⚠ Item 5's
+  „every module 02–20 spec untouched" did NOT hold literally: `distribution-foundation`,
+  `distribution-board`, `distribution-group-handover`, `first-password`, `google-auth`,
+  `guest-packeta`, `guest-waitlist` and `portal-profile-modal` carry sanctioned, strike-noted
+  retargets (WA-T1/T3/T4/T5/T8 — list in learnings 15 §WA-T12); `guest-payment-modal`,
+  `self-hosted-fonts` and the CSP copies are untouched.
+- **Open manual acceptance (UC-WA-013) — WA-T10 and WA-T11 stay `[!]`:** the real
+  whatsapp-web.js sender (QR pairing, `LocalAuth`, reconnect/backoff, `not_on_whatsapp`)
+  and the deploy (PM2 `gorifi-wa{,-staging}`, `deploy.sh … wa`, both `.env`s, the LXC
+  checklist). Blocked on the PO's bot number + profile text and the operator's server
+  resize — item 6 above: the suite never exercises the real sender.
+- **Phase 2 — recorded, NOT built (do not build silently):** the `in_person` hand-over
+  template; an „Odpojiť“ / logout control (D7); per-location opening `hours` in the pickup
+  message; a guest opt-in flag on `guest_orders` (D6); the WhatsApp Business Cloud API (or
+  any second sender behind the interface).
+- **The friend-surface PARKED flags** (`lib/features.js STANDING_GUEST_LINK` /
+  `GUEST_WAITLIST`, PO 2026-09-29 „until module 21's WhatsApp ships“) are untouched by this
+  module: un-parking them is a PO decision, now answerable but not taken.
+

@@ -533,10 +533,19 @@ test.describe('PI-T1 · 18 §UC-PI-002 — `lib/dates.js`, the short forms', () 
     // loaded yet is exactly the value that arrives as `null`. ⚠ `undefined` must STILL
     // mean „now" — that is the default parameter, and conflating the two would break
     // every caller that omits the argument.
-    expect(d.weeksUntil('2026-10-03', null), 'a null clock is refused, not treated as the epoch').toBeNull()
-    expect(d.weeksUntil('2026-10-03', 0), 'timestamp 0 is the epoch, not „now"').toBeNull()
-    expect(d.weeksUntil('2026-10-03', 'junk'), 'an unparsable clock is refused').toBeNull()
-    expect(typeof d.weeksUntil('2026-10-03'), 'but an OMITTED clock still means now').toBe('number')
+    //
+    // ~~`weeksUntil('2026-10-03')` as „a future date"~~ → WA-T12 (2026-10-24): a
+    // hard-coded date ages into the PAST, where `null` made the „omitted clock means
+    // now" pin red for no defect. The target is now computed from the real clock —
+    // 35 calendar days ahead in LOCAL date parts (what `weeksUntil` reads) — and the
+    // pin is TIGHTER: exactly 5, not merely „a number".
+    const ahead = new Date()
+    ahead.setDate(ahead.getDate() + 35)
+    const FUTURE = `${ahead.getFullYear()}-${String(ahead.getMonth() + 1).padStart(2, '0')}-${String(ahead.getDate()).padStart(2, '0')}`
+    expect(d.weeksUntil(FUTURE, null), 'a null clock is refused, not treated as the epoch').toBeNull()
+    expect(d.weeksUntil(FUTURE, 0), 'timestamp 0 is the epoch, not „now"').toBeNull()
+    expect(d.weeksUntil(FUTURE, 'junk'), 'an unparsable clock is refused').toBeNull()
+    expect(d.weeksUntil(FUTURE), 'but an OMITTED clock still means now').toBe(5)
     expect(d.weeksUntil('2026-09-20', TODAY), 'today').toBeNull()
     expect(d.weeksUntil('2026-09-19', TODAY), 'yesterday').toBeNull()
   })

@@ -1,8 +1,11 @@
 # 15 — WhatsApp notifications (module 21)
 
 Spec: `docs/specification/21-whatsapp-notifications.md`. Tests: `e2e/tests/whatsapp-schema.spec.js`
-(WA-T1). The later rows' obligations live in `whatsapp-outbox.spec.js` / `whatsapp-composer.spec.js`
-(21 §UC-WA-014), which this row deliberately did NOT create, so the two never fight over a name.
+(WA-T1). ~~The later rows' obligations live in `whatsapp-outbox.spec.js` / `whatsapp-composer.spec.js`
+(21 §UC-WA-014), which this row deliberately did NOT create, so the two never fight over a name.~~
+→ **As shipped (WA-T12):** NINE spec files, `whatsapp-{schema,templates,segments,handover-enqueue,outbox,email,
+settings,composer,process}.spec.js`, plus `e2e/wa-harness.js` and module-21 rows in `api-security.spec.js` —
+the §UC-WA-014 obligation → test map is §WA-T12 at the end of this file.
 
 ## WA-T1 — outbox schema completion, `phone_e164`, `whatsapp_opt_in` (2026-10-22)
 
@@ -1058,3 +1061,182 @@ on the GATE database, §3 2 API-side). NEW `e2e/wa-harness.js`, `e2e/README.md` 
 - **Pacing counts only attempts that reached `sender.send`** (`outcome.contacted`): `invalid_number` / `empty_body`
   rows draw no gap. Pinned: two malformed rows ahead of a good one with a 1.5 s gap ⇒ the good one is sent < 1.2 s.
 - `wa/node_modules` is a recipe step (`e2e/README.md` step 5, CLAUDE.md's e2e checklist).
+
+## WA-T12 — module-21 closeout (2026-10-24)
+
+Spec: 21 §UC-WA-014, D12, §Supersedes / amends, §Accepted risks, §OPEN + PO decisions. No product code changed.
+Tests: one NEW test in `api-security.spec.js` (the module-21 route walk); two UNRELATED pre-existing reds fixed (below).
+
+### §UC-WA-014 — obligation → test (all green on the closeout's full run)
+
+The spec's file layout (`whatsapp-outbox` + `whatsapp-composer` only) is NOT what shipped: the obligations are
+spread over nine files, by row. `WA_HEALTH_URL` / `DB_PATH` / `SERVER_LOG` / `CAN_SPAWN_BACKEND` gate some of them
+(README recipe) — the full run passed all four, so none of the rows below was a skip.
+
+| §UC-WA-014 | Obligation | Covered by |
+|---|---|---|
+| 1 | the 13 listed `ADMIN_ENDPOINTS` rows | `api-security.spec.js` (all 13 present + `segments?…&segment_key=`); **NEW (WA-T12):** „module 21 routes are all in ADMIN_ENDPOINTS" walks `routes/notifications.js` (11 routes) + `routes/admin.js` `/whatsapp/*` (2) FROM SOURCE, pins the wholly-admin `/api/notifications` mount and each `/whatsapp/*` route's own `requireAdmin` — mutation-checked (dropping the `PATCH …/body` row reds it) |
+| 1 | health port is no app route; no new PUBLIC route | no `/health` row; `git diff 3dc5f71~1..HEAD -- backend/src` adds only the 11+2 admin routes (+ the `/api/notifications` mount); the frontend routes `/admin/whatsapp{,/settings}` sit under the `/admin` guard |
+| 2 | E.164: three shapes ⇒ `+421905123456`, garbage ⇒ NULL | `guest-waitlist.spec.js` GL-T3 `toE164()` table (national / `+421` / `00421` / …, `abc` / `0000000000` / `123` ⇒ NULL) |
+| 2 | approve / onboarding / profile / guest-checkout read back `phone_e164` | `whatsapp-schema` §UC-WA-003 (approve, onboarding), §UC-WA-002/003 PATCH (profile, admin), guest checkout describe; source pin „every phone writer derives phone_e164 with toE164" |
+| 2 | opt-in: approve ⇒ 0; profile PATCH boolean/400 | `whatsapp-schema` (approve ⇒ 0, onboarding ⇒ 0, admin POST ⇒ 1; PATCH flips / 400 + nothing written / shared-password 401) |
+| 2 | opted-out excluded from `not_ordered` | `whatsapp-segments` §2 „not_ordered … opting out moves a friend into `excluded_opt_out`" |
+| 2 | D5 e-mail row for an operational template | `whatsapp-handover-enqueue` §2 „D5: an OPTED-OUT friend with an e-mail ⇒ exactly one `email` row" |
+| 2 | templates: seed byte-equality; `unknown_placeholder` 400; disabled ⇒ compose 409 | `whatsapp-templates` (seed table, boot seed, GET byte-exact, `{menoo}` 400); `whatsapp-outbox` §2 „compose: a disabled template ⇒ 409 `template_disabled`" |
+| 2 | enqueue: pickup ⇒ 1 row; host ⇒ guests; `in_person` ⇒ none; un-hand-over deletes queued only; `no_phone` ⇒ skipped; idempotency; `transactions` unmoved | `whatsapp-handover-enqueue` §2 (one test each) + §3 (queued-only delete, `sent` survives); `whatsapp-schema` partial-index test; `transactions` count around hand → un-hand → hand |
+| 2 | release: transitions; idempotent 0; `unresolved_placeholders` all-or-nothing; waitlist `notified_at`; `manual-sent` on queued; DELETE refusals read back | `whatsapp-outbox` §2 („compose → release … a second release answers 0; the ledger does not move", „release with ONE `{datum}` row ⇒ 409 … NOTHING changes", manual-sent, DELETE) + §1/§3 waitlist (`notified_at` stamped, D8) |
+| 2 | mail describe: UC-WA-010's four cases | `whatsapp-email` §2 (`withMailHarness`): ONE request, `text` = body, `sent`/`email` — and a WhatsApp-only group ⇒ ZERO requests (same test); stub 500 ⇒ `failed`/`HTTP 500` (+ the rows feed carries the code); no Mailgun ⇒ `failed`/`not_configured`; plus the WA-T6 review's tick/race doors |
+| 3 | `wa-harness.js` + the stub describe: released ⇒ sent/`bot` ≤ 1 s; queued untouched; fail number; pause; `manual-sent` ⇒ 409 `bot_active`; body/`phone_e164` unchanged | `whatsapp-process` §1 („§UC-WA-011 acceptance", pause, cap, gap, duplicate guard) + §2 („the wa.me tick on a released row 409s `bot_active` while the stub is connected") |
+| 4 | composer: groups + badges; „Poslať skupine (n)" ⇒ `Uvoľnené`; wa.me no href before click / „Otvorené ✓"; `{datum}` blocks release inline | `whatsapp-composer` §1 (one test each) |
+| 4 | settings: `Pripojené` with stub / `proces nebeží` without; template toggle + edit; test button 400 on `abc` | `whatsapp-process` §2 (`Pripojené` against the REAL stub process); `whatsapp-settings` §3 (`proces nebeží`, templates, `abc` ⇒ inline 400) |
+| 5 | `guest-payment-modal.spec.js`, `self-hosted-fonts.spec.js`, CSP copies untouched — and „every module 02–20 spec" | the first half HOLDS: `git diff --stat 3dc5f71~1..HEAD` over both specs, `deploy/`, `docs/deploy/` and `middleware/rate-limit.js` is EMPTY. ⚠ The „every module 02–20 spec untouched" clause does **NOT** hold as written — module 21 edited these, each a sanctioned retarget with a strike note, never a weakening: `distribution-foundation` (WA-T1 column list / CHECK / indexes, WA-T4 bodies + 21-grammar keys, WA-T5 `unresolved`), `first-password` + `google-auth` (WA-T1: `whatsapp_opt_in` / `phone_e164` join the profile-route column sets), `portal-profile-modal` (WA-T1: the `.field-help` sequence 5 → 6), `guest-packeta` (WA-T1 `.field-help` count, WA-T4 GP-T6 key, WA-T8 toast), `guest-waitlist` (WA-T3 „no segments.js" pin, WA-T5 `markWaitlistNotified` stamp), `distribution-board` + `distribution-group-handover` (WA-T8: the „no Správa skupine / no WhatsApp" pins and toast texts); plus THIS row's unrelated fixes `portal-shell`, `ledger-packeta-fee`, `live-stats`, `session-cookie` and the `guest-packeta` de-flake (below) |
+| 6 | the real sender is NOT exercised | by design — WA-T10/T11 `[!]`, UC-WA-013 manual acceptance |
+
+Items 2–4: every obligation maps to a passing test — no gap found. Item 5: its two named specs and the CSP copies are
+untouched, but its „every module 02–20 spec" clause is not literally true (the sanctioned retargets listed in the row).
+Item 1's list was complete; what it lacked was a guard that KEEPS it complete, which is the one test added.
+
+### Sibling seams — verified
+
+- **DP-T3/T4 → `enqueueForHandOver` / `cancelForUnHandOver`:** `routes/orders.js` (per-bag friend: enqueue :886, reversal
+  :827), `routes/guest-orders.js` (per guest bag: enqueue :458, reversal :419), `routes/cycles.js` (bulk: enqueue :1445 —
+  the bulk route only hands over, the reversal lives on the per-bag routes), each inside its `.immediate()` transaction;
+  the three soft-cancel doors reach `cancelForUnHandOver` through `helpers/guest-orders.js softCancelGuestOrder()`. Every
+  `handed_over_at = NULL` writer (`orders.js` ×2, `guest-orders.js` ×1) sits beside a `cancelForUnHandOver` call. Tests:
+  `whatsapp-handover-enqueue` §2.
+- **PI-T10 slot renders the checkbox:** `FriendPortalSession.vue` „MODULE 21 SLOT" (`profile-whatsapp-help`, payload
+  `whatsapp_opt_in` only when touched). Tests: `whatsapp-schema` §UC-WA-003 UI (both describes).
+- **GL-T3 INSERT uses `toE164` and never writes `notified_at`:** `helpers/guest-waitlist.js` derives `phoneE164 =
+  toE164(phone)` before its INSERT (column list has no `notified_at`); its only `notified_at` writes are the re-arm
+  (`= NULL`) and `markWaitlistNotified()`, called ONLY from `helpers/outbox.js` (release :580, the queued wa.me tick :781).
+  Idempotency is the partial unique `idx_guest_waitlist_host_e164 … WHERE phone_e164 IS NOT NULL`.
+- **GP-T3 carries the D6 sentence (TY-form, PO 2026-10-22):** `GuestOrder.vue` `guest-phone-help` = „Na toto číslo ti
+  pošleme správu, keď bude objednávka pripravená." — pinned by `whatsapp-schema` `GUEST_SENTENCE` (+ the GP-T3
+  `.field-help` count retarget in `guest-packeta.spec.js`).
+- **Guest `{suma}` includes the fee:** `helpers/segments.js` guest `{suma}` = `sumaValue(guestPaymentBlock(row).amount)`,
+  and `payment.js` composes that amount as `roundMoney(total + delivery_fee)`. Test: `whatsapp-segments` §2
+  „handed_over:packeta … guest {suma} = total + fee".
+- Module 16's „Správa skupine" deep link `/admin/whatsapp?cycle=&segment=`: `whatsapp-composer` §1 board test.
+
+### Documentation closed here
+
+- CLAUDE.md: the `gorifi-wa` rule MOVED into „Auth & boundaries" (21 §Supersedes names that section) and now says `wa/`
+  is the ONLY home of whatsapp-web.js; „Money & data" gains „a `notifications` row is NEVER a financial event"; „Dev &
+  deploy" gains the `gorifi-wa` line (local run, `DB_PATH` in both `.env`s, start order backend → wa, restart both,
+  `deploy.sh … wa` = WA-T11 pending); the `ADMIN_ENDPOINTS` rule names the new source walk; `helpers/outbox.js` „the
+  only `notifications` writer" is qualified (+ schema.js boot migrations, + `gorifi-wa`'s four columns); the PARKED
+  standing-link rule points here. The module-21 cluster's stray blank lines removed (one rule per line, no merges —
+  each line states a different rule).
+- 01-architecture: D12 was already mirrored by WA-T1 (+ WA-T5's `unresolved`). Struck/updated three stale copies:
+  the base `recipient_kind` CHECK, „the API never sends" (it hands e-mail rows to the mailer, WA-T6) and the
+  three-column write set (four, with `sent_via`); the dependency line records the shipped `wa/` package; the gate
+  note says the PROCESS is exercised (stub, harness) and only the real sender is not; „Deployment" gains the pending
+  module-21 paragraph. Spec 21: the header's three-column claim struck; a closing „Module status" section.
+
+### Open manual acceptance + Phase 2
+
+- **WA-T10 `[!]`** (real whatsapp-web.js sender) and **WA-T11 `[!]`** (deploy) = 21 §UC-WA-013, manual, staging first.
+  Blocked on: the bot number (PO task, Q5.a), the bot's WhatsApp profile text (PO task, R5.9), the operator's LXC
+  resize (8 GB / 4 vCPU / +2 GB disk / swap / `/dev/shm` ≥ 256 MB). Until then the default `whatsapp` sender reports
+  `disconnected` and the admin works through the wa.me tab.
+- **Phase 2 — NOT built, not to be built silently:** the `in_person` template (resolved conflict 4); „Odpojiť" /
+  logout control (D7); per-location `hours` in the pickup message; a guest opt-in flag (D6); the Cloud API (or any
+  second sender).
+
+### PO-pending items — the ONE list (accumulated WA-T1..T9; each row names its home)
+
+Copy drafted by the implementer (admin vy-form, no „kolo/cyklus"; the PO may reword — nothing is final):
+1. Settings page copy — WA-T7 decision 9 (test-phone 400/409/success, „Zisťujem stav…", „neznámy stav", „(bez
+   textu)", the inline `{menoo}` refusal, the runbook's two procedures) and decision 8's sub-header plurals.
+2. Composer + board copy — WA-T8 „Copy drafted here" (declensions, toasts, empty states, compose hints, row hints,
+   failed-row help, „Uzavrieť čakajúcu testovaciu správu", the board modal sentence — which promises a message even
+   while that template is disabled; the toast's count tells the truth).
+3. E-mail subject: `custom` mail is „Podpultovka · Vlastná správa", a key outside the six is „Podpultovka" (WA-T6 d1).
+4. The Komu chip says „n preskočené", not the spec's „bez čísla" (`skipped` also holds `cancelled`/`not_waiting`) — WA-T8 review.
+
+Behaviour chosen where the spec was silent or literal (orchestrator-confirmed or recorded; PO may overturn):
+5. `not_ordered` counts an unsubmitted DRAFT WITH ITEMS as ordered (spec-literal; `AND o.status='submitted'` is the
+   one-predicate change if the PO wants carts reminded) — WA-T3 d8.
+6. A waitlist host WITHOUT a minted standing link: segments never mint, so `{odkaz}` stays literal and release
+   refuses the group (§UC-WA-007); the admin's way out is the host's admin standing-link GET (`FriendDetail.vue`, which mints) and then release again (release re-renders waitlist rows) —
+   WA-T3 d3. Related: waitlist no-phone rows are RETURNED (spec) despite the backlog's `phone_e164 IS NOT NULL` — WA-T3 d4.
+7. INACTIVE friends get no row (overturns DP-T3's „a deactivated friend still enqueues") — WA-T4 d8.
+8. Un-hand-over deletes `queued` rows only; a `skipped` to-do survives and stays until the admin deletes it — WA-T4 d3.
+9. `{suma}` is FROZEN at enqueue for hand-over rows: a payment between hand-over and release is refreshed only by the
+   explicit „Prepísať texty vo fronte"; no „paid since" flag is built — WA-T5 d4 / WA-T4 d11.
+10. A two-order friend's re-enqueue on un-handing the first bag loses an admin's per-row edit (edge) — WA-T4 d4.
+11. Compose is for the three COMPUTED kinds only (a hand-over group cannot be back-filled) — WA-T5 d1.
+12. The wa.me tick of a still-QUEUED waitlist row stamps `notified_at` too (beyond D8's letter) — WA-T5 d8.
+13. Waitlist auto-compose also fires on `POST /cycles` creating a round directly `open`, for rounds of ANY type — WA-T5 d12.
+14. `WA_HEALTH_URL` unset ⇒ the spec's `:3010` default, not „not connected" — WA-T5 d10.
+15. A stuck test row is closed through the hand tick and reads `sent`/`wa_me` (no other admin-writable terminal state) — WA-T8 d2.
+16. A `?segment=` deep link without a date resolves to the target's NEWEST day group — WA-T8 d5.
+17. E-mail: a multi-line body collapses to one line in the HTML part (module-08 block change to fix) — WA-T6 d4;
+    a mail Mailgun accepted just before an API crash goes out twice on retry (accepted cost of the boot sweep) — WA-T6 d5;
+    an admin's free text may contain a `revolut.me` URL in a mail (the one-origin rule binds app-composed text only) — WA-T6 d6.
+18. `{meno}` is the first whitespace token („Ivet a Peto" ⇒ „Ahoj Ivet") — accepted risk; and a template ABBREVIATION
+    followed by a space („vr. dopravy") cuts the `{suma}` drop early — WA-T2 known limit.
+19. `.immediate()` covers the outbox + the hand-over / soft-cancel transactions only; a global default is the follow-up
+    if a `503 db_busy` is ever observed — WA-T9 d3.
+20. Scrub: `notifications.unresolved` is NOT in `scrub-template.sql` (only a rescan can capture ≤ 40 chars of a value,
+    and `body` is scrubbed) — WA-T5 open, orchestrator's call.
+
+PO tasks (not decisions): buy/activate the bot number; write the bot's WhatsApp profile text („Na správy odpovedá
+Karol na čísle …"). And ONE decision this module made answerable: **un-park `STANDING_GUEST_LINK` / `GUEST_WAITLIST`**
+(PO 2026-09-29: parked „until module 21's WhatsApp ships"). The API + admin side has shipped; the bot has not. While
+`GUEST_WAITLIST = false` the waitlist has no UI producer (the public `POST /api/guest/:token/waitlist` stays live), so the `waitlist:<cycle>` segment drains mostly old rows.
+
+### Review round (2026-10-24, REVISE → five minors fixed)
+
+- Missed copies struck with a pointer: 16 §UC-DP-002's base `recipient_kind` CHECK (→ 21 D12) and 16 §UC-DP-008's
+  „The API never sends" (→ a WhatsApp rule; e-mail rows via `handOffEmailRows()`, 21 §UC-WA-010 / WA-T6);
+  01-architecture's gate note „the outbox never-sends-from-API rule". `helpers/outbox.js` (WA-T7 block) and
+  `routes/notifications.js` comments now say „the only `notifications` writer IN THE API" (comment-only). Grep
+  `never.send|API never|recipient_kind (CHECK )?IN` — every remaining hit is struck, a WhatsApp-scoped sentence, or
+  unrelated.
+- Item 5 of the map no longer claims „every module 02–20 spec untouched" — the sanctioned retargets are listed.
+- „no new producer" → „no UI producer": the public `POST /api/guest/:token/waitlist` stays live while the form is parked.
+- **The route walk follows EXPRESS MATCHING ORDER**: a row covers only the FIRST declared route (same method,
+  declaration order) whose pattern matches its path — the any-route match would have counted a later `GET /:id` as
+  covered by the `/templates` row, which Express dispatches to `/templates`. Inverse probe on a synthetic route list
+  pins it (and its non-vacuity: the naive match would have passed). The walk only sees the `/whatsapp/*` half of
+  `routes/admin.js`; an earlier generic admin route shadowing a `/whatsapp/*` path is outside it (none exists).
+
+### Unrelated pre-existing reds fixed here (sanctioned by the row, so the full run means something)
+
+- **`portal-shell.spec.js` `weeksUntil`:** the „an OMITTED clock still means now" pin used the hard-coded
+  `'2026-10-03'` as a future date; since 2026-10-04 it is past, `weeksUntil` answers `null` and the pin reddened on every
+  run (first noted in the WA-T1 log). Now the target is computed from the real clock (35 days ahead in LOCAL date parts)
+  and the pin is TIGHTER — exactly `5`, not „a number". The three null-clock pins use the same date (they never
+  depended on it: the epoch / junk clock is refused either way).
+- **`admin-token-retry.spec.js` §5 sweep:** `ledger-packeta-fee`, `live-stats` and `session-cookie` each kept a private
+  arrow `adminReq` (shape 3). All three now build it with `helpers/admin.js makeAdmin({ ctx, token, adopt, timeout })`
+  (no password rotation in any of them, so the default password is right). `live-stats` still re-reads the
+  browser's token after its UI login (`adopt` keeps the variable fresh either way). Each file was run alone first.
+
+### Full-suite run (fresh gate DB, the README recipe, `--workers=1`)
+
+- **2832 passed · 1 failed · 41 skipped** of 2874, 110 files, **18.5 min** (15:39–15:58), EXIT 1 on that one red. Env:
+  fresh copy of `prod-template.sqlite`, seed printed `explainer: pre-stamped 77 friend(s); 1 left`, all five
+  `RATE_LIMIT_*_MAX=100000`, `DB_PATH` + `SERVER_LOG` + `WA_HEALTH_URL=http://127.0.0.1:3996`, `wa/node_modules`
+  present, fresh `frontend` build in `backend/public`. Files that RAN = files `--list` reports: 110 = 110, no diff.
+  The duration is not the „~12 min" of the 2026-09-20 measurement: the suite has grown since (2874 tests now);
+  load average stayed ≈1 on the 8-core box, and the server log is clean (its only „malformed"/BUSY lines are the
+  deliberate multipart-400 and `db_busy`-503 tests).
+- **The one red** — `guest-packeta.spec.js` GP-T6 „keyboard: … Krok 2 fires its PATCH on a focused Space" — read the
+  guest row SYNCHRONOUSLY right after `toBeChecked()`, but a NATIVE checkbox is checked by the Space itself, before
+  the PATCH answers: a test-side race with the commit (`handed_over_at` null). Green 2/2 alone on fresh DBs before
+  any change; de-flaked by polling the row (`expect.poll`, same claim, strike note in the spec), green 3rd time alone
+  (122 passed, 1 skipped). Not a regression; no product code involved.
+- **The 41 skips, every one accounted for:** 11 `GUEST_WAITLIST` parked (`guest-standing-link` waitlist UI), 11
+  `STANDING_GUEST_LINK` parked (`guest-standing-link` GL-T6b dialog describe) + 3 (`portal-landing`), 11
+  `PROFILE_AUTO_OPEN` parked (`portal-profile-modal`), 4 documented limiter skips (`rate-limit`,
+  `rate-limit-isolation`, `magic-link-rate-limit` self-skip at 100000 + `forced-change-ui`'s `test.fixme`), 1
+  `guest-packeta` `test.skip(true, …)` (admin mobile viewport, by design). Zero env-gated skips — every `DB_PATH` /
+  `SERVER_LOG` / `WA_HEALTH_URL` / `CAN_SPAWN_BACKEND` family ran.
+
+### Traps found
+
+- `npx playwright test --list` prints `› whatsapp-x.spec.js:…` WITHOUT the `tests/` prefix that the line reporter
+  prints — a reconciliation `grep -oE 'tests/…'` over the `--list` output finds ZERO files. Grep the bare
+  `[a-z0-9-]+\.spec\.js` on both sides (or count `Total: N tests in M files`).

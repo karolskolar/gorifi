@@ -956,7 +956,8 @@ export function sweepInterruptedEmailRows() {
 // ═════════════════════════════════════════════════════════════════════════════
 // WA-T7 — the settings page's TEST MESSAGE (21 §UC-WA-012). The one `recipient_kind =
 // 'admin'` row kind (the CHECK value WA-T1 widened for exactly this), written HERE
-// because this file is the only `notifications` writer.
+// because this file is the only `notifications` writer IN THE API (+ schema.js's boot
+// migrations; `gorifi-wa` writes the four send columns — WA-T12).
 // ═════════════════════════════════════════════════════════════════════════════
 
 export const TEST_TEMPLATE_KEY = 'test';

@@ -175,7 +175,7 @@ writes into — exactly the shapes 01-architecture §Roadmap October 2026 additi
   `CREATE TABLE IF NOT EXISTS` is a no-op.
 - `notifications` — `CREATE TABLE IF NOT EXISTS` with the 01-architecture column list
   VERBATIM: `id, channel CHECK IN ('whatsapp','email'), template_key, segment_key,
-  recipient_kind CHECK IN ('friend','guest','waitlist'), recipient_id, phone_e164, body,
+  recipient_kind CHECK IN ('friend','guest','waitlist'~~)~~ **,'admin')** — → 21 D12, widened by WA-T1's guarded recreate), recipient_id, phone_e164, body,
   status CHECK IN ('queued','released','sent','failed','skipped'), cycle_id, order_id NULL,
   guest_order_id NULL, created_at, released_at, sent_at, error`. `body` and `phone_e164` are
   NULLABLE (this module writes them as `NULL`, UC-DP-008). Module 21 owns every later column
@@ -450,7 +450,8 @@ passes unmodified on non-handed bags).
 **Goal:** the stage-3 moment is when people want to hear „your coffee is at X“ (roadmap §11
 Notifications table, Q5.d default: queued on hand-over, released by the admin). This module
 writes the ROWS and defines their contract; module 21 renders, releases and sends. **The API
-never sends** (01-architecture).
+never sends** ~~(01-architecture)~~ **a WhatsApp message** (→ 21 §UC-WA-010 / WA-T6: it hands `channel='email'` rows
+to the mailer after the release commits, `helpers/outbox.js handOffEmailRows()`; 01-architecture).
 
 **Contract — one row per (recipient, bag) at hand-over, written INSIDE the hand-over
 transaction (UC-DP-004/005/006):**

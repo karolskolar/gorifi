@@ -17,6 +17,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const ANALYTICS_URL = 'file://' + join(REPO_ROOT, 'backend', 'src', 'helpers', 'analytics.js')
@@ -69,8 +70,13 @@ test.describe('pure helpers (direct import — helpers/analytics.js imports noth
 test.describe('the live dashboard, the Káva tab and the cycle card agree', () => {
   let ctx
   let adminToken = ''
-  const adminReq = (path, opts = {}) => ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken }, ...(opts.data ? { data: opts.data } : {}), timeout: TIMEOUT,
+  // FUP-T27 / WA-T12: the ONE admin request path (`helpers/admin.js makeAdmin`) — re-authenticates once on a 401
+  // and publishes the fresh token back into `adminToken` (was a private `adminReq` copy, §5 of admin-token-retry).
+  const adminReq = makeAdmin({
+    ctx: () => ctx,
+    token: () => adminToken,
+    adopt: (t) => { adminToken = t },
+    timeout: TIMEOUT,
   })
   let cycle
 

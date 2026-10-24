@@ -3242,7 +3242,12 @@ test.describe('GP-T6 · 20 §UC-GP-010 — Distribution.vue renders the Packeta 
     const [req] = await Promise.all([page.waitForRequest(isGuestHandover), page.keyboard.press('Space')])
     expect(req.postDataJSON()).toEqual({ handed_over: true })
     await expect(toggle).toBeChecked()
-    expect(guestRow(s.B.id).handed_over_at, 'the keyboard Space genuinely fired the hand-over').toBeTruthy()
+    // ~~expect(guestRow(…)).toBeTruthy()~~ → WA-T12 (2026-10-24): a NATIVE checkbox is
+    // checked by the Space itself, before the PATCH answers, so the sync DB read raced the
+    // commit (red once in a full run, green 2/2 alone). Poll the row instead — the same
+    // claim, made after the server had its chance (the sibling test above waits on
+    // `data-stage="handed"`, which only the re-fetch can paint, for the same reason).
+    await expect.poll(() => guestRow(s.B.id).handed_over_at, { message: 'the keyboard Space genuinely fired the hand-over' }).toBeTruthy()
   })
 
   test('the Packeta group\'s „Odovzdať zabalené (1)" sends exactly `guest_order_ids:[B]` and nothing for the host', async ({ page }) => {
