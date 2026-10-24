@@ -35,8 +35,14 @@ import db from '../db/schema.js';
 //   `host`    ↔ „Odovzdané priateľovi"
 // ⚠ AN `in_person` BAG ENQUEUES NO ROW AT ALL. Module 21 defines no template for
 // it — the admin arranges that hand-over directly (orchestrator reconciliation
-// 2026-09-19). Its `in_person` SEGMENT still exists, but only for 21's composer's
-// „Správa skupine" with template `custom`; a hand-over never mints it.
+// 2026-09-19). ~~Its `in_person` SEGMENT still exists, but only for 21's composer's
+// „Správa skupine" with template `custom`; a hand-over never mints it.~~ **→ WA-T3:
+// 21 §UC-WA-005 defines NO `in_person` segment (six kinds; `helpers/segments.js
+// handOverSegmentKey()` answers null for it) — Phase 2 with the `in_person` template.**
+// ⚠ WA-T3 also owns the segment KEYS now: `loc<id>` / `packeta` / `host:<id>` below are
+// DP-T3's; 21's grammar is `handed_over:pickup:<loc>:<date>` / `handed_over:packeta:<date>`
+// / `host_guests:<host>:<date>`, computed by `segments.js handOverSegmentKey()` — WA-T4
+// switches this hook onto it.
 const FRIEND_TEMPLATE_BY_DELIVERY = { pickup: 'pickup', packeta: 'packeta' };
 
 /**

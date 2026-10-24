@@ -155,7 +155,7 @@ append the full write-up to the matching learnings file and add at most one line
   CLOSED, the other narrow and fails to `null`. BOTH writers of `pickup_location_id` — `POST …/submit`
   and `PATCH …/pickup`, the only two — call `activeLocation()`; a grep for that SELECT returns one hit,
   comments included, and a mutation in it must redden both — FUP-T25), `guestPaymentReference()` (stays in
-  `helpers/guest-orders.js`), `helpers/payment.js` (variable symbol — friend = order id, guest = `9`+6-digit
+  `helpers/guest-orders.js`, beside `guestStatusUrlPath()` — the ONE composer of `/g/o/<token>`: status_path, mail, WA `{odkaz}`), `helpers/payment.js` (variable symbol — friend = order id, guest = `9`+6-digit
   id, balance = `8`+6-digit id, DERIVED never stored; anything but an integer `0 < id < 1e6` — a float, a
   numeric STRING, `0`, a negative, a missing argument — yields `''`, never a guessed VS; the ONE
   `paymentSettings()` reader + the three `SETTING_*` key constants reads AND writes share;
@@ -326,6 +326,8 @@ append the full write-up to the matching learnings file and add at most one line
 - `notifications` has NO FKs and nullable `body`/`segment_key` (module 16 writes NULL bodies); a new column goes into `schema.js notificationsTableSql` + `NOTIFICATION_COLUMNS` + an ALTER ABOVE the `'admin'` recreate; any INSERT into it translates `idx_notifications_queued_once` via `outbox.js isQueuedOnceConflict()`, never a 500 (WA-T1).
 - WhatsApp templates (WA-T2): the seed table, vocabulary, `renderTemplate()` and formatters live in the PURE `helpers/template-render.js` (no DB import — schema.js seeds from it, specs import it); `helpers/templates.js` is the ONE reader/writer of `wa_template:<key>` (fail-quiet: an invalid row reads as the seed + one log line, the boot never overwrites); a placeholder with no value stays LITERAL (D10), and `vars.suma = NOTHING_OWED` (or a number ≤ 0) — never `''` — drops the whole `{suma}` sentence (PO 2026-09-19, „už uhradené" retired); release asks `unresolvedFor(body, vars)`, never a rescan of the rendered body (learnings 15 §WA-T2).
 - `orders.urgent_at` („Som na suchu!", PO 2026-10-09) has ONE writer, the friend's own `PATCH /orders/cycle/:c/friend/:f/urgent` (strict boolean, submitted orders, open/locked rounds); it is a wish, never money — no ledger row, no status/stage write — and the admin only reads it (learnings 14).
+
+- Module 21 recipients have ONE home, READ-ONLY `helpers/segments.js` (WA-T3): six kinds in 21's grammar (`handOverSegmentKey()` — null for `in_person`; DP-T3's `loc<id>` keys are OUTSIDE the grammar until WA-T4), consent `active=1 AND whatsapp_opt_in=1`, no-phone RETURNED; it never mints a standing token, and its JSON preview (`segmentForJson`) maps `NOTHING_OWED` → `null` and never publishes `odkaz` (learnings 15 §WA-T3).
 
 - Guest Packeta surfaces (GP-T4) key on `packeta_address`, never the fee: the status-page edit SAVE always sends `use_parcel_delivery` (`parcelEnabled && method==='packeta'`, else `false`; cancel stays literal `{items: []}`), and the host card renders NO `guest-delivered` tick on a Packeta row (JS guard too), drops it from `pendingDelivery`, and keeps `totals` product-only (learnings 12 §23–28).
 

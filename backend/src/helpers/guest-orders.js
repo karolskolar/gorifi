@@ -93,6 +93,16 @@ export function guestPaymentReference(order, cycleName) {
   return `G${order.id} / ${order.guest_name} / ${cycleName}`;
 }
 
+// THE ONE COMPOSER of a guest's status-page PATH, `/g/o/<order_token>` (module 14) — the
+// `status_path` of the submit 201 and the confirmation mail's URL (routes/guest.js), and
+// module 21's guest `{odkaz}` (helpers/segments.js) all build it here (WA-T3 review), the
+// twin of `helpers/standing-link.js standingUrlPath()`. A non-string or empty token ⇒ `''`
+// (never `/g/o/undefined`). ⚠ A PATH only — the caller prefixes its own base; publishing it
+// is the caller's audience decision (CLAUDE.md: never rendered into DOM attributes).
+export function guestStatusUrlPath(token) {
+  return typeof token === 'string' && token ? `/g/o/${token}` : '';
+}
+
 // The line items of the given sub-orders, attached in place as `items`.
 // One query for the whole set (the host view renders every sub-order of a link,
 // so a per-row query would be an N+1).

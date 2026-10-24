@@ -859,11 +859,20 @@ test.describe('GL-T3 · source pins', () => {
     expect(list, 'the PUBLIC signup never joins ADMIN_ENDPOINTS').not.toMatch(/\/waitlist'/)
   })
 
-  test('seams: the segment SQL is a code-comment contract (no helpers/segments.js); api.js has the three clients on the right request paths', () => {
-    expect(existsSync(join(BACKEND_SRC, 'helpers', 'segments.js')), 'segments.js is module 21\'s file').toBe(false)
+  // ~~„the segment SQL is a code-comment contract (no helpers/segments.js)"~~ → WA-T3
+  // (module 21) SHIPPED `helpers/segments.js`, exactly as this pin anticipated („segments.js
+  // is module 21's file"). The pin now holds the contract to its implementation: the
+  // comment keeps its WHERE clause with WA-T3's strike on `phone_e164 IS NOT NULL` (21
+  // §UC-WA-005 RETURNS no-phone rows as `no_phone`), and the implementation reads the
+  // standing token as stored — it never calls the minting `ensureStandingToken()`.
+  test('seams: the segment SQL contract is implemented by helpers/segments.js (WA-T3); api.js has the three clients on the right request paths', () => {
+    expect(existsSync(join(BACKEND_SRC, 'helpers', 'segments.js')), 'segments.js — module 21\'s file — exists since WA-T3').toBe(true)
     const raw = readFileSync(join(BACKEND_SRC, 'helpers', 'guest-waitlist.js'), 'utf8')
     expect(raw).toContain('WHERE w.notified_at IS NULL AND w.whatsapp_opt_in = 1')
-    expect(raw).toContain('AND w.phone_e164 IS NOT NULL AND f.active = 1')
+    expect(raw, 'WA-T3 struck the no-phone filter in the contract').toContain('AND ~~w.phone_e164 IS NOT NULL AND~~ f.active = 1')
+    const seg = backend('helpers/segments.js', ['FROM guest_waitlist w', 'standingUrlPath(row.guest_link_token)'])
+    expect(seg).toContain('WHERE w.notified_at IS NULL AND f.active = 1')
+    expect(seg, 'a read path never mints a standing token').not.toContain('ensureStandingToken')
     const api = readable(join(REPO_ROOT, 'frontend', 'src', 'api.js'), ['joinGuestWaitlist'])
     expect(api).toMatch(/joinGuestWaitlist: \(token, data\) => guestRequest\(`\/guest\/\$\{encodeURIComponent\(token\)\}\/waitlist`/)
     expect(api).toMatch(/return adminRequest\(`\/guest-waitlist\$\{qs \? `\?\$\{qs\}` : ''\}`\)/)

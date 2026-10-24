@@ -1,6 +1,11 @@
 import { Router } from 'express';
-import { listTemplates, writeTemplate } from '../helpers/templates.js';
+import db from '../db/schema.js';
+import { getTemplate, listTemplates, writeTemplate } from '../helpers/templates.js';
 import { MAX_BODY_LENGTH, PLACEHOLDERS, isTemplateKey, unknownPlaceholders } from '../helpers/template-render.js';
+import { resolveLoginUrl } from '../helpers/credentials-message.js';
+import {
+  buildSegment, computedSegments, isSegmentKey, parseSegmentKey, segmentForJson, segmentName,
+} from '../helpers/segments.js';
 
 // Module 21 — the admin's WhatsApp notifications API. WHOLLY ADMIN: a single-audience
 // router, so the MOUNT is wrapped in `requireAdmin` (index.js), like
@@ -89,6 +94,153 @@ router.put('/templates/:key', (req, res) => {
   }
 
   res.json(writeTemplate(key, patch));
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// WA-T3 (21 §UC-WA-008, the two READ routes; §UC-WA-005 segments).
+//
+//   GET /api/notifications/segments?cycle_id=N[&segment_key=K]
+//     ⇒ 200 { cycle: {id,name,status}, groups: [...], computed: [...], segment? }
+//       groups   = the EXISTING outbox rows of the cycle (plus the cycle-less
+//                  `all_active` rows), grouped by (segment_key, template_key), with
+//                  `counts` per status, `total`, `template_name` and the segment `name`
+//                  (null for a key outside 21's grammar — DP-T3's `loc<id>`/`host:<id>`
+//                  until WA-T4 moves the hook onto it);
+//       computed = `not_ordered:N`, `waitlist:N`, `all_active` (helpers/segments.js
+//                  `computedSegments()`): count / excluded_opt_out / no_phone /
+//                  template_enabled / requires_open_cycle;
+//       segment  = ONLY with `segment_key`: the built segment's JSON preview
+//                  (`segmentForJson()` — `vars.suma: null` = nothing owed, NO `odkaz`,
+//                  `odkaz_resolved` instead, no opted-out names). 404 `unknown_segment`
+//                  for a grammatical key that is none of the six; 400
+//                  `segment_cycle_mismatch` for `not_ordered:/waitlist:<other cycle>`.
+//   GET /api/notifications?cycle_id=N&segment_key=K
+//     ⇒ 200 { rows: [...] } — the rows of ONE group (`all_active` ⇒ `cycle_id IS NULL`),
+//       `name`/`phone` resolved from the recipient's own table. Any grammatical key is
+//       readable (an empty group is `[]`). ⚠ `order_token` is never a FIELD here; a guest
+//       row's `body` may contain its status URL — the body IS the message (§UC-WA-008).
+//
+// Validation (both): `cycle_id` = a positive integer string (missing, `abc`, `0`, `1.5`,
+// a repeated key, a bracket object ⇒ 400 `invalid_cycle_id`), unknown ⇒ 404
+// `unknown_cycle`; `segment_key` = the §UC-WA-008 grammar ≤ 80 (anything else, incl. an
+// empty or repeated key ⇒ 400 `invalid_segment_key`). Read-only; synchronous.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const STATUSES = ['queued', 'released', 'sent', 'failed', 'skipped'];
+
+function readCycleId(value) {
+  if (typeof value !== 'string' || !/^[1-9]\d{0,15}$/.test(value)) return null;
+  const n = Number(value);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+// ⇒ { cycle } or sends the 400/404 and returns null.
+function cycleFromQuery(req, res) {
+  const cycleId = readCycleId(req.query.cycle_id);
+  if (cycleId === null) {
+    res.status(400).json({ error: 'Neplatné ID objednávky', field: 'cycle_id', reason: 'invalid_cycle_id' });
+    return null;
+  }
+  const cycle = db.get('SELECT id, name, status FROM order_cycles WHERE id = ?', [cycleId]);
+  if (!cycle) {
+    res.status(404).json({ error: 'Objednávka neexistuje', reason: 'unknown_cycle' });
+    return null;
+  }
+  return cycle;
+}
+
+function badSegmentKey(res) {
+  return res.status(400).json({ error: 'Neplatná skupina správ', field: 'segment_key', reason: 'invalid_segment_key' });
+}
+
+function outboxGroups(cycleId) {
+  const rows = db.all(`
+    SELECT segment_key, template_key, status, COUNT(*) AS n, MIN(id) AS first_id
+    FROM notifications
+    WHERE segment_key IS NOT NULL
+      AND (cycle_id = ? OR (cycle_id IS NULL AND segment_key = 'all_active'))
+    GROUP BY segment_key, template_key, status
+  `, [cycleId]);
+  const groups = new Map();
+  for (const row of rows) {
+    const id = `${row.segment_key}\u0000${row.template_key}`;
+    if (!groups.has(id)) {
+      groups.set(id, {
+        segment_key: row.segment_key,
+        name: segmentName(row.segment_key),
+        template_key: row.template_key,
+        template_name: getTemplate(row.template_key)?.name ?? null,
+        counts: Object.fromEntries(STATUSES.map((s) => [s, 0])),
+        total: 0,
+        first_id: row.first_id,
+      });
+    }
+    const group = groups.get(id);
+    if (Object.prototype.hasOwnProperty.call(group.counts, row.status)) group.counts[row.status] += row.n;
+    group.total += row.n;
+    group.first_id = Math.min(group.first_id, row.first_id);
+  }
+  return [...groups.values()]
+    .sort((a, b) => a.first_id - b.first_id)
+    .map(({ first_id, ...group }) => group);
+}
+
+router.get('/segments', (req, res) => {
+  const cycle = cycleFromQuery(req, res);
+  if (!cycle) return undefined;
+
+  const rawKey = req.query.segment_key;
+  if (rawKey !== undefined && !isSegmentKey(rawKey)) return badSegmentKey(res);
+
+  const options = { baseUrl: resolveLoginUrl(req) };
+  const body = { cycle, groups: outboxGroups(cycle.id), computed: computedSegments(cycle.id, options) };
+
+  if (rawKey !== undefined) {
+    const parsed = parseSegmentKey(rawKey);
+    if (!parsed) {
+      return res.status(404).json({ error: 'Taká skupina správ neexistuje', reason: 'unknown_segment' });
+    }
+    if (parsed.cycleId !== undefined && parsed.cycleId !== cycle.id) {
+      return res.status(400).json({
+        error: 'Skupina patrí k inej objednávke', field: 'segment_key', reason: 'segment_cycle_mismatch',
+      });
+    }
+    const segment = buildSegment(cycle.id, rawKey, options);
+    if (!segment) {
+      return res.status(404).json({ error: 'Taká skupina správ neexistuje', reason: 'unknown_segment' });
+    }
+    body.segment = segmentForJson(segment);
+  }
+  return res.json(body);
+});
+
+router.get('/', (req, res) => {
+  const cycle = cycleFromQuery(req, res);
+  if (!cycle) return undefined;
+  const key = req.query.segment_key;
+  if (!isSegmentKey(key)) return badSegmentKey(res);
+
+  // ⚠ Three LEFT JOINs, each on a primary key AND gated on `recipient_kind`, so a row
+  // matches at most one recipient table and is never multiplied.
+  const rows = db.all(`
+    SELECT n.id, n.template_key, n.recipient_kind, n.recipient_id,
+           CASE n.recipient_kind
+             WHEN 'friend' THEN f.name WHEN 'guest' THEN g.guest_name WHEN 'waitlist' THEN w.name
+           END AS name,
+           CASE n.recipient_kind
+             WHEN 'friend' THEN f.phone WHEN 'guest' THEN g.guest_phone WHEN 'waitlist' THEN w.phone
+           END AS phone,
+           n.phone_e164, n.channel, n.status, n.sent_via, n.body, n.error,
+           n.created_at, n.released_at, n.sent_at
+    FROM notifications n
+    LEFT JOIN friends f ON n.recipient_kind = 'friend' AND f.id = n.recipient_id
+    LEFT JOIN guest_orders g ON n.recipient_kind = 'guest' AND g.id = n.recipient_id
+    LEFT JOIN guest_waitlist w ON n.recipient_kind = 'waitlist' AND w.id = n.recipient_id
+    WHERE n.segment_key = ?
+      AND ${key === 'all_active' ? 'n.cycle_id IS NULL' : 'n.cycle_id = ?'}
+    ORDER BY n.id
+  `, key === 'all_active' ? [key] : [key, cycle.id]);
+  return res.json({ rows });
 });
 
 export default router;

@@ -39,12 +39,18 @@ import { toE164 } from './phone.js';
 //          f.name AS host_name, f.guest_link_token
 //   FROM guest_waitlist w JOIN friends f ON f.id = w.host_friend_id
 //   WHERE w.notified_at IS NULL AND w.whatsapp_opt_in = 1
-//     AND w.phone_e164 IS NOT NULL AND f.active = 1
+//     AND ~~w.phone_e164 IS NOT NULL AND~~ f.active = 1
 //
-// Rows with `phone_e164 IS NULL` / `whatsapp_opt_in = 0` are listed by the composer
-// as „bez platného čísla" / „bez súhlasu" and never sent. Recipient kind `waitlist`,
+// ~~Rows with `phone_e164 IS NULL` / `whatsapp_opt_in = 0` are listed by the composer
+// as „bez platného čísla" / „bez súhlasu" and never sent.~~ **→ WA-T3 (21 §UC-WA-005
+// „returned, not filtered" + §UC-WA-007): a `phone_e164 IS NULL` row IS returned (and
+// counted as `no_phone`) so the enqueue can make it its `skipped/no_phone` to-do row; a
+// `whatsapp_opt_in = 0` row is counted in `excluded_opt_out`.** Recipient kind `waitlist`,
 // `recipient_id = guest_waitlist.id`; `{odkaz}` = the STANDING link
-// (`standingUrlPath(ensureStandingToken(host_friend_id))`), never a per-cycle token.
+// (~~`standingUrlPath(ensureStandingToken(host_friend_id))`~~ **→ WA-T3: the token AS
+// STORED, never `ensureStandingToken()` — a read path must not mint; an un-minted host
+// yields an empty `{odkaz}`, which release refuses**), never a per-cycle token. The
+// implementation is `helpers/segments.js` (`waitlist:<cycle_id>`).
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Does this error come from the partial unique index on (host, phone_e164)? BOTH

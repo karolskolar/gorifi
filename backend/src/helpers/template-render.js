@@ -260,7 +260,9 @@ const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/u;
 
 // A Date instant ⇒ its calendar day in Europe/Bratislava (`YYYY-MM-DD`), whatever the
 // server's own TZ (21 §Accepted risks: grouping/dates are Bratislava dates in JS).
-function bratislavaDay(date) {
+// EXPORTED (WA-T3): `helpers/segments.js` groups hand-overs by this same day — one home
+// for „which Bratislava day is this instant", so `{datum}` and the group key never differ.
+export function bratislavaDay(date) {
   const parts = Object.fromEntries(
     new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Bratislava', year: 'numeric', month: '2-digit', day: '2-digit' })
       .formatToParts(date).map((p) => [p.type, p.value])

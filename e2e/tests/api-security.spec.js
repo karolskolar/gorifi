@@ -219,6 +219,11 @@ const ADMIN_ENDPOINTS = [
   // their routes to the same router and each one joins this list.
   { method: 'get', path: '/api/notifications/templates' },
   { method: 'put', path: '/api/notifications/templates/pickup', data: { body: 'evil', enabled: false } },
+  // 21 §UC-WA-008 (WA-T3): the two READ routes — the segments overview (+ preview) and
+  // the rows of one group. Same wholly-admin mount.
+  { method: 'get', path: '/api/notifications/segments?cycle_id=1' },
+  { method: 'get', path: '/api/notifications/segments?cycle_id=1&segment_key=all_active' },
+  { method: 'get', path: '/api/notifications?cycle_id=1&segment_key=all_active' },
 ]
 
 const PUBLIC_ENDPOINTS = [

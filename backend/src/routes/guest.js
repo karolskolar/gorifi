@@ -3,7 +3,7 @@ import db, { generateGuestToken } from '../db/schema.js';
 import { guestReadLimiter, guestWriteLimiter } from '../middleware/rate-limit.js';
 import { gramsByProductFromItems, stockViolations, cycleAvailability } from '../helpers/stock.js';
 import { basePriceForVariant, applyMarkup, VARIANT_PRICE_COLUMNS, roundMoney } from '../helpers/pricing.js';
-import { guestOrderStatus, softCancelGuestOrder } from '../helpers/guest-orders.js';
+import { guestOrderStatus, guestStatusUrlPath, softCancelGuestOrder } from '../helpers/guest-orders.js';
 import { bindValue } from '../helpers/bind-value.js';
 import { guestPaymentBlock } from '../helpers/payment.js';
 // 14 §UC-GR-011 — the guest order-confirmation mail. Module 08's seam, consumed
@@ -1075,7 +1075,7 @@ function deliverOrderConfirmation(req, { order, items, payment }) {
     // must never mint its domain and the URL is never taken from the request body.
     // 08 §UC-EM-004's `PUBLIC_BASE_URL` pin therefore covers it automatically.
     // ⚠ The CANONICAL form ONLY — the pair form is never newly emitted (UC-GR-003).
-    const url = `${resolveLoginUrl(req)}/g/o/${order.order_token}`;
+    const url = `${resolveLoginUrl(req)}${guestStatusUrlPath(order.order_token)}`;
 
     // One ordered line, split so that `qty` + ' ' + `rest` is the plain-text line AND
     // the html kv row states the same thing in the same words. The quantity is the kv
@@ -1333,7 +1333,7 @@ router.post('/:token/orders', guestWriteLimiter, (req, res) => {
     // `GuestOrder.vue` consumes this path verbatim (copy row, localStorage
     // `status_url`, the "Zobraziť stav objednávky" push), so the whole confirmation
     // screen follows this line and composes no URL of its own.
-    status_path: `/g/o/${order.order_token}`,
+    status_path: guestStatusUrlPath(order.order_token),
   });
 
   // 14 §UC-GR-011 — the confirmation mail. ⚠ FIRED HERE AND ONLY HERE: after the

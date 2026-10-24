@@ -208,3 +208,114 @@ Tests: `e2e/tests/whatsapp-templates.spec.js` (26) + two `ADMIN_ENDPOINTS` rows 
   `db/schema.js` (the backend tree) instead, so a missing module reds.
 - `backend/public` must be REBUILT before running `whatsapp-schema.spec.js`: its three UI tests red on a stale
   build that predates WA-T1's profile checkbox (not a regression — rebuild, re-run, green).
+
+## WA-T3 — `helpers/segments.js` + the two READ routes (2026-10-24)
+
+Spec: 21 §UC-WA-005 (segments), §UC-WA-007 (the `waitlist:<cycle>` SEGMENT only), §UC-WA-008 (ONLY
+`GET /segments` + `GET /`), as amended by „PO decisions 2026-09-19". Tests: `e2e/tests/whatsapp-segments.spec.js`
+(22: 8 throwaway-boot probes, 10 HTTP over real module-16 hand-overs incl. 3 `DB_PATH`-gated, 4 validation) + three
+`ADMIN_ENDPOINTS` rows. `guest-waitlist.spec.js` GL-T3 „no helpers/segments.js" pin RETARGETED (strike note).
+
+### What shipped
+
+- **`backend/src/helpers/segments.js`** — READ-ONLY (a probe pins `total_changes()` unmoved across every builder).
+  The six kinds of the spec's table, keyed by 21's grammar:
+  `handed_over:pickup:<loc>:<date>` (pickup) · `handed_over:packeta:<date>` (packeta) · `host_guests:<host>:<date>`
+  (host) · `not_ordered:<cycle>` (closing) · `waitlist:<cycle>` (waitlist) · `all_active` (custom).
+- **Routes** on `routes/notifications.js` (wholly admin mount):
+  - `GET /segments?cycle_id=N[&segment_key=K]` ⇒ `{ cycle:{id,name,status}, groups, computed, segment? }`.
+    `groups` = existing outbox rows of the cycle (+ cycle-less `all_active` rows) grouped by
+    `(segment_key, template_key)`: `{ segment_key, name, template_key, template_name, counts:{queued,released,sent,failed,skipped}, total }`,
+    ordered by first row id. `computed` = always `not_ordered:N`, `waitlist:N`, `all_active` with
+    `{ key, name, template_key, template_enabled, requires_open_cycle, count, excluded_opt_out, no_phone }` (live
+    counts — composed or not). `segment` (ONLY with `segment_key`) = the JSON preview of one built segment.
+  - `GET /?cycle_id=N&segment_key=K` ⇒ `{ rows }`, id order, fields
+    `id, template_key, recipient_kind, recipient_id, name, phone, phone_e164, channel, status, sent_via, body, error, created_at, released_at, sent_at`
+    (the spec's list + `template_key`/`created_at`); `name`/`phone` via three LEFT JOINs each gated on
+    `recipient_kind` and a PK (no multiplication); `all_active` ⇒ `cycle_id IS NULL`.
+  - Validation: `cycle_id` `^[1-9]\d{0,15}$` string (missing/array/object/`0`/float ⇒ 400 `invalid_cycle_id`),
+    unknown ⇒ 404 `unknown_cycle`; `segment_key` grammar ≤ 80 (incl. empty / repeated ⇒ 400 `invalid_segment_key`);
+    preview: a grammatical non-segment ⇒ 404 `unknown_segment`; `not_ordered:/waitlist:<other cycle>` ⇒ 400
+    `segment_cycle_mismatch`. The rows route reads any grammatical key (empty group ⇒ `[]`).
+
+### THE SEAM (WA-T4 / WA-T5 consume this — in-process, never through JSON)
+
+- `buildSegment(cycleId, key, { baseUrl }) ⇒ segment | null` — `{ key, kind, name, template_key, cycle_id,
+  recipients, excluded_opt_out, no_phone, opted_out }`; recipient = §UC-WA-005's shape `{ recipient_kind,
+  recipient_id, name, phone, phone_e164, email, opt_in, order_id, guest_order_id, vars }`. Hand `vars` to
+  `renderTemplate()` / `unresolvedFor()` AS IS (`vars.suma` may be the `NOTHING_OWED` Symbol).
+- `opted_out` = the active friends WITHOUT consent, in full — WA-T4's D5 e-mail rule needs them; JSON drops the list.
+- `handOverSegmentKey({ delivery, handedOverAt, hostFriendId })` ⇒ the group of a handed-over bag, or null
+  (`in_person`, no stamp, `via_host` without host id). **WA-T4 recipe:** for each stamped bag compute the key with
+  THIS, `buildSegment(cycleId, key)` once per key, pick the bag's recipient by `order_id` / `guest_order_id`.
+- `computedSegments(cycleId)`, `segmentSummary()`, `segmentForJson()`, `isSegmentKey()`, `parseSegmentKey()`,
+  `segmentName()`, `bratislavaDateOf(stamp)`, `SEGMENT_KEY_MAX`.
+- `template-render.js bratislavaDay()` is now EXPORTED (one home of „which Bratislava day").
+
+### Decisions (orchestrator: please confirm or overturn)
+
+1. **Symbol over JSON.** `JSON.stringify` silently DROPS a Symbol-valued key — `vars.suma = NOTHING_OWED` would
+   vanish and read as „no value" = literal, release-blocking `{suma}`: the opposite meaning. `segmentForJson()`
+   maps it to **`null` (key present)**; a string = the amount; an absent key = no source for that recipient.
+2. **Standing-token exposure.** The JSON preview NEVER publishes `vars.odkaz` (a guest's `order_token`, a host's
+   `friends.guest_link_token`); it carries `odkaz_resolved: boolean`. So WA-T3 adds NO publication surface for
+   the standing token (CLAUDE.md's four-routes rule holds). ⚠ For WA-T5/WA-T12: a COMPOSED waitlist row's `body`
+   contains `<base>/g/<guest_link_token>` by spec (§UC-WA-007 acceptance), and `GET /api/notifications` returns
+   `body` to the admin — that is module 21's inherent fifth surface (the message IS the link; admin-only, the
+   admin GET already mints it). CLAUDE.md's rule needs that clause when WA-T5 lands.
+   ⚠ **(WA-T3 review) Recorded on the PROGRESS WA-T5 row too: once compose writes waitlist rows,
+   `GET /api/notifications` returns bodies containing `/g/<guest_link_token>` — a FIFTH publication surface;
+   the CLAUDE.md `guest_link_token` rule must gain that clause in WA-T5's change.**
+3. **Read path never mints.** `{odkaz}` for waitlist = `standingUrlPath(token AS STORED)`; an un-minted host ⇒
+   `''` ⇒ literal `{odkaz}` ⇒ release refuses (§UC-WA-007). GL-T3's contract comment said
+   `ensureStandingToken()` — struck in `helpers/guest-waitlist.js`. Pinned (probe + DB_PATH HTTP + source pin).
+4. **Waitlist `phone_e164 IS NOT NULL` (backlog row + GL-T3 contract) vs the spec.** Followed 21: no-phone rows
+   are RETURNED and counted in `no_phone` (§UC-WA-005 „returned, not filtered"; §UC-WA-007 makes them
+   `skipped/no_phone`). A waitlist row with `whatsapp_opt_in = 0` counts in `excluded_opt_out`. Not filtered by
+   `w.cycle_id` (that is the signup round; the key's cycle is the round being announced). Inactive host ⇒ dropped.
+5. **Balance source.** Friend `{suma}` = `sumaValue(balancePaymentBlock({id,name,balance}).amount)` — the balance
+   is `COALESCE((SELECT SUM(amount) FROM transactions WHERE friend_id = f.id), 0)` (the `routes/cycles.js`
+   distribution form), and `balancePaymentBlock` owns the sign flip + rounding. Guest = `paid ? NOTHING_OWED :
+   sumaValue(guestPaymentBlock(row, cycle.name).amount)` (total + fee, the module-20 seam). No second formula.
+6. **Base URL.** `options.baseUrl`, default `credentials-message.js resolveLoginUrl()` (PUBLIC_BASE_URL ⇒ allowlisted
+   Origin ⇒ `https://podpultovka.biz`); the routes pass `resolveLoginUrl(req)` (a GET usually has no Origin, so in
+   practice PUBLIC_BASE_URL / brand). ~~Guest `{odkaz}` = `${base}/g/o/${order_token}` composed in segments.js — a
+   second composition of `routes/guest.js`'s mail URL (left untouched there; a shared helper would be one edit).~~
+   **→ WA-T3 review: `helpers/guest-orders.js guestStatusUrlPath(token)` is the ONE composer of `/g/o/<token>`
+   (`''` for a non-string/empty token, the `standingUrlPath` twin) — used by `routes/guest.js` `status_path` and
+   the confirmation-mail URL (byte-identical output) and by segments.js's guest `{odkaz}` = `${base}${path}`.**
+7. **Six kinds, no `in_person`.** The backlog row's „`handed_over:<target>` ×3" read as pickup/packeta/in_person;
+   the spec's table has six kinds and §UC-WA-006 maps `in_person` to nothing ⇒ `handOverSegmentKey()` is null for
+   it. `outbox.js`'s „its `in_person` SEGMENT still exists" comment is struck.
+8. **`not_ordered` literal.** „Ordered" = an `orders` row of the cycle with ≥ 1 `order_items` row, ANY status: an
+   empty auto-saved draft is not ordered, a DRAFT WITH ITEMS (never submitted) IS ordered. Spec-literal; if the PO
+   wants unsubmitted carts reminded, it is one predicate (`AND o.status = 'submitted'`). Pinned both ways.
+9. **Consent.** Friend rows: `active = 1 AND whatsapp_opt_in = 1` ⇒ recipient; active without consent ⇒
+   `excluded_opt_out` (+ `opted_out`); inactive ⇒ neither (not counted). Guests: no flag, `opt_in: null`.
+10. **Guest classification.** `deliveryOf(row)` with NO `host` option — segments read `.type`, which the classifier
+    settles (own address ⇒ packeta, else via_host) before inheritance; same call as `cycles.js isPacketaSubOrder`.
+    `{miesto}` for a via_host guest has no source ⇒ absent ⇒ literal (spec: „else unresolved").
+
+### Traps found
+
+- **DP-T3's segment keys are OUTSIDE 21's grammar.** `loc5` has a digit in the kind (`[a-z_]+`), `in_person` an
+  `_` in a qualifier. So today's hook rows (`loc<id>`) show in `groups` with `name: null` but their rows 400 on the
+  validated rows route. Deliberately NOT relaxed (spec regex); **WA-T4 must move the hook onto
+  `handOverSegmentKey()`** — the groups test asserts both branches so it holds before and after. Existing DP-T3
+  rows in production (if any) stay unreadable through the rows route; WA-T4 may want a one-time re-key.
+- **A hand-over before cancel keeps `handed_over_at`** (the DP-T3 seam): the HTTP test hands a host over (stamping
+  G1+G2), cancels G2 through the admin route, and pins G2's absence — the case the status filter exists for.
+- A hand-over group name uses `d. m.` from the KEY's date (Bratislava), never from the stamp.
+- A probe that `.find()`s a recipient and reads `.vars` TypeErrors when a mutation removes it — guard with `r ? … :
+  null` so the mutation reds on the assertion, not on a crash.
+- Mutation-checked (probes): cancelled filter, consent predicate, UTC-vs-Bratislava date, minting on read, the
+  empty-draft predicate, a re-added waitlist no-phone filter — each reds ≥ 1 test.
+
+### Open / for WA-T4/T5
+
+- WA-T4: replace `outbox.js rowFor()`'s `segment_key` with `handOverSegmentKey()`; source vars/phone from
+  `buildSegment()`; `opted_out` feeds D5. ⚠ **Re-key DP-T3's existing hook rows** (`loc<id>` / `packeta` /
+  `host:<id>`) to the 21 grammar (recorded on the PROGRESS WA-T4 row).
+- WA-T5: compose = `buildSegment()` + `renderTemplate(body, vars)` + `unresolvedFor(body, vars)`; refuse a
+  `not_ordered`/`waitlist` compose while `requires_open_cycle && cycle.status !== 'open'`.
+- Scrub: no new column. (WA-T4's non-NULL `notifications.phone_e164/email/body` remain that row's scrub item.)
