@@ -1,5 +1,7 @@
 import db from '../db/schema.js';
 import { roundMoney } from './pricing.js';
+// WA-T5: the cancel takes its sub-order's QUEUED hand-over messages with it (below).
+import { cancelForUnHandOver } from './outbox.js';
 
 // Guest sub-order reads, shared by every surface that shows them.
 //
@@ -258,13 +260,27 @@ export function cycleSubOrdersByHost(cycleId) {
 //
 // The WHERE predicate makes the write itself idempotent, so two doors racing (a
 // guest emptying their cart while the admin cancels) cannot double-apply.
+//
+// ⚠ WA-T5 (orchestrator decision 2 — the DP-T3 „cancelled-after-hand-over" seam, owned
+// HERE because this is the one home all THREE doors share): a sub-order cancelled AFTER
+// its hand-over must not keep a „odovzdané …" message queued for a bag nobody will
+// receive. So a cancel that actually changed the row also calls the outbox's
+// `cancelForUnHandOver({ guestOrderIds: [id] })` — the SAME delete the hand-over reversal
+// uses: `queued` rows of the three hand-over templates only; a `released`/`sent`/
+// `failed`/`skipped` row is history and stays. ⚠ `handed_over_at` is NOT touched (module
+// 14/16 policy: the cancel records that it was called off, it does not rewrite what had
+// already happened). Every caller runs this inside its own `db.transaction()`, so the
+// status flip and the delete commit together. The outbox's RELEASE carries a second,
+// independent defence (a row whose sub-order is cancelled ⇒ `skipped`/`cancelled`).
 export function softCancelGuestOrder(id) {
-  return db.prepare(`
+  const changes = db.prepare(`
     UPDATE guest_orders
     SET status = 'cancelled', total = 0, delivery_fee = 0,
         delivery_fee_paid = COALESCE(delivery_fee_paid, delivery_fee)
     WHERE id = ? AND COALESCE(status, 'submitted') <> 'cancelled'
   `).run(id).changes;
+  if (changes > 0) cancelForUnHandOver({ guestOrderIds: [id] });
+  return changes;
 }
 
 // A sub-order together with everything needed to authorize a host action on it:

@@ -427,3 +427,129 @@ set, 21-grammar keys, host fixture gains a phone), `guest-packeta.spec.js` GP-T6
   writes into the same key — hand-written groups should use a date no hand-over of the run can produce.
 - `DELETE … RETURNING` (better-sqlite3 `.all()`) gives the deleted rows' `recipient_id`/`cycle_id` without a
   pre-SELECT — the ownership re-enqueue keys on it.
+
+## WA-T5 — the outbox WRITE API: compose, release, retry, rerender, per-row edits (2026-10-24)
+
+Spec: 21 §UC-WA-008, §UC-WA-007 (compose + release + D8), as amended by „PO decisions 2026-09-19" and the
+orchestrator's WA-T5 decisions. Tests: NEW `e2e/tests/whatsapp-outbox.spec.js` (26: 8 throwaway-boot probes,
+12 HTTP, 4 `DB_PATH`-gated, 1 `WA_HEALTH_URL`-gated) + seven `ADMIN_ENDPOINTS` rows. Retargeted with strike notes:
+`whatsapp-schema.spec.js` (column list + the recreate test's back-filled `unresolved`), `distribution-foundation.spec.js`
+(column list), `whatsapp-segments.spec.js` (the rows route's key set gains `unresolved`).
+
+### What shipped
+
+- **Routes** (`routes/notifications.js`, wholly admin): `POST /compose | /release | /retry | /rerender`
+  `{ cycle_id, segment_key }`, `PATCH /:id/body {body}`, `PATCH /:id/manual-sent {sent:true}`, `DELETE /:id`. Every
+  write statement is in `helpers/outbox.js` (still the one `notifications` writer); the routes validate, call one
+  helper and read the rows back (`counts` per status for the group POSTs, the published row for the per-row routes).
+  The rows route and every single-row answer share ONE `ROW_SELECT` and publish `unresolved` as an ARRAY (`null` =
+  never computed).
+- **`outbox.js`**: `composeSegment`, `releaseGroup`, `retryGroup`, `rerenderGroup`, `editRowBody`, `markManualSent`,
+  `deleteRow`, `composeWaitlistOnOpen`, `handOffEmailRows` (WA-T6's no-op seam), `groupCounts`, `COMPOSABLE_KINDS`.
+  WA-T4's insert loop became `mintEntries()` — ONE insert path for the hook and compose (rules, pre-check, constraint
+  translation, `body` + `unresolved` from the same template + vars).
+- **`notifications.unresolved TEXT`** (orchestrator decision 1): CREATE (`notificationsTableSql`) +
+  `NOTIFICATION_COLUMNS` + an ALTER above the recreate (the three-place rule). Written at EVERY render —
+  `unresolvedFor(template.body, vars)` — by enqueue, compose and rerender; the admin's body PATCH stores the RESCAN
+  of the new text (`helpers/outbox-scan.js scanPlaceholders()`, the spec's `/\{[^{}\s]{1,40}\}/`, can only
+  over-block). **Boot back-fill (decided: yes)** `schema.js backfillNotificationUnresolved()`: rows with a body and a
+  NULL `unresolved` get the rescan (idempotent, logged); a NULL body stays NULL.
+- **Release gate** (`releasable()`): non-blank `body` AND `unresolved` parses to `[]`. A NULL body (DP-T3 legacy), a
+  blank body, a NULL / non-empty / unparsable `unresolved` ⇒ the whole group 409s `unresolved_placeholders` with
+  `{ids}` and nothing is written. Each condition is mutation-pinned independently (probe §1).
+- **`helpers/wa-health.js`**: `waHealthUrl()`, `fetchWaHealth()` (`{reachable:false}` for refused / timeout / non-200 /
+  non-object JSON; never throws, never logs — the QR is a credential), `botConnected()` (`state === 'connected'`).
+  2 s `AbortSignal.timeout`, `redirect: 'error'`. WA-T8's health proxy should reuse `fetchWaHealth()`.
+- **`helpers/guest-waitlist.js markWaitlistNotified(ids, at)`** — the D8 stamp, called only by `outbox.js`.
+- **`helpers/segments.js segmentTemplateKey(key)`** — compose / rerender check the template BEFORE building the
+  segment (no recipient query for a disabled template).
+
+### Decisions (orchestrator: confirm or overturn)
+
+1. **Compose is for the three COMPUTED kinds only** (`not_ordered`, `waitlist`, `all_active`); a hand-over key ⇒ 400
+   `not_composable`. Composing a hand-over group would back-fill a hand-over whose template was disabled at the time,
+   which §UC-WA-004 rules out.
+2. **`cycle_id` must be a positive integer NUMBER** (a numeric string ⇒ 400 — the rows/segments GET routes take a
+   query STRING; a JSON body has no excuse). `all_active` accepts null/absent OR an existing cycle id (the composer
+   always has one selected); its rows are cycle-less either way. `not_ordered:<N>`/`waitlist:<N>` naming another
+   cycle ⇒ 400 `segment_cycle_mismatch` (WA-T3's preview rule).
+3. **Blank bodies**: compose and rerender refuse 409 `template_empty` on a blank template (`custom` ships empty,
+   D3 — the admin writes the text first); the body PATCH refuses 400 `empty_body`; release treats a blank body as
+   unreleasable. ADDITIONS to the spec's reason list.
+4. ~~**Release does NOT re-render**~~ → **(review) Release re-renders WAITLIST rows only** (the PROGRESS
+   `{suma}`-frozen question): a non-waitlist row is released as the admin reviewed it — a payment between hand-over
+   and release is refreshed by the explicit „Prepísať texty vo fronte" rerender (the composer, WA-T7, may want to
+   flag `{suma}` rows whose party paid since — not built). A waitlist row carries the host's STANDING link and no
+   money, so the release re-renders it inside its transaction: a rotation between compose and release never sends
+   a revoked token, and a host with no link any more leaves a literal `{odkaz}` that blocks the group. An admin's
+   per-row edit of a waitlist body is overwritten by that re-render.
+5. **Rerender** re-plans each queued row through `planRow()` against the recipient AS NOW (consenting half +
+   `opted_out` of `buildSegment()`), refreshing `body`, `unresolved`, `phone_e164`, `email` AND `channel` (e-mail
+   fallback ⇒ WhatsApp once a number exists, and back). A row whose recipient left the segment, or whose plan is no
+   longer a QUEUED row (number/e-mail/consent gone), is left untouched and listed in `unchanged` — a rerender never
+   changes a status; the admin DELETEs it. A disabled / blank group template ⇒ 409. A key that is no segment (the
+   re-key's `legacy_handover:…`) rerenders nothing (all `unchanged`).
+6. **`segment_key` stays FROZEN** (DP-T3 / FUP-T23): neither release nor rerender re-resolves grouping. A dangling
+   `loc<id>` keeps its group and loses only its label; a party re-pointed after its hand-over is re-found by the
+   rerender only if its new key is this group's, else its row is `unchanged`.
+7. **Cancelled-after-hand-over seam — CLOSED at both homes** (orchestrator decision 2): `softCancelGuestOrder()`
+   (the one home of all three cancel doors, each inside its own tx) calls `cancelForUnHandOver({guestOrderIds:[id]})`
+   when it changed the row — queued hand-over rows only, `handed_over_at` untouched; AND release/retry move a row
+   whose `guest_order_id` is cancelled to `skipped`/`error='cancelled'` (not a 409, and not part of the all-or-nothing
+   check). The PROGRESS DP-T4 + WA-T5 notes and the two route comments carry the strike. ⚠ New import cycle
+   `guest-orders.js → outbox.js → segments.js → guest-orders.js` — safe because no module in it calls another's
+   export at top level (checked by importing each first).
+8. **D8 stamp** = the release's ONE timestamp (`SELECT CURRENT_TIMESTAMP` bound into `released_at` and
+   `notified_at`). The wa.me tick of a still-QUEUED waitlist row stamps it too (the message went out by hand;
+   without it the next compose would message the person again) — an ADDITION to D8's letter. A `skipped`/`no_phone`
+   waitlist to-do is never stamped (nothing was sent).
+9. **Retry** applies the same cancelled defence and the same post-commit e-mail hand-off as release (NOT the
+   waitlist defence below — a failed waitlist row was stamped by its own release).
+9a. **(review, reproduced) The release-time WAITLIST defence.** The partial index keys on `cycle_id`, so two rounds
+   (auto-compose on each open, or compose by hand) can each hold a queued row for the same waitlister; releasing B
+   then A messaged them twice, and a waitlister purged on order (or admin-deleted) after compose still got „{host}
+   vám otvoril objednávku". Fixed at RELEASE, not at compose (compose stays the spec's segment): `LEFT JOIN
+   guest_waitlist w` — a row whose `w.id IS NULL`, `w.notified_at IS NOT NULL`, or whose person is no longer in the
+   segment (host inactive, consent withdrawn on a re-signup) ⇒ `skipped`, `error='not_waiting'`, OUTSIDE the
+   all-or-nothing gate. The queued wa.me tick applies the same check (row ⇒ `skipped`/`not_waiting`, 409
+   `not_waiting`).
+10. **Health URL default** = the spec's `http://127.0.0.1:3010` when `WA_HEALTH_URL` is unset — NOT the brief's
+    „unset env ⇒ not connected": the guard exists to stop a duplicate send, and a production `.env` that forgot the
+    key must still find the bot on its documented port. The e2e gate points it at a dead port (README step 4).
+11. **Manual-sent on a `released` row**: `await botConnected()` sits between the status read and the write, so the
+    write is `markManualSent()`'s conditional `UPDATE … WHERE id = ? AND status = ?` — a row the bot sent during the
+    await answers 409 `not_pending`, never overwritten (GA-T8). The tick is allowed on an `email`-channel row too
+    (spec literal; WA-T7 may hide the control there).
+12. **Auto-compose on open** fires on the PATCH's transition into `open` (inside its transaction, in a nested
+    SAVEPOINT so a throw is logged and never rolls back the status write; never on an `open → open` re-save) AND —
+    beyond the brief, which named the PATCH only — on `POST /cycles` creating a round directly `open` (otherwise a
+    direct-open round skips the waitlist). Silent while the `waitlist` template is disabled (its seed). It composes for
+    rounds of ANY type, like the standing link's „newest open round" (no type filter there either); two rounds opened
+    in a row each get their own group, and a waitlister NOT released from the first is composed into the second too
+    — harmless since decision 9a: whichever release comes second skips them `not_waiting`.
+13. **Fifth publication surface of `friends.guest_link_token`**: composed waitlist bodies contain `/g/<token>`, returned
+    by `GET /api/notifications` and the WA-T5 row answers (admin-only; the message IS the link). CLAUDE.md's rule gained
+    that clause. The outbox reads the token as stored — never mints.
+14. **DELETE answers 200 `{deleted:true, id, row:null}`** (`row` = the read-back proving it is gone), not 204.
+
+### Traps found
+
+- A spec-level `test.beforeAll` that logs in makes a throwaway-boot describe NEED a server: the first mutation round
+  „failed" every probe with `ECONNREFUSED :3000` and proved nothing. The HTTP describes now call `ensureAdmin()`.
+  Read WHY a mutation reddened, not just that it did.
+- The shared target's waitlist holds other specs' un-notified rows (some under hosts with no standing token ⇒ a
+  literal `{odkaz}`), and the waitlist segment is not filtered by cycle — so an HTTP release of a composed waitlist
+  group 409s on rows that are not the test's. §3 removes them through the product's own `DELETE` door first; the
+  exact acceptance („the segment then counts 0") is pinned on an ISOLATED waitlist in §1.
+- `releasable()`'s NULL-body check was invisible to the first probe set (the legacy row also had a NULL `unresolved`,
+  which blocks on its own) — a dedicated one-condition-per-row probe pins each condition independently.
+
+### Open / for WA-T6 / WA-T7
+
+- WA-T6: fill `handOffEmailRows(ids)` (fire-and-forget `sendMail`, `.then` conditional UPDATE `WHERE status =
+  'released'`). Release/retry already call it after commit with the e-mail row ids.
+- WA-T7: the composer reads `unresolved` (array) for the warning outline; `unchanged` from rerender lists the rows it
+  could not refresh; compose's `template_empty` / `not_composable`, the body PATCH's `empty_body` are new reasons.
+- WA-T9/WA-T11 (review, noted on both PROGRESS rows): once `gorifi-wa` writes the same WAL file, the API's
+  read-then-write outbox transactions should be `.immediate()` (`SQLITE_BUSY_SNAPSHOT` otherwise 500s).
+- Scrub: `notifications.unresolved` holds placeholder tokens (`{datum}`); only a RESCAN (admin edit / boot back-fill) can capture a brace-wrapped fragment of a VALUE (a guest who typed `{Jana}`) — at most 40 chars of what `body` held, and `body` is already scrubbed. NOT added to `scrub-template.sql` (a new statement on a WA-T5 column would make `make-test-db.sh` fail closed until production boots WA-T5) — flagged for the orchestrator.

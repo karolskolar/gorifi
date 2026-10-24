@@ -16,7 +16,8 @@ import {
   partyDelivery,
   inheritingGuests,
 } from '../helpers/handover.js';
-import { enqueueForHandOver, queuedCount } from '../helpers/outbox.js';
+import { composeWaitlistOnOpen, enqueueForHandOver, queuedCount } from '../helpers/outbox.js';
+import { resolveLoginUrl } from '../helpers/credentials-message.js';
 import { markCycleReady, CYCLE_STAGES, LOCKED_STAGE_DEFAULT } from '../helpers/cycle-stage.js';
 import { purgeWaitlistAfterTwoCompletions } from '../helpers/guest-waitlist.js';
 
@@ -379,6 +380,11 @@ router.post('/', requireAdmin, (req, res) => {
 
   const result = db.prepare('INSERT INTO order_cycles (name, status, total_friends, expected_date, type, plan_note, opens_at, closes_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(name, cycleStatus, totalFriends, expected_date || null, cycleType, plan_note || null, opens_at || null, closes_at || null);
   const cycleId = result.lastInsertRowid;
+  // WA-T5: a round CREATED `open` is a round opening too — the same silent waitlist
+  // auto-compose as the PATCH's transition into `open` (PO 2026-09-19; learnings 15
+  // §WA-T5 — the backlog row named the PATCH only, and a direct-open creation would
+  // otherwise skip the waitlist). No-op while the `waitlist` template is disabled.
+  if (cycleStatus === 'open') composeWaitlistOnOpen(Number(cycleId), { baseUrl: resolveLoginUrl(req) });
 
   // For bakery cycles, snapshot selected bakery products into the products table
   if (cycleType === 'bakery' && Array.isArray(bakery_product_ids) && bakery_product_ids.length > 0) {
@@ -638,12 +644,20 @@ router.patch('/:id', requireAdmin, (req, res) => {
   // offered two openings and ordered in neither. Once per transition, never on a
   // `completed → completed` re-save, and in the SAME transaction as the status write.
   const completing = status === 'completed' && cycle.status !== 'completed';
+  // 21 §UC-WA-007 + PO 2026-09-19 („Waitlist on round open = auto-COMPOSE, never
+  // auto-release"): the TRANSITION into `open` pre-builds the `waitlist:<id>` group, in
+  // the SAME transaction, through the SAME code path as `POST /api/notifications/compose`.
+  // Silent: a disabled `waitlist` template (its seed state) or nobody waiting is a
+  // no-op, and a failure is logged inside its own savepoint, never rolling back this
+  // status write. Never on an `open → open` re-save.
+  const opening = status === 'open' && cycle.status !== 'open';
 
   if (updates.length > 0) {
     values.push(req.params.id);
     db.transaction(() => {
       db.prepare(`UPDATE order_cycles SET ${updates.join(', ')} WHERE id = ?`).run(...values);
       if (completing) purgeWaitlistAfterTwoCompletions();
+      if (opening) composeWaitlistOnOpen(cycle.id, { baseUrl: resolveLoginUrl(req) });
     })();
   }
 
@@ -1466,6 +1480,9 @@ router.post('/:id/distribution/hand-over', requireAdmin, (req, res) => {
   // guest's own empty cart are allowed. All THREE cancel doors are reachable after a
   // hand-over, so the fix belongs either at `softCancelGuestOrder()` (the one home
   // all three share) or at module 21's release, never at the admin cancel alone.
+  // → CLOSED BY WA-T5 at BOTH (learnings 15 §WA-T5): the soft cancel deletes the
+  // sub-order's QUEUED rows (the stamp stays), and the release skips a row about a
+  // cancelled sub-order (`skipped`/`cancelled`).
   res.json({
     handed_over: applied.handedOver,
     already_handed: applied.alreadyHanded,

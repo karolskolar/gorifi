@@ -375,16 +375,19 @@ router.patch('/:id/handed-over', requireAdmin, (req, res) => {
   // `cancelled` is terminal (GSO-T4) — the same shape and reason the host's
   // `delivered` tick answers, because it is the same impossibility: there is no bag.
   //
-  // ⚠ UNOWNED SEAM, RECORDED (DP-T3 review, 2026-09-20 — see the DP-T4 and WA-T5
+  // ~~⚠ UNOWNED SEAM, RECORDED (DP-T3 review, 2026-09-20 — see the DP-T4 and WA-T5
   // rows of PROGRESS.md). A sub-order cancelled AFTER it was handed over is
   // unreachable in BOTH directions: this 409 refuses the reversal, and the host's
   // reversal skips cancelled bags by predicate — while `softCancelGuestOrder()`
-  // clears neither `handed_over_at` nor the queued notification. The bag stays
-  // stamped and a „odovzdané priateľovi" message stays queued for something nobody
-  // will receive. Both predicates are literally what §UC-DP-004/005 specify, so the
-  // fix does not belong here: the cheapest one is at the ADMIN cancel below (reverse
-  // the hand-over for that bag, or refuse with 409 when it is already handed over),
-  // with a release-time guard in WA-T5 as the alternative.
+  // clears neither `handed_over_at` nor the queued notification. …the cheapest fix is
+  // at the ADMIN cancel below… with a release-time guard in WA-T5 as the alternative.~~
+  // → CLOSED BY WA-T5 (learnings 15 §WA-T5), at BOTH candidate homes and not at the
+  // admin cancel alone (all three cancel doors are reachable after a hand-over):
+  // `softCancelGuestOrder()` now deletes the sub-order's QUEUED hand-over rows (its
+  // `handed_over_at` stays — module 14/16 policy: a cancel records that it was called
+  // off, it does not rewrite what happened), and the outbox RELEASE moves any row
+  // about a cancelled sub-order to `skipped`/`cancelled`. This 409 stays: there is
+  // still no bag to hand over.
   if (guestOrderStatus(row) === 'cancelled') {
     return res.status(409).json({
       error: 'Táto objednávka bola zrušená, nie je čo odovzdať.',

@@ -224,6 +224,15 @@ const ADMIN_ENDPOINTS = [
   { method: 'get', path: '/api/notifications/segments?cycle_id=1' },
   { method: 'get', path: '/api/notifications/segments?cycle_id=1&segment_key=all_active' },
   { method: 'get', path: '/api/notifications?cycle_id=1&segment_key=all_active' },
+  // 21 §UC-WA-008 (WA-T5): the outbox WRITE routes — same wholly-admin mount. A friend
+  // Bearer is 401 on each too (whatsapp-outbox.spec.js §2).
+  { method: 'post', path: '/api/notifications/compose', data: { cycle_id: 1, segment_key: 'not_ordered:1' } },
+  { method: 'post', path: '/api/notifications/release', data: { cycle_id: 1, segment_key: 'not_ordered:1' } },
+  { method: 'post', path: '/api/notifications/retry', data: { cycle_id: 1, segment_key: 'not_ordered:1' } },
+  { method: 'post', path: '/api/notifications/rerender', data: { cycle_id: 1, segment_key: 'not_ordered:1' } },
+  { method: 'patch', path: '/api/notifications/1/body', data: { body: 'x' } },
+  { method: 'patch', path: '/api/notifications/1/manual-sent', data: { sent: true } },
+  { method: 'delete', path: '/api/notifications/1' },
 ]
 
 const PUBLIC_ENDPOINTS = [

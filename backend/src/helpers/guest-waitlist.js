@@ -10,14 +10,20 @@ import { toE164 } from './phone.js';
 //   purgeWaitlistOnOrder(phone, host) inside the guest submit transaction (rule 1)
 //   purgeWaitlistAfterTwoCompletions() on the admin complete PATCH (rule 2)
 //   deleteWaitlistRow(id)             the admin's manual third path (rule 3)
+//   markWaitlistNotified(ids, at)     module 21's D8 stamp (WA-T5) — called ONLY by
+//                                     `helpers/outbox.js` (release + the wa.me tick)
 //
 // plus the admin list reader. The host's COUNT is `helpers/standing-link.js
 // waitingCount()` (a count only — the host never sees a name or a phone).
 //
-// ⚠ `notified_at` IS WRITTEN BY MODULE 21 ONLY (the outbox marks a row once its
-// message reaches `sent`). The ONE thing this file does to it is RESET it to NULL on a
-// re-signup (UC-GL-004 rule 4: re-arm the row for the next round) — never a
-// timestamp, never from an admin route.
+// ⚠ `notified_at` GETS A TIMESTAMP FROM MODULE 21 ONLY. ~~(the outbox marks a row once
+// its message reaches `sent`)~~ → WA-T5, 21 Decision D8: the outbox's RELEASE stamps it
+// (`notified_at = released_at`, same transaction), and the wa.me tick of a still-QUEUED
+// waitlist row stamps it too (the message went out by hand; without the stamp a second
+// compose would message the person again) — both through `markWaitlistNotified()`
+// below, called by `helpers/outbox.js` and nothing else. The ONE other thing this file
+// does to it is RESET it to NULL on a re-signup (UC-GL-004 rule 4: re-arm the row for the
+// next round). No admin route writes it.
 //
 // ⚠ THE ROWS ARE NON-MEMBER PII (people who never joined). The e2e template scrub
 // must cover `name` / `phone` / `phone_e164` before this writer reaches production —
@@ -170,4 +176,19 @@ export function listWaitlist(hostFriendId = null) {
 /** The admin's manual delete (rule 3). Returns true when a row went. */
 export function deleteWaitlistRow(id) {
   return db.prepare('DELETE FROM guest_waitlist WHERE id = ?').run(id).changes === 1;
+}
+
+/**
+ * 21 Decision D8 (WA-T5) — module 21's ONE write to `guest_waitlist`: stamp
+ * `notified_at = at` on the given rows. Called ONLY by `helpers/outbox.js`, inside its
+ * release / manual-sent transaction, with the same `at` it wrote as `released_at` /
+ * `sent_at`. Returns the number of rows stamped (a row purged meanwhile simply is not).
+ */
+export function markWaitlistNotified(ids, at) {
+  const list = [...new Set((Array.isArray(ids) ? ids : []).filter((id) => Number.isInteger(id) && id > 0))];
+  if (list.length === 0 || typeof at !== 'string' || !at) return 0;
+  const stamp = db.prepare('UPDATE guest_waitlist SET notified_at = ? WHERE id = ?');
+  let changed = 0;
+  for (const id of list) changed += stamp.run(at, id).changes;
+  return changed;
 }

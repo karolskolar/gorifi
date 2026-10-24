@@ -744,9 +744,11 @@ test.describe('WA-T3 · §2 the read routes over real hand-overs (module 16 rout
       const { rows } = JSON.parse(raw)
       expect(rows.map((r) => r.id)).toEqual(ids)
       for (const r of rows) {
+        // ~~fifteen keys~~ → WA-T5 adds `unresolved` (the release gate's stored answer, an
+        // array or null — learnings 15 §WA-T5); `whatsapp-outbox.spec.js` pins its values.
         expect(Object.keys(r).sort()).toEqual([
           'body', 'channel', 'created_at', 'error', 'id', 'name', 'phone', 'phone_e164', 'recipient_id', 'recipient_kind',
-          'released_at', 'sent_at', 'sent_via', 'status', 'template_key',
+          'released_at', 'sent_at', 'sent_via', 'status', 'template_key', 'unresolved',
         ])
       }
       expect(rows[0]).toMatchObject({ recipient_kind: 'friend', name: fx.A.name, phone: '0905 301 001', status: 'sent', sent_via: 'bot', body: 'Ahoj A' })

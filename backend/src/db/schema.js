@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import { toE164 } from '../helpers/phone.js';
 import { TEMPLATE_KEYS, seedSettingValue, templateSettingKey } from '../helpers/template-render.js';
 import { isLegacyHandOverKey, legacyHandOverSegmentKey } from '../helpers/segment-keys.js';
+import { scanPlaceholders, unresolvedColumn } from '../helpers/outbox-scan.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1530,6 +1531,16 @@ function initDb() {
   } catch (e) {
     // Column already exists, ignore
   }
+  // WA-T5 (21 §UC-WA-008, orchestrator decision 1): the release gate's answer, stored
+  // per row at EVERY render — a JSON array of the literal placeholder tokens the
+  // template left unresolved for that recipient (`'[]'` = fully resolved). NULL = never
+  // computed (a pre-WA-T5 row): release treats it as unresolved. Above the recreate, in
+  // `notificationsTableSql` and in `NOTIFICATION_COLUMNS` — the three-place rule.
+  try {
+    db.run('ALTER TABLE notifications ADD COLUMN unresolved TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
 
   // The CHECK widening (`recipient_kind` += 'admin', the UC-WA-012 test message).
   // LOGGED, never silent: a skipped recreate leaves a table that refuses the test
@@ -1583,13 +1594,16 @@ function initDb() {
 
   // WA-T4 — DP-T3's hook rows onto 21's segment-key grammar (one-time, idempotent).
   rekeyLegacyHandOverRows();
+  // WA-T5 — `unresolved` for rows written before the column existed (idempotent).
+  backfillNotificationUnresolved();
 }
 
 // ── The outbox table's ONE definition (WA-T1) ───────────────────────────────────
 // Used by the fresh CREATE and by the CHECK-widening recreate, so the two paths
 // cannot drift. `target` is `'IF NOT EXISTS notifications'` or `'notifications_new'`.
 // Column ORDER is the contract the ALTER path also produces: DP-T1's sixteen, then
-// `sent_via`, then `email` (`NOTIFICATION_COLUMNS` below, same order).
+// `sent_via`, then `email`, then `unresolved` (WA-T5) (`NOTIFICATION_COLUMNS` below,
+// same order).
 function notificationsTableSql(target) {
   return `
     CREATE TABLE ${target} (
@@ -1610,7 +1624,8 @@ function notificationsTableSql(target) {
       sent_at DATETIME,
       error TEXT,
       sent_via TEXT CHECK (sent_via IN ('bot','wa_me','email')),
-      email TEXT
+      email TEXT,
+      unresolved TEXT
     )
   `;
 }
@@ -1618,8 +1633,37 @@ function notificationsTableSql(target) {
 const NOTIFICATION_COLUMNS = [
   'id', 'channel', 'template_key', 'segment_key', 'recipient_kind', 'recipient_id',
   'phone_e164', 'body', 'status', 'cycle_id', 'order_id', 'guest_order_id',
-  'created_at', 'released_at', 'sent_at', 'error', 'sent_via', 'email',
+  'created_at', 'released_at', 'sent_at', 'error', 'sent_via', 'email', 'unresolved',
 ];
+
+// ── The one-time `unresolved` BACK-FILL (WA-T5, orchestrator decision 1) ─────────────
+// Rows written before WA-T5 have `unresolved IS NULL`, which release reads as BLOCKED.
+// For a row whose `body` exists, the answer is computed here by the RESCAN
+// (`helpers/outbox-scan.js scanPlaceholders()` — the spec's `/\{[^{}\s]{1,40}\}/`),
+// because the template + vars the row was rendered from are not at hand at boot. The
+// rescan can only OVER-block (a value carrying braces), never under-block — every literal
+// placeholder the template left is still in the text. A `body IS NULL` row (DP-T3's
+// legacy shape) is left NULL on purpose: there is nothing to scan, and it stays blocked
+// until a rerender renders it (learnings 15 §WA-T4 decision 7 / §WA-T5).
+// Idempotent: only `unresolved IS NULL AND body IS NOT NULL` rows are touched, and
+// every UPDATE re-asserts both. LOGGED, never thrown.
+function backfillNotificationUnresolved() {
+  try {
+    const rows = bdb.prepare(
+      'SELECT id, body FROM notifications WHERE unresolved IS NULL AND body IS NOT NULL'
+    ).all();
+    if (rows.length === 0) return;
+    const update = bdb.prepare(
+      'UPDATE notifications SET unresolved = ? WHERE id = ? AND unresolved IS NULL AND body IS NOT NULL'
+    );
+    bdb.transaction(() => {
+      for (const row of rows) update.run(unresolvedColumn(scanPlaceholders(row.body)), row.id);
+    })();
+    console.log(`[outbox] back-filled notifications.unresolved for ${rows.length} row(s)`);
+  } catch (e) {
+    console.error('Migration error (notifications unresolved back-fill):', e.message);
+  }
+}
 
 // ── The one-time RE-KEY of DP-T3's hook rows (WA-T4, 21 §UC-WA-005/006) ─────────────
 // DP-T3 wrote `segment_key` = `loc<id>` / `packeta` / `host:<id>`: outside 21's grammar

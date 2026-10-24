@@ -77,7 +77,8 @@ const DP_T1_NOTIFICATION_COLUMNS = [
   'phone_e164', 'body', 'status', 'cycle_id', 'order_id', 'guest_order_id',
   'created_at', 'released_at', 'sent_at', 'error',
 ]
-const NOTIFICATION_COLUMNS = [...DP_T1_NOTIFICATION_COLUMNS, 'sent_via', 'email']
+// ~~+ `sent_via`, `email`~~ → WA-T5 appends `unresolved` (learnings 15 §WA-T5).
+const NOTIFICATION_COLUMNS = [...DP_T1_NOTIFICATION_COLUMNS, 'sent_via', 'email', 'unresolved']
 
 // ─── child-process plumbing ──────────────────────────────────────────────────
 

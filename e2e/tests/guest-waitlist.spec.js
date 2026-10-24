@@ -828,7 +828,17 @@ test.describe('GL-T3 · source pins', () => {
     expect(writers).toEqual(['helpers/guest-waitlist.js'])
     const helper = backend('helpers/guest-waitlist.js', ['export function joinWaitlist', 'notified_at = NULL'])
     const assigns = helper.match(/notified_at\s*=\s*[^\s,]+/g)
-    expect(assigns, 'the helper assigns notified_at exactly once, to NULL (module 21 owns every other write)').toEqual(['notified_at = NULL'])
+    // ~~exactly once, to NULL (module 21 owns every other write)~~ → WA-T5 (21 D8): module
+    // 21's timestamp now goes THROUGH this helper (`markWaitlistNotified()`, the table's one
+    // writer rule), so the helper assigns it twice: the re-arm's NULL and D8's bound stamp —
+    // and the stamp lives inside `markWaitlistNotified`, whose only caller is the outbox.
+    expect(assigns, 'the re-arm resets to NULL; the D8 stamp is the one timestamp write').toEqual(['notified_at = NULL', 'notified_at = ?'])
+    const markFn = helper.slice(helper.indexOf('export function markWaitlistNotified'))
+    expect(markFn, 'the timestamp write sits in markWaitlistNotified').toContain('notified_at = ?')
+    const callers = walk(BACKEND_SRC)
+      .filter((f) => !f.endsWith('helpers/guest-waitlist.js') && /markWaitlistNotified\(/.test(stripComments(readFileSync(f, 'utf8'))))
+      .map((f) => f.slice(BACKEND_SRC.length + 1))
+    expect(callers, 'module 21 only — the outbox').toEqual(['helpers/outbox.js'])
   })
 
   test('the purges sit INSIDE their transactions: the guest submit\'s and the complete PATCH\'s', () => {

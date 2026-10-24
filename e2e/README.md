@@ -573,8 +573,13 @@ DB_PATH="$RUN_DB" PORT=3997 CORS_ORIGIN=http://localhost:3997 \
   GOOGLE_CLIENT_ID=test-client GOOGLE_AUTH_TEST_MODE=1 \
   RATE_LIMIT_AUTH_MAX=100000 RATE_LIMIT_ABUSE_MAX=100000 \
   RATE_LIMIT_GUEST_READ_MAX=100000 RATE_LIMIT_GUEST_WRITE_MAX=100000 \
-  RATE_LIMIT_MAGIC_MAX=100000 \
+  RATE_LIMIT_MAGIC_MAX=100000 WA_HEALTH_URL=http://127.0.0.1:3996 \
   setsid node backend/src/index.js > /tmp/gorifi-e2e-server.log 2>&1 </dev/null &
+# ⚠ WA_HEALTH_URL (WA-T5): the API's `gorifi-wa` health reader (`helpers/wa-health.js`,
+#   default :3010) — pointed at a port NOTHING listens on, so every spec sees „bot not
+#   connected". `whatsapp-outbox.spec.js` §4 serves a `connected` stub on that SAME port
+#   for one test (the `bot_active` 409) and needs the SAME value in step 6's env; without
+#   it §4 self-skips (the reader's connected branch is still pinned in §1's probe).
 # ⚠ /api/health, NOT /api/cycles — `cycles` is requireAdmin and answers 401, so
 #   `curl -sf` there NEVER succeeds and the wait degrades into a silent 15 s sleep.
 #   The trailing re-check is what makes a dead backend loud instead of a confusing
@@ -664,7 +669,7 @@ BASE_URL=http://localhost:3997 DB_PATH="$RUN_DB" node seed.mjs
 #   T11/T12/T13/T14/T15). Without it, 21 tests self-skip SILENTLY — measured on a full
 #   run (PL-T4, 2026-09-19): 26 skips, of which only 4 are the documented rate-limit
 #   ones plus forced-change-ui. Point it at step 4's log file and they run.
-DB_PATH="$RUN_DB" SERVER_LOG=/tmp/gorifi-e2e-server.log \
+DB_PATH="$RUN_DB" SERVER_LOG=/tmp/gorifi-e2e-server.log WA_HEALTH_URL=http://127.0.0.1:3996 \
   BASE_URL=http://localhost:3997 npm test -- --workers=1
 ```
 

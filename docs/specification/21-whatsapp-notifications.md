@@ -147,6 +147,7 @@ All via the `try/catch ALTER` pattern; new tables via `CREATE TABLE IF NOT EXIST
 | `released_at` | DATETIME NULL | set by the release endpoint |
 | `sent_at` | DATETIME NULL | set by the sender / the manual tick / the mailer callback |
 | `error` | TEXT NULL | fixed vocabulary + bounded detail (≤ 300 chars), never a token |
+| `unresolved` | TEXT NULL | **WA-T5 addition** — the release gate's stored answer: JSON array of the literal placeholder tokens left in `body` (`'[]'` = resolved; NULL = never computed ⇒ release refuses). Written at every render from template + vars (learnings 15 §WA-T5) |
 
 Indexes: `idx_notifications_status (status)`; `idx_notifications_group (cycle_id,
 segment_key)`; **partial unique** `idx_notifications_queued_once ON notifications
@@ -505,12 +506,12 @@ page get „{host} vám otvoril objednávku kávy…“ with the host's standing
 
 **Business rules:**
 
-- **No automatic enqueue on cycle open.** Opening a cycle (module 17/admin) does NOT
+- ~~**No automatic enqueue on cycle open.** Opening a cycle (module 17/admin) does NOT
   insert rows (resolved conflict 7 — no timer, no implicit action). The composer shows the
   computed segment `waitlist:<cycle_id>` with its count whenever a cycle is `open`; the
   admin presses „Pripraviť správy (n)“ (compose, UC-WA-008) → rows `queued` → reviews →
   „Poslať skupine (n)“. `OPEN:` PO may prefer auto-compose (not auto-release) on open so
-  the group is pre-built; default: manual compose.
+  the group is pre-built; default: manual compose.~~ **→ PO 2026-09-19 (last section) + WA-T5: the cycle's transition into `open` (the admin PATCH, and a cycle CREATED `open`) AUTO-COMPOSES `waitlist:<cycle_id>` through the same code path as `POST /compose` — silent while the `waitlist` template is disabled or nobody waits, NEVER auto-released (learnings 15 §WA-T5).**
 - The template `waitlist` is seeded `enabled = 0` (three-to-start decision); enabling it
   is one toggle on the settings page. While disabled, the segment is visible but greyed.
 - **`{odkaz}`** = the host's standing link (`friends.guest_link_token`, module 19). A host
@@ -559,7 +560,7 @@ released` transition happens. New router `backend/src/routes/notifications.js`, 
 - Selects `status = 'queued'` rows of `(cycle_id, segment_key)` (for `all_active`,
   `cycle_id IS NULL`). **None ⇒ 200 `{ released: 0 }`** — idempotent, a double-click is
   harmless (the „one Poslať per group“ of Q5.d).
-- **All-or-nothing:** if ANY selected row's body still matches `/\{[^{}\s]{1,40}\}/`
+- **All-or-nothing:** ~~if ANY selected row's body still matches `/\{[^{}\s]{1,40}\}/`~~ **→ WA-T5: if ANY selected row is not releasable — a NULL/blank `body`, or `notifications.unresolved` NULL or non-empty (the answer stored at render time from template + vars; the regex is used only for an admin-edited body and the boot back-fill, learnings 15 §WA-T5)**
   ⇒ **409 `unresolved_placeholders`** with `{ ids: [...] }` and nothing is released — the
   composer highlights those rows („Doplňte {datum}“). This is what makes a literal
   `{tracking}`/`{datum}` unsendable.

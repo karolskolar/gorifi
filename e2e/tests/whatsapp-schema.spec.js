@@ -52,11 +52,12 @@ const OPT_IN_400 = { error: 'Neplatný formát údajov (súhlas so správami cez
 const NO_IDENTITY_401 = 'Prihláste sa svojím menom a heslom'
 
 // DP-T1's sixteen, then the two WA-T1 columns — the ORDER both the fresh CREATE and
-// the ALTER path produce.
+// the ALTER path produce. ~~sixteen + two~~ → WA-T5 appends `unresolved` (the release
+// gate's stored answer, learnings 15 §WA-T5) — same three-place rule, same order both ways.
 const NOTIFICATION_COLUMNS = [
   'id', 'channel', 'template_key', 'segment_key', 'recipient_kind', 'recipient_id',
   'phone_e164', 'body', 'status', 'cycle_id', 'order_id', 'guest_order_id',
-  'created_at', 'released_at', 'sent_at', 'error', 'sent_via', 'email',
+  'created_at', 'released_at', 'sent_at', 'error', 'sent_via', 'email', 'unresolved',
 ]
 
 // The DP-T1 table VERBATIM (what every deployed database holds before WA-T1's boot).
@@ -152,7 +153,7 @@ test.describe('WA-T1 · 21 §UC-WA-001 — the schema (throwaway boots)', () => 
     withTempDb((file) => {
       boot(file)
       const s = shape(file)
-      expect(s.notificationColumns, 'DP-T1 sixteen + sent_via + email, in that order').toEqual(NOTIFICATION_COLUMNS)
+      expect(s.notificationColumns, 'DP-T1 sixteen + sent_via + email (+ WA-T5 unresolved), in that order').toEqual(NOTIFICATION_COLUMNS)
       const sql = s.notificationsSql.replace(/\s+/g, ' ')
       expect(sql).toContain("recipient_kind IN ('friend','guest','waitlist','admin')")
       expect(sql).toContain("sent_via IN ('bot','wa_me','email')")
@@ -207,7 +208,11 @@ test.describe('WA-T1 · 21 §UC-WA-001 — the schema (throwaway boots)', () => 
       const after = new DatabaseSync(file)
       try {
         const rows = after.prepare('SELECT * FROM notifications ORDER BY id').all()
-        expect(rows.map((r) => ({ ...r }))).toEqual(before.map((r) => ({ ...r, sent_via: null, email: null })))
+        // WA-T5: the same boot BACK-FILLS `unresolved` by the rescan for a row that HAS a
+        // body ('Ahoj' ⇒ '[]'); a NULL-body legacy row stays NULL (blocked until a rerender).
+        expect(rows.map((r) => ({ ...r }))).toEqual(before.map((r) => ({
+          ...r, sent_via: null, email: null, unresolved: r.body === null ? null : '[]',
+        })))
         after.exec("INSERT INTO notifications (channel, template_key, recipient_kind, sent_via) VALUES ('whatsapp', 'test', 'admin', 'bot')")
         const fresh = after.prepare("SELECT id FROM notifications WHERE recipient_kind = 'admin'").get()
         expect(fresh.id, 'the deleted id 5 is never re-issued').toBe(6)

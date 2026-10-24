@@ -6,12 +6,17 @@ import { resolveLoginUrl } from '../helpers/credentials-message.js';
 import {
   buildSegment, computedSegments, isSegmentKey, parseSegmentKey, segmentForJson, segmentName,
 } from '../helpers/segments.js';
+import {
+  composeSegment, deleteRow, editRowBody, groupCounts, markManualSent, releaseGroup, rerenderGroup, retryGroup,
+} from '../helpers/outbox.js';
+import { botConnected } from '../helpers/wa-health.js';
 
 // Module 21 — the admin's WhatsApp notifications API. WHOLLY ADMIN: a single-audience
 // router, so the MOUNT is wrapped in `requireAdmin` (index.js), like
 // `/api/guest-waitlist`; every route on it is in `ADMIN_ENDPOINTS`
 // (e2e/tests/api-security.spec.js). Later rows (WA-T3 segments, WA-T5 outbox
-// compose/release/retry) add their routes HERE, and each joins that list too.
+// compose/release/retry/rerender + the three per-row routes — below) add their routes
+// HERE, and each joins that list too.
 //
 // WA-T2 (21 §UC-WA-004): the templates.
 //   GET /api/notifications/templates       ⇒ 200 { templates: [six], placeholders: [eight] }
@@ -216,15 +221,13 @@ router.get('/segments', (req, res) => {
   return res.json(body);
 });
 
-router.get('/', (req, res) => {
-  const cycle = cycleFromQuery(req, res);
-  if (!cycle) return undefined;
-  const key = req.query.segment_key;
-  if (!isSegmentKey(key)) return badSegmentKey(res);
-
-  // ⚠ Three LEFT JOINs, each on a primary key AND gated on `recipient_kind`, so a row
-  // matches at most one recipient table and is never multiplied.
-  const rows = db.all(`
+// ⚠ Three LEFT JOINs, each on a primary key AND gated on `recipient_kind`, so a row
+// matches at most one recipient table and is never multiplied. Shared by the group list
+// and every WA-T5 single-row answer (one published row shape).
+// WA-T5: `unresolved` joins the published fields — parsed to an ARRAY (`null` = never
+// computed, i.e. a pre-WA-T5 row release refuses) — so the composer can outline exactly
+// the rows release would refuse („Doplňte {datum}").
+const ROW_SELECT = `
     SELECT n.id, n.template_key, n.recipient_kind, n.recipient_id,
            CASE n.recipient_kind
              WHEN 'friend' THEN f.name WHEN 'guest' THEN g.guest_name WHEN 'waitlist' THEN w.name
@@ -232,17 +235,229 @@ router.get('/', (req, res) => {
            CASE n.recipient_kind
              WHEN 'friend' THEN f.phone WHEN 'guest' THEN g.guest_phone WHEN 'waitlist' THEN w.phone
            END AS phone,
-           n.phone_e164, n.channel, n.status, n.sent_via, n.body, n.error,
+           n.phone_e164, n.channel, n.status, n.sent_via, n.body, n.unresolved, n.error,
            n.created_at, n.released_at, n.sent_at
     FROM notifications n
     LEFT JOIN friends f ON n.recipient_kind = 'friend' AND f.id = n.recipient_id
     LEFT JOIN guest_orders g ON n.recipient_kind = 'guest' AND g.id = n.recipient_id
     LEFT JOIN guest_waitlist w ON n.recipient_kind = 'waitlist' AND w.id = n.recipient_id
+`;
+
+function publishRow(row) {
+  let unresolved = null;
+  if (typeof row.unresolved === 'string') {
+    try {
+      const parsed = JSON.parse(row.unresolved);
+      unresolved = Array.isArray(parsed) ? parsed : null;
+    } catch (e) {
+      unresolved = null;
+    }
+  }
+  return { ...row, unresolved };
+}
+
+function readRow(id) {
+  const row = db.get(`${ROW_SELECT} WHERE n.id = ?`, [id]);
+  return row ? publishRow(row) : null;
+}
+
+router.get('/', (req, res) => {
+  const cycle = cycleFromQuery(req, res);
+  if (!cycle) return undefined;
+  const key = req.query.segment_key;
+  if (!isSegmentKey(key)) return badSegmentKey(res);
+
+  const rows = db.all(`
+    ${ROW_SELECT}
     WHERE n.segment_key = ?
       AND ${key === 'all_active' ? 'n.cycle_id IS NULL' : 'n.cycle_id = ?'}
     ORDER BY n.id
   `, key === 'all_active' ? [key] : [key, cycle.id]);
-  return res.json({ rows });
+  return res.json({ rows: rows.map(publishRow) });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// WA-T5 (21 §UC-WA-008, §UC-WA-007 compose + release) — the WRITE routes. Every write
+// statement lives in `helpers/outbox.js` (the one `notifications` writer); these
+// handlers validate, call one helper, and READ THE ROWS BACK (no optimistic echo).
+//
+//   POST   /compose              { cycle_id, segment_key } ⇒ 200 { …counts, counts }
+//   POST   /release              { cycle_id, segment_key } ⇒ 200 { released, whatsapp, email, skipped, counts }
+//                                                            409 unresolved_placeholders { ids }
+//   POST   /retry                { cycle_id, segment_key } ⇒ 200 { released, whatsapp, email, skipped, counts }
+//   POST   /rerender             { cycle_id, segment_key } ⇒ 200 { rerendered, unchanged, counts }
+//   PATCH  /:id/body             { body }                  ⇒ 200 row · 409 not_queued
+//   PATCH  /:id/manual-sent      { sent: true }            ⇒ 200 row · 409 bot_active / not_pending / not_waiting
+//   DELETE /:id                                            ⇒ 200 { deleted: true, id } · 409 not_queued
+//
+// Group body validation (all four POSTs): a plain JSON object (an array — incl. the
+// one-element `[1]` trap — ⇒ 400 `invalid_payload`; express.json already 400s a
+// top-level `true`/`'abc'`); `segment_key` the §UC-WA-008 grammar ≤ 80 (⇒ 400
+// `invalid_segment_key`); `cycle_id` a positive integer NUMBER (⇒ 400
+// `invalid_cycle_id`), NULL/absent allowed ONLY for `all_active` (whose rows are
+// cycle-less whatever is sent); an unknown cycle ⇒ 404 `unknown_cycle`; a
+// `not_ordered:<N>` / `waitlist:<N>` key naming another cycle ⇒ 400
+// `segment_cycle_mismatch`.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+const positiveInt = (v) => (Number.isSafeInteger(v) && v > 0 ? v : null);
+
+function badPayload(res) {
+  return res.status(400).json({ error: 'Neplatný formát údajov', reason: 'invalid_payload' });
+}
+
+// ⇒ { cycleId (null for all_active), segmentKey } or sends the 400/404 and returns null.
+function groupFromBody(req, res) {
+  const payload = req.body;
+  if (!isPlainObject(payload)) { badPayload(res); return null; }
+  const segmentKey = payload.segment_key;
+  if (!isSegmentKey(segmentKey)) { badSegmentKey(res); return null; }
+  const rawCycle = payload.cycle_id;
+  const allActive = segmentKey === 'all_active';
+  let cycleId = null;
+  if (!(allActive && (rawCycle === undefined || rawCycle === null))) {
+    cycleId = positiveInt(rawCycle);
+    if (cycleId === null) {
+      res.status(400).json({ error: 'Neplatné ID objednávky', field: 'cycle_id', reason: 'invalid_cycle_id' });
+      return null;
+    }
+    if (!db.get('SELECT id FROM order_cycles WHERE id = ?', [cycleId])) {
+      res.status(404).json({ error: 'Objednávka neexistuje', reason: 'unknown_cycle' });
+      return null;
+    }
+  }
+  const parsed = parseSegmentKey(segmentKey);
+  if (parsed?.cycleId !== undefined && parsed.cycleId !== cycleId) {
+    res.status(400).json({ error: 'Skupina patrí k inej objednávke', field: 'segment_key', reason: 'segment_cycle_mismatch' });
+    return null;
+  }
+  return { cycleId: allActive ? null : cycleId, segmentKey };
+}
+
+const REFUSALS = {
+  unknown_segment: [404, 'Taká skupina správ neexistuje'],
+  not_composable: [400, 'Táto skupina vzniká odovzdaním balíčkov, nepripravuje sa ručne'],
+  template_disabled: [409, 'Šablóna je vypnutá — zapnite ju v Nastaveniach'],
+  template_empty: [409, 'Šablóna je prázdna — najprv napíšte text správy'],
+  cycle_not_open: [409, 'Objednávka nie je otvorená'],
+  unresolved_placeholders: [409, 'Niektoré správy majú nevyplnené údaje — doplňte ich a skúste znova'],
+  not_found: [404, 'Správa neexistuje'],
+  not_queued: [409, 'Správa už nie je vo fronte'],
+  not_pending: [409, 'Správa už nečaká na odoslanie'],
+  bot_active: [409, 'Bot je pripojený — správu pošle bot'],
+  not_waiting: [409, 'Hosť už nečaká na túto správu — riadok je preskočený'],
+};
+
+function refuse(res, reason, extra = {}) {
+  const [status, error] = REFUSALS[reason] || [409, 'Akciu nie je možné vykonať'];
+  return res.status(status).json({ error, reason, ...extra });
+}
+
+router.post('/compose', (req, res) => {
+  const group = groupFromBody(req, res);
+  if (!group) return undefined;
+  const result = composeSegment({ ...group, baseUrl: resolveLoginUrl(req) });
+  if (result.refused) return refuse(res, result.refused);
+  return res.json({ ...result, counts: groupCounts(result.segment_key, result.cycle_id) });
+});
+
+router.post('/release', (req, res) => {
+  const group = groupFromBody(req, res);
+  if (!group) return undefined;
+  const result = releaseGroup({ ...group, baseUrl: resolveLoginUrl(req) });
+  if (result.refused) return refuse(res, result.refused, { ids: result.ids });
+  return res.json({ ...result, counts: groupCounts(group.segmentKey, group.cycleId) });
+});
+
+router.post('/retry', (req, res) => {
+  const group = groupFromBody(req, res);
+  if (!group) return undefined;
+  const result = retryGroup(group);
+  return res.json({ ...result, counts: groupCounts(group.segmentKey, group.cycleId) });
+});
+
+router.post('/rerender', (req, res) => {
+  const group = groupFromBody(req, res);
+  if (!group) return undefined;
+  const result = rerenderGroup({ ...group, baseUrl: resolveLoginUrl(req) });
+  if (result.refused) return refuse(res, result.refused);
+  return res.json({ ...result, counts: groupCounts(group.segmentKey, group.cycleId) });
+});
+
+// ⇒ the row id, or sends the 400 and returns null.
+function rowIdFrom(req, res) {
+  const raw = req.params.id;
+  const id = typeof raw === 'string' && /^[1-9]\d{0,15}$/.test(raw) ? Number(raw) : null;
+  if (id === null || !Number.isSafeInteger(id)) {
+    res.status(400).json({ error: 'Neplatné ID správy', field: 'id', reason: 'invalid_id' });
+    return null;
+  }
+  return id;
+}
+
+router.patch('/:id/body', (req, res) => {
+  const id = rowIdFrom(req, res);
+  if (id === null) return undefined;
+  const payload = req.body;
+  if (!isPlainObject(payload)) return badPayload(res);
+  const { body } = payload;
+  if (typeof body !== 'string') {
+    return res.status(400).json({ error: 'Text správy musí byť text', field: 'body', reason: 'invalid_body' });
+  }
+  if (body.length > MAX_BODY_LENGTH) {
+    return res.status(400).json({
+      error: `Text správy môže mať najviac ${MAX_BODY_LENGTH} znakov`, field: 'body', reason: 'body_too_long',
+    });
+  }
+  if (!body.trim()) {
+    return res.status(400).json({ error: 'Text správy nemôže byť prázdny', field: 'body', reason: 'empty_body' });
+  }
+  const result = editRowBody(id, body);
+  if (result.refused) return refuse(res, result.refused);
+  return res.json(readRow(id));
+});
+
+// ⚠ The ONE async handler on this router. The health fetch is an `await` between the
+// status read and the write, so the write is `markManualSent()`'s CONDITIONAL UPDATE
+// (`WHERE status = 'released'`) — a row the bot moved to `sent` during the await is
+// refused `not_pending`, never overwritten (GA-T8: re-check after the await).
+router.patch('/:id/manual-sent', async (req, res) => {
+  try {
+    const id = rowIdFrom(req, res);
+    if (id === null) return undefined;
+    const payload = req.body;
+    if (!isPlainObject(payload)) return badPayload(res);
+    if (payload.sent !== true) {
+      return res.status(400).json({ error: 'Neplatná hodnota (odoslané)', field: 'sent', reason: 'invalid_sent' });
+    }
+    const row = db.get('SELECT status FROM notifications WHERE id = ?', [id]);
+    if (!row) return refuse(res, 'not_found');
+    if (row.status === 'queued') {
+      const result = markManualSent(id, ['queued']);
+      if (result.refused) return refuse(res, result.refused);
+      return res.json(readRow(id));
+    }
+    if (row.status !== 'released') return refuse(res, 'not_pending');
+
+    // 21 §UC-WA-008: on a RELEASED row the tick is allowed only while the bot is NOT
+    // connected (2 s timeout; unreachable counts as not connected) — a duplicate-send guard.
+    if (await botConnected()) return refuse(res, 'bot_active');
+    const result = markManualSent(id, ['released']);
+    if (result.refused) return refuse(res, result.refused);
+    return res.json(readRow(id));
+  } catch (e) {
+    console.error(`[notifications] manual-sent failed: ${String(e?.message || e).slice(0, 200)}`);
+    return res.status(500).json({ error: 'Chyba servera' });
+  }
+});
+
+router.delete('/:id', (req, res) => {
+  const id = rowIdFrom(req, res);
+  if (id === null) return undefined;
+  const result = deleteRow(id);
+  if (result.refused) return refuse(res, result.refused);
+  return res.json({ deleted: true, id, row: readRow(id) });
 });
 
 export default router;

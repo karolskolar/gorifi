@@ -167,7 +167,10 @@ spec, so this documents the **existing** system, not a greenfield design.
     `idx_notifications_status (status)`, `idx_notifications_group (cycle_id, segment_key)`
     and the PARTIAL UNIQUE `idx_notifications_queued_once (template_key, recipient_kind,
     recipient_id, cycle_id) WHERE status = 'queued'`; `guest_orders.phone_e164 TEXT`
-    (CREATE + ALTER). `friends.whatsapp_opt_in` creation-path values: admin `POST
+    (CREATE + ALTER). **WA-T5 addition:** `notifications.unresolved TEXT NULL` — the
+    release gate's stored answer (JSON array of literal placeholder tokens, `'[]'` =
+    resolved; NULL = never computed ⇒ refused), appended after `email` (learnings 15
+    §WA-T5). `friends.whatsapp_opt_in` creation-path values: admin `POST
     /api/friends` writes `1` (PO 2026-09-19), approve + onboarding write `0`. Settings seeds
     `whatsapp_test_phone = ''`, `whatsapp_paused = '0'` (boot, never overwritten). Both
     `phone_e164` columns are derived by `helpers/phone.js toE164()` at every phone writer

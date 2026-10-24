@@ -508,6 +508,17 @@ export function handOverRecipients(cycleId, { orderIds = [], guestOrderIds = [],
   return [...friends, ...guests].map(withTemplate).filter((e) => e.template_key);
 }
 
+/**
+ * WA-T5 — the template a segment key's rows are rendered from (21 §UC-WA-005's table),
+ * or null for a key that is no segment of the six (e.g. the boot re-key's
+ * `legacy_handover:…` fallback). The compose / rerender doors ask it BEFORE building
+ * the segment, so a disabled template refuses without running the recipient query.
+ */
+export function segmentTemplateKey(key) {
+  const parsed = parseSegmentKey(key);
+  return parsed ? TEMPLATE_BY_KIND[parsed.kind] : null;
+}
+
 /** The summary the composer lists for a segment (no recipients, no names). */
 export function segmentSummary(segment) {
   const template = getTemplate(segment.template_key);
