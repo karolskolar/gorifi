@@ -549,3 +549,32 @@ context, so cross-test leakage is impossible; only same-test „log out by clear
 Pinned by `e2e/tests/session-cookie.spec.js` (attributes + horizons, restore = same token, logout
 kills the Bearer token too, forged cookies, the browser wipe → restore, restore opens no explainer,
 logout → reload shows the login card).
+
+## Security pass 2026-10-23 — Node October 2026 releases + dependency audit
+
+**Runtime.** Node published security releases on 2026-10-21 (10 CVEs; fixed in `v22.23.4`, `v24.22.1`,
+`v26.12.1`). The server ran **`v20.20.2`** from the nodesource `node_20.x` repo — Node 20 is END-OF-LIFE
+(April 2026), gets no fix and is „always affected". Dev machines and the e2e gate already run
+`v22.23.4`. Reachability for this app: the Brotli decoder OOB write (High, RCE) is NOT reachable through
+request bodies — Express 4's body-parser inflates only `gzip`/`deflate`; the TLS hostname-verification
+bypasses and the c-ares/undici/CA-bundle updates matter for the app's OUTBOUND calls (Mailgun, Google
+token verification, image-from-url); the permission-model / SEA / snapshot CVEs do not apply (none used).
+⚠ Upgrading Node changes the native ABI: `better-sqlite3` must be rebuilt in BOTH `/var/www/gorifi*/backend`
+(a normal backend deploy's `npm ci --omit=dev` does it) and the `gorifi` user's PM2 daemon must be
+restarted on the new binary (`pm2 update`) — the binary is shared by prod AND staging on one LXC.
+
+**Backend deps** (`npm audit fix` + `csv-parse` 5 → 7, 0 advisories left): `proxy-addr` 2.0.8 (critical
+IPv4-mapped trust-SUBNET spoof — not reachable: `trust proxy` is a HOP COUNT, `2`), `qs` 6.16.1 /
+`body-parser` 1.20.9 / `express` 4.22.3 (array-limit bypass + DoS), `multer` 2.5.0 (five DoS/limit
+bypasses — every upload route sits behind `requireAdmin`), `nanoid` 5.1.16, `csv-parse` 7.0.3 (prototype
+replacement via `columns` — admin-only CSV import; `parseCsvRecords()` options unchanged and verified).
+
+**Frontend deps** (`npm audit fix`): `vue` 3.5.44, `vite` 7.3.7, `postcss` 8.5.31 and transitive fixes.
+⚠ Left open on purpose: the `braces`/`micromatch`/`chokidar`/`postcss-selector-parser` advisories all sit
+INSIDE `tailwindcss@3.4.19`'s build-time chain (no fix on v3); they process only our own source at build
+time and ship nothing to the browser. Clearing them means the Tailwind 4 migration — a separate effort.
+
+**Gate:** full suite on Node 22.23.4 with the bumped trees — 2596 passed / 63 skipped / 2 failed, both
+PRE-EXISTING and unrelated to the bumps: `portal-shell.spec.js:522` (the `weeksUntil('2026-10-03')`
+time-bomb) and `admin-token-retry.spec.js:290` (`ledger-packeta-fee`, `live-stats`, `session-cookie`
+specs keep a private admin request helper — FUP-T27 §5 sweep, red on `main` too).
