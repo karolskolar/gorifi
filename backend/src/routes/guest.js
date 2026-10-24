@@ -1607,7 +1607,7 @@ function handleStatusEdit(req, res, { link, cycle, order }) {
     return {};
   });
 
-  const applied = apply();
+  const applied = apply.immediate(); // WA-T9: an empty cart soft-cancels ⇒ cancelForUnHandOver (outbox write)
   if (applied.conflict === 'gone') {
     return res.status(404).json({ error: 'Táto objednávka neexistuje' });
   }

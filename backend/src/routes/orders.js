@@ -905,7 +905,7 @@ router.patch('/:id/handed-over', requireAdmin, (req, res) => {
     return { guestIds: guests.map((guest) => guest.id), queued, dequeued: 0, cycleStage };
   });
 
-  const applied = apply();
+  const applied = apply.immediate(); // WA-T9: BEGIN IMMEDIATE — the outbox shares the WAL file with gorifi-wa
   if (applied.conflict === 'gone') {
     return res.status(404).json({ error: 'Objednávka neexistuje' });
   }

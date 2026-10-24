@@ -709,7 +709,7 @@ one `WA_HEALTH_URL`-gated) + two `ADMIN_ENDPOINTS` rows. No retargets.
    **→ WA-T8 built it on THIS page (§WA-T8 decision 2): the 409's `id` ⇒ „Uzavrieť čakajúcu testovaciu správu“.**
 6. **Health contract for WA-T9 (the Tempo card)**: the page reads `pace: { min_ms, max_ms }` and `hourly_max`
    (integer) when the process reports them, else 3–10 s / 30. §UC-WA-011's `/health` field list carries NEITHER — WA-T9
-   should publish them from its env (`WA_PACE_MIN_MS`/`MAX`, `WA_HOURLY_MAX`), or the card always shows the defaults.
+   should publish them from its env (`WA_PACE_MIN_MS`/`MAX`, `WA_HOURLY_MAX`), or the card always shows the defaults. **→ published by WA-T9 (§WA-T9).**
    Seconds render with a decimal comma (`2,5–7 s`).
 7. **QR**: rendered only when `typeof qr === 'string' && qr.startsWith('data:image/')` — a health body naming any other
    URL is not fetched (pinned with `https://evil.example/qr.png`); never stored (pinned: not in local/sessionStorage).
@@ -921,3 +921,140 @@ deferred halves. Tests: NEW `e2e/tests/whatsapp-composer.spec.js` (14: §1 11 UI
   cycle-switch race; the repair door `TARGET_IS_LOCAL`; §2 1; §3 1).
 - Mutation-checked: dropping the rows loader's seq guard reds the `loadSeq` test (the held answer — 4 s, asserted only
   AFTER it landed, so no retry window can wait the defect out); queued-only rerender reds the repair-door test.
+
+## WA-T9 — the `gorifi-wa` process: stub sender, send loop, `/health`, `e2e/wa-harness.js` (2026-10-24)
+
+Spec: 21 §UC-WA-011 (env, lifecycle, send loop 1–6, `/health`, log lines, `WA_SENDER=stub`, acceptance), §UC-WA-014
+item 3, the stub-dependent clauses of §UC-WA-012 (WA-T7) and §UC-WA-009 (WA-T8), D7/D9. Tests: NEW
+`e2e/tests/whatsapp-process.spec.js` (16: §0 3 source pins, §1 8 process tests on a PRIVATE database, §2 3 end-to-end
+on the GATE database, §3 2 API-side). NEW `e2e/wa-harness.js`, `e2e/README.md` „The `gorifi-wa` stub harness".
+
+### What shipped
+
+- **`wa/`** (repo root, own `package.json` + `package-lock.json`, ESM, plain JS, no test runner): `src/index.js` (boot,
+  status, SIGTERM/SIGINT), `config.js` (pure env reader), `db.js` (the ONLY door to the file), `pacer.js` (gap + ring),
+  `loop.js` (the send loop), `health.js` (loopback `GET /health`), `sender.js` (THE interface) + `stub-sender.js` +
+  `whatsapp-sender.js` (WA-T10's shell), `qr.js` (`qrcode` data URL), `log.js` (`[wa]` prefix). Deps: `better-sqlite3`,
+  `qrcode`; `whatsapp-web.js` is an OPTIONAL PEER (decision 1). `npm ci` installs 17 MB, no Chromium.
+- **Boot**: every malformed value REFUSES (exit 1, one `[wa]` line): `DB_PATH is required` / `must be an absolute path` /
+  `cannot open DB_PATH (…)` (`fileMustExist` — a typo never creates a second empty DB) / `has no notifications table —
+  start (migrate) the backend first` (column check against the API's schema), `WA_SENDER must be one of: whatsapp, stub`,
+  strict integers for the knobs (`WA_POLL_MS ≥ 50`, `WA_PACE_MIN ≤ MAX`, `WA_HOURLY_MAX ≥ 1`), and a taken health port
+  (`health server cannot listen on 127.0.0.1:<port> (EADDRINUSE)`). Boot lines: the spec's `[wa] boot sender=… db=…
+  session=… health=127.0.0.1:<port> version=…`, plus `[wa] pace poll_ms=… gap_ms=…-… hourly_max=…` and, stub only,
+  `[wa] stub number=+421000000000 fail_number=…`.
+- **Writes** (`db.js`): `markSent` = `status='sent', sent_at=CURRENT_TIMESTAMP, sent_via='bot', error=NULL` and
+  `markFailed` = `status='failed', error=?` (≤ 300), both `WHERE id = ? AND status = 'released' AND channel = 'whatsapp'`,
+  each its own `BEGIN IMMEDIATE` transaction, `busy_timeout = 5000`. 0 rows ⇒ `[wa] row id=… was finalised elsewhere —
+  possible duplicate`. `settings.whatsapp_paused` is READ every poll, never written. No DDL, no INSERT/DELETE (pinned).
+- **Loop**: (0) an outcome whose write THREW is retried first and nothing new is sent until it lands (a delivered row is
+  never re-sent because its `sent` write was lost); (1) pause re-read ⇒ state overlay `paused`, `[wa] paused/resumed
+  (settings.whatsapp_paused)` on each transition; (2) only while the sender is `connected`, `ORDER BY released_at, id
+  LIMIT 1`; pacing may hold it (`next_send_at` published; `[wa] hourly cap reached (N) — next send at HH:MM`
+  Europe/Bratislava, once per episode); (3–5) send ⇒ conditional UPDATE; a known refusal ⇒ `failed`/<code>, a throw ⇒
+  `failed`/`<name>: <message ≤ 300>` (the NAME only in the log). Defensive: a non-E.164 `phone_e164` ⇒
+  `failed`/`invalid_number`, a blank body ⇒ `failed`/`empty_body` (the API never releases either).
+- **Pacing** (`pacer.js`): a send is allowed at `max(lastAttempt + gap, ring[len − max] + 1 h)`; the gap is drawn once
+  per attempt that REACHED `sender.send` (failures included — they talked to WhatsApp; ~~every attempt~~ → review: a row
+  refused before the send, `invalid_number` / `empty_body`, draws NO gap — the outcome's `contacted` flag, pinned), so an
+  idle bot sends at once; the ring holds SUCCESSFUL
+  sends, seeded at boot from `sent_via = 'bot' AND sent_at > now − 1 h` (a restart keeps the cap — pinned) and
+  `lastAttempt` from the newest bot `sent_at`.
+- **`/health`** (127.0.0.1 only; `GET /health` exactly — any other path or method, HEAD included, ⇒ 404 JSON;
+  `Cache-Control: no-store`): `{ state, sender, number, qr, queue: { released, sent_today, failed }, hourly_sent,
+  hourly_max, pace: { min_ms, max_ms }, next_send_at, last_sent_at, last_error, db_path, uptime_s, version }` — the
+  spec's list + WA-T7's `pace`/`hourly_max`. `state` = the sender's, overlaid by `paused` only while `connected` (a `qr`
+  state keeps showing the QR when paused). `queue` counts `channel = 'whatsapp'` only: `released`, `failed` (all time —
+  they await a retry), `sent_today` = `sent_via = 'bot'` since Bratislava midnight. Instants are ISO 8601 UTC (the
+  settings page's `formatStamp` reads both shapes).
+- **Stub** (`WA_SENDER=stub`): `connected` at once, `number = '+421000000000'`, `WA_STUB_FAIL_NUMBER` ⇒
+  `failed`/`stub_fail`; TEST SEAM `WA_STUB_SEND_MS` (stub only): a send takes that long and logs `[wa] stub sending
+  id=<id>` — the only way to finalise a row elsewhere WHILE it is in flight (the duplicate-guard and `bot_active` tests).
+- **API side** (decision 3): `.immediate()` on every `helpers/outbox.js` transaction (compose, the waitlist
+  auto-compose, release, retry, rerender, body edit, manual tick, delete — plus WA-T7's test insert) and on the route
+  transactions that call the outbox: the three hand-over routes (`orders.js` per bag, `guest-orders.js` per guest bag,
+  `cycles.js` bulk) and the three soft-cancel doors (host DELETE + admin cancel in `guest-orders.js`, the guest
+  empty-cart PUT in `guest.js`). NEW `helpers/db-busy.js` (`isDbBusy`, `sendDbBusy`): `index.js`'s error handler and the
+  one self-catching outbox handler (`PATCH …/manual-sent`) answer a `SQLITE_BUSY*` with 503 `{ reason: 'db_busy' }` +
+  `Retry-After: 1`, one warn line, no stack.
+
+### Decisions (orchestrator: confirm or overturn)
+
+1. **whatsapp-web.js packaging = an OPTIONAL PEER now, a dependency in WA-T10.** `peerDependencies` +
+   `peerDependenciesMeta.optional`: npm ≥ 7 does not install optional peers, so `npm ci` stays at better-sqlite3 + qrcode
+   (no ~400 MB Chromium on the 4 GB box) while `package.json` already names the library and the version WA-T10 starts
+   from (`^1.34.7`, npm latest 2026-10-24). WA-T10 moves it to `dependencies` (and `deploy.sh wa` then downloads
+   Chromium into `PUPPETEER_CACHE_DIR`).
+2. **The `whatsapp` branch (the DEFAULT `WA_SENDER`) is a marked shell**: `start()` does the real dynamic
+   `import('whatsapp-web.js')` and then reports `disconnected` with `last_error = 'whatsapp_web_js_missing'` (not
+   installed) or `'sender_not_implemented'` (installed); the health server stays up, the loop never sends, rows stay
+   `released` — the „bot down" picture the admin already handles via wa.me. Not `exit 1` (a PM2 restart loop) and not
+   `starting` forever (reads as „booting"). WA-T10's contract is written in the file header.
+3. **`.immediate()` scope = the row's list + every transaction that WRITES `notifications`** (the soft-cancel doors call
+   `cancelForUnHandOver`). The remaining API transactions (orders, cycles, catalog, …) stay deferred: they are equally
+   exposed to `SQLITE_BUSY_SNAPSHOT` in principle (the snapshot is the whole file), but the window is a sub-millisecond
+   synchronous transaction against one WA commit every 3–10 s; their residual BUSY is now a retryable 503, not a 500. A
+   global „`dbHelpers.transaction()` is immediate by default" was considered and NOT done (a hidden semantic change to
+   ~30 transactions in other modules) — the follow-up if a 503 is ever observed. The cycle PATCH's transaction was left
+   deferred: its first statement is a write (no read-then-upgrade), and the waitlist compose inside it is a SAVEPOINT.
+4. **BUSY handling = 503 `db_busy`, not 409**: nothing conflicted with the caller's intent; the lock was simply held
+   past 5 s. Reachable only by a lock held that long (the test holds one deliberately) — the WA process's transactions
+   are a single UPDATE.
+5. **`markSent` clears `error`** (`error = NULL`) — WA-T6 decision 2's rule for e-mail rows: a retried row that once
+   failed `stub_fail`/`not_on_whatsapp` must not read „Chyba" after it was sent. Within the four-column write set.
+6. **Harness port design**: process-level tests use a PRIVATE database + a FREE port (no gate server, no collision);
+   gate-DB tests bind the port `WA_HEALTH_URL` names (`3996`, the recipe's), shared one test at a time with the three
+   specs' fake health servers (`--workers=1`, every owner closes in `finally`; a held port makes the child exit 1 and the
+   harness throw with its log). The harness FORCES `WA_SENDER=stub` after blanking every ambient `WA_*` key and adds
+   `WA_HOURLY_MAX=100000` (bot sends earlier in the run seed the ring). A missing `wa/node_modules` THROWS, never skips.
+7. **`last_sent_at`** = the in-memory last success, seeded from `MAX(sent_at) WHERE sent_via = 'bot'` (a restart keeps
+   it). `last_error` = the latest failure code / DB trouble / sender error, never cleared (it is „Posledná chyba").
+8. **Boot refusals are stricter than the spec's one line** (every knob, the file's existence and migration) — a pacing
+   typo must not send faster than intended (the ban risk), a path typo must not open an empty DB.
+
+### Acceptance closed here
+
+- §UC-WA-011 (all, stub): released ⇒ `sent`/`bot` < 1 s (measured ~200 ms), queued untouched, `stub_fail`, `paused` +
+  un-pause drains, health shape, body/`phone_e164` byte-unchanged (whole row minus the four columns), plus e-mail rows
+  untouched, `ORDER BY released_at, id`, cap + boot seed, gap, duplicate guard, SIGTERM exit 0, PII-free logs.
+- §UC-WA-012 (WA-T7's deferred clauses): `Pripojené`, `+421 000 000 000`, the counts move after a release, the pause
+  toggle stops the draining (and resuming drains), the test message flips to `sent`/`bot` — against the REAL process.
+- §UC-WA-009 (WA-T8's deferred clause): „Poslať skupine (2)" ⇒ both rows `Odoslané` without a reload.
+- §UC-WA-014 item 3: `manual-sent` on a released row ⇒ 409 `bot_active` while the stub is up (the row held in flight by
+  `WA_STUB_SEND_MS`), then the stub sends it.
+- „The stub runs with no Chromium": a `--import` resolve hook makes `whatsapp-web.js`/`puppeteer*` UNLOADABLE; the stub
+  still drains (the hook's log stays empty) and the whatsapp branch — non-vacuity — hits the hook.
+
+### For WA-T10 / WA-T11
+
+- WA-T10: fill `wa/src/whatsapp-sender.js` per its header; move `whatsapp-web.js` to `dependencies`; emit
+  `onState({ state: 'qr', qrText })` (index.js renders + stores the data URL in memory only); `send()` returns
+  `{ ok: false, error: 'not_on_whatsapp' }` for a null `getNumberId()`. The §0 pin allows exactly ONE dynamic import
+  (`whatsapp-sender.js:whatsapp-web.js`) and no `puppeteer` token in `wa/src` code — update it deliberately if WA-T10
+  needs `puppeteer` directly.
+- WA-T11: `script: 'src/index.js'`, `cwd: …/wa`; `DB_PATH` must be set in BOTH `.env`s (the process refuses otherwise);
+  start order backend → wa (wa refuses an unmigrated file and exits 1 — PM2's `restart_delay` retries); staging
+  `WA_SENDER=stub` + `WA_HEALTH_PORT=3011` + the API's `WA_HEALTH_URL=http://127.0.0.1:3011`.
+
+### Traps found
+
+- The literal `grep -rn "whatsapp-web" backend/` is NOT empty on a checkout that ran the e2e recipe: `backend/public`
+  (git-ignored build output) carries WA-T7's runbook copy „npm update whatsapp-web.js". The pin walks `backend/` minus
+  `node_modules` and `public`; `git grep whatsapp-web -- backend/` is empty.
+- `PATCH /api/notifications/:id/manual-sent` catches its own throws (the router's one async handler) — a global error
+  handler mapping alone would have left it answering 500 on BUSY.
+- A BUSY test cannot discriminate immediate vs deferred over HTTP (a deferred write blocks at its first write too); the
+  probe holds the lock from ANOTHER connection with `busy_timeout = 0` and calls each helper on a READ-ONLY path: only
+  `BEGIN IMMEDIATE` throws there. Mutation-checked: reverting `releaseGroup` to `()` reds the probe and the pin.
+- Mutation-checked (each reds its test): no `AND status = 'released'` in `markSent` (duplicate guard), an empty ring
+  seed (the restart-cap test), no BUSY mapping in `index.js` (503 test ⇒ 500).
+
+### Review round (2026-10-24, APPROVE + three minors fixed)
+
+- **Harness readiness proves identity**: `startWa()` accepts a health answer only when `sender` is the one it started
+  AND `db_path` is the database it passed, and re-checks the child is alive after the match; a foreign answer is quoted
+  in the throw. Pinned: a fake `connected` server pre-bound on the port ⇒ `startWa` throws `exited early (1)` with the
+  child's `EADDRINUSE` line (before the fix, the fake's answer was a false „ready").
+- **Pacing counts only attempts that reached `sender.send`** (`outcome.contacted`): `invalid_number` / `empty_body`
+  rows draw no gap. Pinned: two malformed rows ahead of a good one with a 1.5 s gap ⇒ the good one is sent < 1.2 s.
+- `wa/node_modules` is a recipe step (`e2e/README.md` step 5, CLAUDE.md's e2e checklist).

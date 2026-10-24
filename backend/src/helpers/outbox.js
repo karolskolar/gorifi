@@ -422,7 +422,7 @@ export function composeSegment({ cycleId, segmentKey, baseUrl } = {}) {
   const segment = buildSegment(cycleId, segmentKey, { baseUrl });
   if (!segment) return { refused: 'unknown_segment' };
 
-  const minted = db.transaction(() => mintEntries(entriesOf(segment), segment.cycle_id))();
+  const minted = db.transaction(() => mintEntries(entriesOf(segment), segment.cycle_id)).immediate();
   return {
     segment_key: segment.key,
     cycle_id: segment.cycle_id,
@@ -449,7 +449,7 @@ export function composeWaitlistOnOpen(cycleId, { baseUrl } = {}) {
     return db.transaction(() => {
       const result = composeSegment({ cycleId, segmentKey: `waitlist:${cycleId}`, baseUrl });
       return result.refused ? null : result;
-    })();
+    }).immediate();
   } catch (e) {
     console.error(`[outbox] waitlist auto-compose failed for cycle ${cycleId}: ${String(e?.message || e).slice(0, 200)}`);
     return null;
@@ -579,7 +579,7 @@ export function releaseGroup({ cycleId, segmentKey, baseUrl } = {}) {
     }
     markWaitlistNotified(out.waitlistIds, now);
     return out;
-  })();
+  }).immediate();
   if (outcome.refused) return outcome;
   handOffEmailRows(outcome.emailIds);
   return { released: outcome.released, whatsapp: outcome.whatsapp, email: outcome.email, skipped: outcome.skipped };
@@ -637,7 +637,7 @@ export function retryGroup({ cycleId, segmentKey } = {}) {
       if (row.channel === 'email') { out.email += 1; out.emailIds.push(row.id); } else out.whatsapp += 1;
     }
     return out;
-  })();
+  }).immediate();
   if (outcome.refused) return outcome;
   handOffEmailRows(outcome.emailIds);
   return { released: outcome.released, whatsapp: outcome.whatsapp, email: outcome.email, skipped: outcome.skipped };
@@ -720,7 +720,7 @@ export function rerenderGroup({ cycleId, segmentKey, baseUrl } = {}) {
       if (changed === 1) out.rerendered += 1; else out.unchanged.push(row.id);
     }
     return out;
-  })();
+  }).immediate();
 }
 
 /**
@@ -740,7 +740,7 @@ export function editRowBody(id, body) {
       'UPDATE notifications SET body = ?, unresolved = ? WHERE id = ? AND status = ?'
     ).run(body, unresolvedColumn(scanPlaceholders(body)), id, row.status).changes;
     return changed === 1 ? { ok: true } : { refused: 'not_queued' };
-  })();
+  }).immediate();
 }
 
 /**
@@ -780,7 +780,7 @@ export function markManualSent(id, fromStatuses) {
     if (changed !== 1) return { refused: 'not_pending' };
     if (row.status === 'queued' && row.recipient_kind === 'waitlist') markWaitlistNotified([row.recipient_id], now);
     return { ok: true };
-  })();
+  }).immediate();
 }
 
 /**
@@ -797,7 +797,7 @@ export function deleteRow(id) {
       "DELETE FROM notifications WHERE id = ? AND status IN ('queued', 'skipped')"
     ).run(id).changes;
     return changed === 1 ? { deleted: true } : { refused: 'not_queued' };
-  })();
+  }).immediate();
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -988,8 +988,13 @@ export function testMessageBody(date = new Date()) {
 // ⚠ `.immediate()` (review, WA-T7): a READ-then-WRITE transaction on the WAL file the
 // `gorifi-wa` process also writes (WA-T9) — a deferred one that upgrades to a write after
 // the other process committed fails with `SQLITE_BUSY_SNAPSHOT` (a 500); BEGIN IMMEDIATE
-// takes the write lock up front, where `busy_timeout` applies. The rest of this file
-// follows on WA-T9's row.
+// takes the write lock up front, where `busy_timeout` applies. ~~The rest of this file
+// follows on WA-T9's row.~~ → WA-T9: EVERY transaction in this file is `.immediate()`
+// now (compose, the waitlist auto-compose — a SAVEPOINT when nested in the cycle PATCH —,
+// release, retry, rerender, body edit, manual tick, delete), and so are the module-16
+// hand-over routes and the three soft-cancel doors that call `cancelForUnHandOver()`
+// (learnings 15 §WA-T9). A residual `SQLITE_BUSY*` (a lock held past `busy_timeout`)
+// answers 503 `db_busy` from `index.js`'s error handler, never a 500.
 export function insertTestMessage({ phoneE164, now = new Date() } = {}) {
   return db.transaction(() => {
     const pending = db.prepare(

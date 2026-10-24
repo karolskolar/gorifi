@@ -16,7 +16,7 @@
 //      spec serves (whatsapp-outbox.spec.js §4's pattern): `bot_active`, the banner's
 //      connected+paused branch.
 //
-// ⚠ WA-T9 (the stub SENDER) owns „… and (with the stub sender running) to `Odoslané`
+// ⚠ WA-T9 (the stub SENDER) owns — and closed, `whatsapp-process.spec.js` §2 — „… and (with the stub sender running) to `Odoslané`
 // within the poll interval“ — nothing here drains `released` rows.
 // ⚠ E-mail rows settle `failed`/`not_configured` right after a release on a gate without
 // Mailgun (learnings 15 §WA-T6) — the repair-door test USES that.
@@ -363,7 +363,7 @@ test.describe('WA-T8 · §1 /admin/whatsapp', () => {
     expect(rowOf(back, fx.A).status).toBe('released')
     expect(rowOf(back, fx.B).status).toBe('released')
     expect(rowOf(back, fx.Z).status).toBe('skipped')
-    // ⚠ WA-T9: „… and (with the stub sender running) to `Odoslané`“ — no sender here.
+    // ⚠ WA-T9: „… and (with the stub sender running) to `Odoslané`“ — no sender here; the stub-drained twin is `whatsapp-process.spec.js` §2.
   })
 
   test('wa.me tab: NO wa.me href in the DOM before the click; „Otvoriť chat“ opens https://wa.me/<digits>?text=<encoded body> (noopener) composed at click time, the row reads „Otvorené ✓“ and stays so after a reload', async ({ page }) => {

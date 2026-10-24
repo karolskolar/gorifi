@@ -749,7 +749,7 @@ writes it). Puppeteer args `--no-sandbox --disable-dev-shm-usage`. The client em
 `{ state, sender, number, qr (data:image/png;base64 — ONLY while state = 'qr'; the
 `qrcode` package renders it; refreshed on every `qr` event ≈ 20 s), queue: { released,
 sent_today, failed }, hourly_sent, next_send_at, last_sent_at, last_error, db_path,
-uptime_s, version }`. Anything else ⇒ 404. No `POST` routes in v1 (Decision D7).
+uptime_s, version }` **→ WA-T9: plus `pace: { min_ms, max_ms }` and `hourly_max` (WA-T7's Tempo card, learnings 15 §WA-T9)**. Anything else ⇒ 404. No `POST` routes in v1 (Decision D7).
 
 **Log lines (`[wa]` prefix, PII-free — ids, never bodies or numbers beyond the bot's
 own):** `[wa] boot sender=whatsapp db=/var/www/gorifi/backend/src/db/database.sqlite

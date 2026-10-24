@@ -228,7 +228,7 @@ router.delete('/:id', (req, res) => {
     return { changed: softCancelGuestOrder(row.id) };
   });
 
-  const applied = apply();
+  const applied = apply.immediate(); // WA-T9: soft cancel ⇒ cancelForUnHandOver (outbox write)
   if (applied.conflict === 'gone') {
     return res.status(404).json({ error: 'Objednávka kolegu nebola nájdená' });
   }
@@ -465,7 +465,7 @@ router.patch('/:id/handed-over', requireAdmin, (req, res) => {
     };
   });
 
-  const applied = apply();
+  const applied = apply.immediate(); // WA-T9: BEGIN IMMEDIATE — the outbox shares the WAL file with gorifi-wa
   if (applied.conflict === 'gone') {
     return res.status(404).json({ error: 'Objednávka kolegu nebola nájdená' });
   }
@@ -579,7 +579,7 @@ router.post('/:id/cancel', requireAdmin, (req, res) => {
     return { changed: softCancelGuestOrder(row.id) };
   });
 
-  const applied = apply();
+  const applied = apply.immediate(); // WA-T9: soft cancel ⇒ cancelForUnHandOver (outbox write)
   if (applied.conflict === 'gone') {
     return res.status(404).json({ error: 'Objednávka kolegu nebola nájdená' });
   }

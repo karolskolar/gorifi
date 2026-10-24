@@ -1464,7 +1464,7 @@ router.post('/:id/distribution/hand-over', requireAdmin, (req, res) => {
 
   let applied;
   try {
-    applied = apply();
+    applied = apply.immediate(); // WA-T9: BEGIN IMMEDIATE — the outbox shares the WAL file with gorifi-wa
   } catch (err) {
     if (err instanceof BatchRefusal) return res.status(err.status).json(err.body);
     throw err;

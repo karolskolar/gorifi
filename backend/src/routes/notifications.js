@@ -10,6 +10,7 @@ import {
   composeSegment, deleteRow, editRowBody, groupCounts, markManualSent, releaseGroup, rerenderGroup, retryGroup,
 } from '../helpers/outbox.js';
 import { botConnected } from '../helpers/wa-health.js';
+import { isDbBusy, sendDbBusy } from '../helpers/db-busy.js';
 
 // Module 21 — the admin's WhatsApp notifications API. WHOLLY ADMIN: a single-audience
 // router, so the MOUNT is wrapped in `requireAdmin` (index.js), like
@@ -458,6 +459,8 @@ router.patch('/:id/manual-sent', async (req, res) => {
     if (result.refused) return refuse(res, result.refused);
     return res.json(readRow(id));
   } catch (e) {
+    // WA-T9: this handler catches its own throws, so the `db_busy` 503 is applied here too.
+    if (isDbBusy(e)) return sendDbBusy(req, res, e);
     console.error(`[notifications] manual-sent failed: ${String(e?.message || e).slice(0, 200)}`);
     return res.status(500).json({ error: 'Chyba servera' });
   }

@@ -583,6 +583,11 @@ DB_PATH="$RUN_DB" PORT=3997 CORS_ORIGIN=http://localhost:3997 \
 #   `whatsapp-settings.spec.js` (WA-T7) §2 + its stub UI test serve on the SAME port
 #   (connected / qr / 500 / slow answers through `GET /api/admin/whatsapp/health`), and
 #   its QR-never-logged test also needs SERVER_LOG; without WA_HEALTH_URL they self-skip.
+# ⚠ WA-T9: `whatsapp-process.spec.js` §2 runs the REAL `gorifi-wa` process (stub sender,
+#   `e2e/wa-harness.js`) against THIS server's DB_PATH and binds THE SAME PORT — the one
+#   `WA_HEALTH_URL` names — so this server's health proxy / `bot_active` guard find it.
+#   It needs `wa/node_modules` (`cd wa && npm ci` once — see „The gorifi-wa stub
+#   harness" below) and the SAME DB_PATH + WA_HEALTH_URL in step 6's env.
 # ⚠ /api/health, NOT /api/cycles — `cycles` is requireAdmin and answers 401, so
 #   `curl -sf` there NEVER succeeds and the wait degrades into a silent 15 s sleep.
 #   The trailing re-check is what makes a dead backend loud instead of a confusing
@@ -594,6 +599,7 @@ curl -sf http://localhost:3997/api/health >/dev/null \
 # 5 — the suite's own fixtures ON TOP of the template
 cd e2e
 npm install && npx playwright install --with-deps chromium   # first time only
+(cd ../wa && npm ci)   # first time only — the gorifi-wa harness (WA-T9) THROWS without wa/node_modules
 BASE_URL=http://localhost:3997 DB_PATH="$RUN_DB" node seed.mjs
 # ⚠ It must say `cycle: created` / `friend: created`. `exists` means you are talking
 #   to a server that is NOT on your fresh copy — stop and read the gotcha below.
@@ -753,6 +759,42 @@ Gotchas in that recipe that look like app bugs when you skip them:
   is genuinely off. Two further vars are honoured **only** while it is on and
   exist purely for this spec: `GOOGLE_AUTH_TEST_CERTS_URL` (⚠ **loopback hosts
   only**) and `GOOGLE_AUTH_TEST_TIMEOUT_MS`.
+
+### The `gorifi-wa` stub harness (WA-T9, `e2e/wa-harness.js`)
+
+`whatsapp-process.spec.js` starts the REAL WhatsApp process (`node wa/src/index.js`,
+21 §UC-WA-011) as a child with `WA_SENDER=stub WA_POLL_MS=200 WA_PACE_MIN_MS=0
+WA_PACE_MAX_MS=0 WA_HOURLY_MAX=100000` FORCED (every ambient `WA_*` key is blanked
+first, the Mailgun harness's rule — a harness child can never start the real sender),
+and always stops it by its own PID in a `finally` (plus a SIGKILL sweep when the
+worker exits). The stub needs no Chromium and no whatsapp-web.js.
+
+```bash
+cd wa && npm ci     # once per checkout: better-sqlite3 + qrcode only (no Chromium —
+                    # whatsapp-web.js is an OPTIONAL peer until WA-T10)
+```
+
+A checkout without `wa/node_modules` makes the harness THROW (not skip) — a missing
+install must not read as a pass.
+
+- **§1 (private database, free port)** needs only the source tree: each test boots the
+  API's `schema.js` into a temp file (`makeOutboxDb()`) and runs the process on it. It
+  never touches the gate server — it runs on every local checkout.
+- **§2 (the gate database)** needs `DB_PATH` + `WA_HEALTH_URL` — the SAME values the gate
+  server was started with (step 4/6 above) — and a local target. The child listens on
+  `WA_HEALTH_URL`'s port (`3996` in the recipe), so the server's health proxy and the
+  `bot_active` guard see a real `connected` process. ⚠ That port is SHARED, one test at a
+  time, with the fake health servers of `whatsapp-outbox` §4, `whatsapp-settings` §2/§3
+  and `whatsapp-composer` §2: `--workers=1` and every owner's `finally` keep them apart.
+  If something still holds it, the child exits 1 (`[wa] health server cannot listen …
+  (EADDRINUSE)`) and the harness throws with that log — loud, never a silent skip.
+  ⚠ While a §2 child runs it drains EVERY released WhatsApp row in the gate DB (other
+  specs' leftovers too) — exactly what the real process would do.
+- **§3** — the `.immediate()` probe needs the source tree; the `db_busy` 503 test needs
+  `DB_PATH` (it holds `BEGIN IMMEDIATE` on the gate file for ~5 s, during which the
+  single-threaded server is frozen by design).
+- ⚠ Without `DB_PATH` + `WA_HEALTH_URL`, §2 (3 tests) and the 503 test self-skip. **A
+  skipped §2 is not a pass** — reconcile the skip list.
 
 ### Friend-portal UI specs and the friends-list stub
 

@@ -38,6 +38,7 @@ import coffeeProductsRouter from './routes/coffee-products.js';
 import imagesRouter from './routes/images.js';
 import notificationsRouter from './routes/notifications.js';
 import { sweepInterruptedEmailRows } from './helpers/outbox.js';
+import { isDbBusy, sendDbBusy } from './helpers/db-busy.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -255,6 +256,11 @@ app.use((err, req, res, next) => {
     // names a byte offset. Slovak and unaccented, matching the 500 below.
     return res.status(status).json({ error: CLIENT_ERROR_MESSAGES[status] || 'Neplatna poziadavka' });
   }
+
+  // WA-T9 (21 §UC-WA-011): the `gorifi-wa` process is the SECOND writer to the SQLite
+  // file — a `SQLITE_BUSY*` is transient and retryable: 503 `db_busy`, never a 500 with a
+  // stack (`helpers/db-busy.js`). Nothing was written (the transaction rolled back).
+  if (isDbBusy(err)) return sendDbBusy(req, res, err);
 
   console.error(err.stack);
   res.status(500).json({ error: 'Nieco sa pokazilo' });

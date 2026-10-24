@@ -48,7 +48,7 @@ const error = ref('')
 // `lib/use-wa-health.js` — the settings page's loader, one home (5 s poll, seq-guarded).
 // WA-T8 review: the 5 s health tick also RE-READS the rows while any visible row is
 // `released`, so they flip to `Odoslané` without a reload (§UC-WA-009 „within the poll
-// interval“; the stub-sender proof is WA-T9's). `loadRows()` is seq-guarded.
+// interval“; the stub-sender proof is `whatsapp-process.spec.js` §2, WA-T9). `loadRows()` is seq-guarded.
 const { health, connected, paused: botPaused } = useWaHealth({
   onHealth: () => {
     if (selectedKey.value && rows.value.some((r) => r.status === 'released')) loadRows()

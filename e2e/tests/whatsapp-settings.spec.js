@@ -21,7 +21,7 @@
 //   §3 UI — the admin page, logged in through the form; the API helper ADOPTS the
 //      browser's token (one global admin_token row — CLAUDE.md).
 //
-// ⚠ The real stub SENDER (rows drained `released → sent`) is WA-T9 — nothing here
+// ⚠ The real stub SENDER (rows drained `released → sent`) is WA-T9 (`whatsapp-process.spec.js` §2 closes this page's stub clauses) — nothing here
 // depends on it. The test-message rows this spec creates are finalised through the
 // product's own door (`PATCH /api/notifications/:id/manual-sent`, allowed on a released
 // row while the bot is not connected), so no `released` test row survives the spec.
