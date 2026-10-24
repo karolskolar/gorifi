@@ -401,7 +401,8 @@ set, 21-grammar keys, host fixture gains a phone), `guest-packeta.spec.js` GP-T6
    cheapest complete fix; alternatively `softCancelGuestOrder()` could call `cancelForUnHandOver({guestOrderIds})`.
 
 10. **(review) An e-mail counts only when it passes `helpers/mailer.js EMAIL_SHAPE`** (`planRow`'s `usableEmail()`,
-    the `storedEmailUsable()` rule — the CONSTANT is the outbox's only mailer import). An unshaped address is ABSENT
+    the `storedEmailUsable()` rule — ~~the CONSTANT is the outbox's only mailer import~~ → §WA-T6: `sendMail` +
+    `renderEmail` are imported too, called only by `handOffEmailRows()`). An unshaped address is ABSENT
     for rules 2 and 4: unshaped + a phone that did not normalise ⇒ `skipped`/`no_phone`; opted-out + unshaped ⇒ none.
 11. **(review) For WA-T5** (also on its PROGRESS row): release must refuse/rerender NULL-body legacy rows; rerender
     refreshes the snapshots; `{suma}` is frozen at enqueue (stale after a payment until a rerender);
@@ -445,7 +446,7 @@ orchestrator's WA-T5 decisions. Tests: NEW `e2e/tests/whatsapp-outbox.spec.js` (
   The rows route and every single-row answer share ONE `ROW_SELECT` and publish `unresolved` as an ARRAY (`null` =
   never computed).
 - **`outbox.js`**: `composeSegment`, `releaseGroup`, `retryGroup`, `rerenderGroup`, `editRowBody`, `markManualSent`,
-  `deleteRow`, `composeWaitlistOnOpen`, `handOffEmailRows` (WA-T6's no-op seam), `groupCounts`, `COMPOSABLE_KINDS`.
+  `deleteRow`, `composeWaitlistOnOpen`, `handOffEmailRows` (~~WA-T6's no-op seam~~ → filled by §WA-T6), `groupCounts`, `COMPOSABLE_KINDS`.
   WA-T4's insert loop became `mintEntries()` — ONE insert path for the hook and compose (rules, pre-check, constraint
   translation, `body` + `unresolved` from the same template + vars).
 - **`notifications.unresolved TEXT`** (orchestrator decision 1): CREATE (`notificationsTableSql`) +
@@ -553,3 +554,98 @@ orchestrator's WA-T5 decisions. Tests: NEW `e2e/tests/whatsapp-outbox.spec.js` (
 - WA-T9/WA-T11 (review, noted on both PROGRESS rows): once `gorifi-wa` writes the same WAL file, the API's
   read-then-write outbox transactions should be `.immediate()` (`SQLITE_BUSY_SNAPSHOT` otherwise 500s).
 - Scrub: `notifications.unresolved` holds placeholder tokens (`{datum}`); only a RESCAN (admin edit / boot back-fill) can capture a brace-wrapped fragment of a VALUE (a guest who typed `{Jana}`) — at most 40 chars of what `body` held, and `body` is already scrubbed. NOT added to `scrub-template.sql` (a new statement on a WA-T5 column would make `make-test-db.sh` fail closed until production boots WA-T5) — flagged for the orchestrator.
+
+## WA-T6 — the e-mail fallback `channel = 'email'` (`handOffEmailRows()`, 2026-10-24)
+
+Spec: 21 §UC-WA-010 (+ 08's `renderEmail`/`sendMail` seam and its three mailer rules). Tests: NEW
+`e2e/tests/whatsapp-email.spec.js` — 3 throwaway-boot probes (`HAS_BACKEND_SRC`) + 4 `withMailHarness` tests
+(`CAN_SPAWN_BACKEND`, self-skipping). Retargeted with strike notes: `whatsapp-outbox.spec.js` §2's release test AND its retry test (an e-mail row no
+longer stays `released` on the gate, so it is also `failed` — and re-released — at the retry; see Traps).
+
+### What shipped
+
+- **`helpers/outbox.js handOffEmailRows(ids)`** — WA-T5's no-op seam, filled. Called by `releaseGroup()` and
+  `retryGroup()` AFTER their transaction commits (unchanged call sites). It RE-READS each id (`ids()` dedupe/integer
+  filter) and hands over only rows that are `channel = 'email' AND status = 'released'` — never the caller's list as
+  given. Per row (`sendEmailRow`): `renderEmail({ text: body, blocks: [{ type: 'paragraph', text: body }] })` →
+  `sendMail({ to: row.email, subject: emailSubject(template_key), text, html })`, NOT awaited (the
+  `routes/magic-link.js` precedent); `.then` ⇒ `writeEmailResult()`; `.catch` logs. The whole render+send is in
+  try/catch: a `renderEmail` throw ⇒ `failed`/`render`, written synchronously. Returns the number handed over;
+  never throws, never an unhandled rejection (the probe listens for one).
+- **`writeEmailResult`** — the conditional UPDATEs, literal columns: `{sent:true}` ⇒ `status='sent', sent_at =
+  CURRENT_TIMESTAMP, sent_via='email', error=NULL … WHERE id=? AND status='released'`; else `status='failed',
+  error=<code> … WHERE id=? AND status='released'`. 0 rows ⇒ ONE line `[outbox] email result for already-final row
+  id=<id>` (console.log, nothing else on it).
+- **`emailSubject(templateKey)`** (exported) — `Podpultovka · {getTemplate(key).name}`; read at SEND time.
+- **`emailResultError(result)`** (exported) — the mailer's result ⇒ the stored code, whitelisted against the fixed
+  vocabulary (`no_recipient | not_configured | invalid_recipient | timeout | network | HTTP <1xx–5xx>`), anything
+  else ⇒ `unknown`. So `notifications.error` can never hold server text or the key (mailer rule 2, enforced a
+  second time at the column). `render` and (review) `interrupted` are this file's own codes, passed directly, never
+  through the whitelist.
+- **(review) `sweepInterruptedEmailRows()`** (boot, `index.js`) and the e-mail exemption from `bot_active` in
+  `routes/notifications.js` — decision 5.
+
+### Decisions (orchestrator: confirm or overturn)
+
+1. **Subject for a key outside the six** (`'test'` — §UC-WA-012's row, which is a WhatsApp row anyway — or a stray
+   key) = **`Podpultovka`** alone: no invented Slovak copy. `custom` (composer `all_active` e-mail fallback) gets
+   „Podpultovka · Vlastná správa" — the spec's literal rule; the PO may want a better subject for custom mail.
+2. **A success CLEARS `error`** (`error = NULL`). §UC-WA-010 lists three columns; WA-T5 decision 9 keeps a retried
+   row's code „until the sender overwrites it" — a `sent` row still showing „HTTP 500" would read as a failure in
+   the composer. Pinned by the retry test (mutation: dropping `error = NULL` reds it).
+3. **The template name is read at send time**, not snapshotted (no column for it; names are not editable through
+   the PUT — `writeTemplate` keeps `name` — so only a hand-corrupted row could change it, and that reads as the seed).
+4. **Body newlines**: the body is ONE `paragraph` block (spec literal, „no HTML beyond 08's shell"), so a multi-line
+   admin edit collapses to one line in the HTML part; the TEXT part keeps it verbatim (FormData sends CRLF). Not
+   changed — adding `white-space:pre-line` would be a module-08 block change.
+5. ~~**No boot re-drive**: a row whose send is in flight when the process stops stays `released` forever … the
+   admin can tick it by hand. Not built~~ → **(review, orchestrator) BOTH recovery doors built.** The premise was
+   false: a stuck `released` e-mail row had NO door — retry takes `failed`, rerender `queued`, DELETE refuses
+   `released`, and the hand tick 409'd `bot_active` whenever the bot was connected (the guard applied to every
+   released row). Now:
+   (a) **Boot sweep** `outbox.js sweepInterruptedEmailRows()`, called ONCE by `index.js` before `app.listen`:
+   `UPDATE … SET status='failed', error='interrupted' WHERE channel='email' AND status='released'`, NO age threshold
+   (the API is the only e-mail sender, `instances: 1` — nothing can be in flight at its own boot). `interrupted`
+   joins `render` as this file's own codes. Deliberately NOT in `db/schema.js`: schema.js runs in every process that
+   imports it (spec probes, tooling pointed at a live `DB_PATH`), and a sweep there would fail a running server's
+   in-flight send. ⚠ **Accepted cost:** a mail Mailgun already accepted before the crash goes out twice on retry.
+   (b) **`PATCH /:id/manual-sent` exempts `channel='email'` from the `bot_active` 409** (no health fetch for it):
+   the WA process never drains e-mail rows (21 §UC-WA-011 step 1), so the guard protected nothing there. The
+   conditional writes still arbitrate a tick racing the mailer's `.then` (the race test).
+   Pinned: §1b (helper probe + a REAL `node backend/src/index.js` boot whose log shows the sweep BEFORE „Server bezi
+   na porte"), and an HTTP harness test with a `connected` health stub (WhatsApp row 409, e-mail row 200).
+   Mutation-checked: dropping the `index.js` call reds the real-boot test; restoring the unconditional guard reds the
+   HTTP test.
+6. **The `/g/o/<order_token>` question.** The three hand-over seeds carry no `{odkaz}`, so no shipped e-mail row
+   carries a URL. If the admin adds `{odkaz}` to the `host`/`packeta` template, a GUEST row's body gets
+   `<base>/g/o/<order_token>` (segments.js, the one composer `guestStatusUrlPath()`) — and an e-mail row goes to
+   `row.email` = that guest's OWN `guest_email` snapshot. That is exactly what module 14/20's confirmation mail
+   already sends (the guest's own status URL to the guest's own address — `guest-packeta.spec.js` §7 pins it), so it
+   is consistent with CLAUDE.md's `order_token` rule (it is never rendered into a DOM attribute; the mail is text +
+   an escaped paragraph, no button/href). A FRIEND row's `{odkaz}` is the login root (no token). The base is
+   `resolveLoginUrl()` (PUBLIC_BASE_URL pin) at enqueue. ⚠ An admin's free-text body edit / `custom` text is the
+   admin's own words: nothing stops them typing a `revolut.me` URL into a mail — CLAUDE.md's „mail carries no
+   revolut.me/payme.sk URL" is a rule about what the APP composes; not enforced on admin text (flagged).
+
+### Traps found
+
+- **WA-T5's own release test pinned the no-op.** `whatsapp-outbox.spec.js` §2 asserted EVERY row of the released
+  pickup group reads `released` afterwards — true only while `handOffEmailRows` sent nothing. On the gate (no Mailgun
+  env) the e-mail row now reads `failed`/`not_configured` a microtask after the release. The release ANSWER's
+  `counts` still says `released` for it: `sendMail()` resolves at once without Mailgun, but its `.then` is a
+  microtask that runs only after the synchronous route handler has built the response. Retargeted with a strike
+  note; the e-mail row's terminal state is asserted there now. The serial §2 retry test then also changed: E's
+  failed e-mail row is re-released by every retry (`email: n`) and fails again — a gate-level pin that retry
+  re-sends; the WhatsApp row is still picked up exactly once. A serial describe hid the second break behind the
+  first (9 „did not run").
+- Probe stdout ≠ logs: `console.error` goes to stderr, which `execFileSync` drops — the probe uses `spawnSync` and
+  checks both streams (and strips its own `@@PROBE@@` marker line, which contains the bodies it read back).
+- The harness backend inherits `process.env`, including the gate's `WA_HEALTH_URL` (a port `whatsapp-outbox` §4
+  serves for one test). The race test passes its OWN dead-port `WA_HEALTH_URL` so the manual tick on a `released`
+  row is deterministically allowed.
+- **„The admin can tick it by hand" was never checked against the route** — the `bot_active` guard covered every
+  released row, so with the bot connected a stuck e-mail row had no door at all (review finding). A recovery claim
+  in a write-up is a CLAIM: name the door AND the test that walks through it.
+- Mutation-checked (each reds exactly one test): success UPDATE without `AND status='released'` (race test), the
+  SELECT without `channel='email'` or without `status='released'` (§1 probe), no `error = NULL` (retry test), no
+  already-final log line (race test).

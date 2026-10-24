@@ -37,6 +37,7 @@ import magicLinkRouter from './routes/magic-link.js';
 import coffeeProductsRouter from './routes/coffee-products.js';
 import imagesRouter from './routes/images.js';
 import notificationsRouter from './routes/notifications.js';
+import { sweepInterruptedEmailRows } from './helpers/outbox.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -263,6 +264,11 @@ app.use((err, req, res, next) => {
 // nginx (which proxies to 127.0.0.1) and never directly on the LAN. Override
 // with HOST=0.0.0.0 if a deployment genuinely needs external binding. Keep this
 // in sync with the hardened server (SEC-I2).
+// WA-T6 (21 §UC-WA-010): e-mail notifications left `released` by a previous process are
+// sends that never finished — fail them as `interrupted` so the composer's retry re-sends.
+// ONCE, here, never in `db/schema.js` (see `sweepInterruptedEmailRows()`).
+sweepInterruptedEmailRows();
+
 app.listen(PORT, process.env.HOST || '127.0.0.1', () => {
   console.log(`Server bezi na porte ${PORT} (${process.env.HOST || '127.0.0.1'})`);
 });

@@ -431,7 +431,7 @@ router.patch('/:id/manual-sent', async (req, res) => {
     if (payload.sent !== true) {
       return res.status(400).json({ error: 'Neplatná hodnota (odoslané)', field: 'sent', reason: 'invalid_sent' });
     }
-    const row = db.get('SELECT status FROM notifications WHERE id = ?', [id]);
+    const row = db.get('SELECT status, channel FROM notifications WHERE id = ?', [id]);
     if (!row) return refuse(res, 'not_found');
     if (row.status === 'queued') {
       const result = markManualSent(id, ['queued']);
@@ -442,7 +442,11 @@ router.patch('/:id/manual-sent', async (req, res) => {
 
     // 21 §UC-WA-008: on a RELEASED row the tick is allowed only while the bot is NOT
     // connected (2 s timeout; unreachable counts as not connected) — a duplicate-send guard.
-    if (await botConnected()) return refuse(res, 'bot_active');
+    // ⚠ WA-T6 review: a WhatsApp guard only. The WA process never drains an `email` row
+    // (21 §UC-WA-011 step 1), so for one the guard protected nothing and turned a stuck
+    // e-mail send into a row no door could move — an e-mail row skips the health fetch.
+    // The conditional write below still loses to the mailer's own `.then` (and vice versa).
+    if (row.channel !== 'email' && await botConnected()) return refuse(res, 'bot_active');
     const result = markManualSent(id, ['released']);
     if (result.refused) return refuse(res, result.refused);
     return res.json(readRow(id));

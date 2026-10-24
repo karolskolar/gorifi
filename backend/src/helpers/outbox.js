@@ -6,10 +6,12 @@ import { scanPlaceholders, unresolvedColumn } from './outbox-scan.js';
 // 21 Decision D8: the release stamps `guest_waitlist.notified_at` — through module 19's
 // one writer of that table, never a statement of its own here.
 import { markWaitlistNotified } from './guest-waitlist.js';
-// The ONE home of „is this an e-mail address" (CLAUDE.md `storedEmailUsable()` rule) —
-// the CONSTANT only; this file never calls the mailer (`sendMail` is WA-T6's, behind the
-// post-commit `handOffEmailRows()` seam WA-T5's release calls).
-import { EMAIL_SHAPE } from './mailer.js';
+// The ONE home of „is this an e-mail address" (CLAUDE.md `storedEmailUsable()` rule), and
+// (WA-T6) the mailer itself: `sendMail` + module 08's `renderEmail` are called ONLY by
+// `handOffEmailRows()` at the bottom of this file — the post-commit seam the release and
+// the retry call (21 §UC-WA-010). The enqueue / compose / rerender paths never send.
+import { EMAIL_SHAPE, sendMail } from './mailer.js';
+import { renderEmail } from './email-templates.js';
 
 // ⚠ THE ONE AND ONLY WRITER OF `notifications` (DP-T3, 16 §UC-DP-008; module 21's
 // writers join HERE — WA-T4 §UC-WA-006, and WA-T5's compose / release / retry /
@@ -18,10 +20,12 @@ import { EMAIL_SHAPE } from './mailer.js';
 // other statements, and they run before any route exists).
 //
 // It records WHICH template is owed to WHOM about WHICH bag, at the moment the bag
-// leaves the admin's hands, renders the text and snapshots the address. It SENDS
-// NOTHING — there is no outbound call and no WhatsApp import, and the only mailer import
-// is the `EMAIL_SHAPE` constant, by design (01-architecture: „the API never sends";
-// the e-mail rows are handed to the mailer at RELEASE, WA-T5/WA-T6).
+// leaves the admin's hands, renders the text and snapshots the address. The ENQUEUE
+// SENDS NOTHING — there is no outbound call and no WhatsApp import (01-architecture: „the
+// API never sends"). ~~the only mailer import is the `EMAIL_SHAPE` constant~~ → WA-T6:
+// `sendMail`/`renderEmail` are imported too, and called ONLY by `handOffEmailRows()` —
+// the e-mail rows are handed to the mailer AFTER the release / retry commits (21
+// §UC-WA-010, the one place the API sends a notification itself).
 //
 // ⚠ SYNCHRONOUS, AND CALLED INSIDE THE CALLER'S `db.transaction()`, AFTER the
 // `handed_over_at` UPDATEs (§UC-WA-006). An `await` in here would break the
@@ -331,7 +335,8 @@ export function cancelForUnHandOver({ orderIds = [], guestOrderIds = [] } = {}) 
 //   markManualSent(id, fromStatuses)                    the wa.me tick (sync half)
 //   deleteRow(id)                                       a queued/skipped row
 //   composeWaitlistOnOpen(cycleId, { baseUrl })         PO 2026-09-19 auto-compose
-//   handOffEmailRows(ids)                               WA-T6's post-commit seam
+//   handOffEmailRows(ids)                               WA-T6: the post-commit e-mail send
+//   sweepInterruptedEmailRows()                         WA-T6 review: the boot sweep (index.js)
 //
 // ⚠ ALL SYNCHRONOUS (GA-T8). The only `await` on this surface is the manual tick's
 // health fetch, and it lives in the ROUTE, BEFORE `markManualSent()` — whose
@@ -773,14 +778,155 @@ export function deleteRow(id) {
   })();
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// WA-T6 — the e-mail fallback `channel = 'email'` (21 §UC-WA-010, R5.8 + D5).
+//
+// ⚠ THE ONE PLACE THE API PROCESS SENDS A NOTIFICATION ITSELF — because the mailer lives
+// in the API (01-architecture §Shared services); „the API never sends" is a WHATSAPP
+// rule, and a WhatsApp row is never handed to anything here (the SELECT below re-asserts
+// `channel = 'email'`). Module 08's seam, verbatim: `renderEmail()` → `sendMail()`; this
+// file adds no transport, no HTML and no link of its own (the body is ONE paragraph
+// block; 08's shell, escaping and per-message tracking-off flags do the rest).
+// ═════════════════════════════════════════════════════════════════════════════
+
+const EMAIL_SUBJECT_BRAND = 'Podpultovka';
+
 /**
- * ⚠ THE POST-COMMIT E-MAIL HAND-OFF POINT (21 §UC-WA-010) — WA-T6 fills it. Called by
- * the release and the retry AFTER their transaction committed, with the ids of the
- * `channel = 'email'` rows they just moved to `released`. WA-T5 sends nothing: the rows
- * stay `released` until WA-T6's fire-and-forget `sendMail()` `.then` moves them to
- * `sent`/`failed` (a conditional `UPDATE … WHERE id = ? AND status = 'released'`). Must
- * never throw into the route (it runs after the response's data is decided).
+ * The subject of a notification e-mail: „Podpultovka · {template name}“ (21 §UC-WA-010,
+ * e.g. „Podpultovka · Doručené na odberné miesto“). The name is read at SEND time from
+ * `getTemplate()` (fail-quiet: a corrupt row reads as its seed). A key outside the six —
+ * the §UC-WA-012 `'test'` message, a stray key — has no name, so the subject is the brand
+ * ALONE: no invented Slovak copy (the `test` row is a WhatsApp row anyway).
  */
-export function handOffEmailRows(ids) {
-  return Array.isArray(ids) ? ids.length : 0;
+export function emailSubject(templateKey) {
+  const name = getTemplate(templateKey)?.name;
+  return typeof name === 'string' && name.trim() ? `${EMAIL_SUBJECT_BRAND} · ${name}` : EMAIL_SUBJECT_BRAND;
+}
+
+// The mailer's FIXED result vocabulary (`helpers/mailer.js` header) plus this file's own
+// `render`. Anything else — which the mailer never returns — is stored as `unknown`, so
+// `notifications.error` can never carry server text, let alone the API key (the mailer's
+// rule 2, enforced a second time at the column).
+const EMAIL_RESULT_CODE = /^(?:no_recipient|not_configured|invalid_recipient|timeout|network|HTTP [1-5]\d{2})$/;
+
+/** `sendMail()`'s result ⇒ the `error` code a `failed` row stores. Never throws. */
+export function emailResultError(result) {
+  const code = result && typeof result === 'object' ? (result.error ?? result.skipped) : undefined;
+  return typeof code === 'string' && EMAIL_RESULT_CODE.test(code) ? code : 'unknown';
+}
+
+// The conditional result writes (§UC-WA-010): `WHERE status = 'released'` — the manual
+// wa.me tick may have finalised the row while the send was in flight, and whoever writes
+// second affects 0 rows. A success CLEARS `error` (a retried row keeps its old code until
+// the sender overwrites it — WA-T5 decision 9 — and a `sent` row must not read as a
+// failure in the composer).
+// `code` (a failure only) is either `emailResultError(result)` or one of this file's OWN
+// two codes: `render` (a `renderEmail` throw) and `interrupted` (the boot sweep below).
+function writeEmailResult(id, result, code = emailResultError(result)) {
+  const changed = result && result.sent === true
+    ? db.prepare(
+      "UPDATE notifications SET status = 'sent', sent_at = CURRENT_TIMESTAMP, sent_via = 'email', error = NULL WHERE id = ? AND status = 'released'"
+    ).run(id).changes
+    : db.prepare(
+      "UPDATE notifications SET status = 'failed', error = ? WHERE id = ? AND status = 'released'"
+    ).run(code, id).changes;
+  if (changed === 0) console.log(`[outbox] email result for already-final row id=${id}`);
+}
+
+// One row: render + send, fire-and-forget. NOTHING escapes: a `renderEmail` throw (a
+// blank body — the release gate refuses one, so only a direct call can get here with it)
+// is the row's `failed`/`render`; a throw inside the `.then` write (a DB fault) is
+// logged by the `.catch`. Log lines carry the row id and a bounded message — never the
+// body, the address or anything from the mailer beyond its fixed code.
+function sendEmailRow(row) {
+  try {
+    const { text, html } = renderEmail({ text: row.body, blocks: [{ type: 'paragraph', text: row.body }] });
+    sendMail({ to: row.email, subject: emailSubject(row.template_key), text, html })
+      .then((result) => writeEmailResult(row.id, result))
+      .catch((e) => {
+        console.error(`[outbox] email result write failed for row id=${row.id}: ${String(e?.message || e).slice(0, 200)}`);
+      });
+  } catch (e) {
+    console.error(`[outbox] email for row id=${row.id} could not be rendered: ${String(e?.message || e).slice(0, 200)}`);
+    try {
+      writeEmailResult(row.id, null, 'render');
+    } catch (writeError) {
+      console.error(`[outbox] email render failure not recorded for row id=${row.id}: ${String(writeError?.message || writeError).slice(0, 200)}`);
+    }
+  }
+}
+
+/**
+ * ⚠ THE POST-COMMIT E-MAIL HAND-OFF (21 §UC-WA-010) — called by `releaseGroup()` and
+ * `retryGroup()` AFTER their transaction committed (the `routes/magic-link.js`
+ * fire-and-forget precedent), with the ids of the `email` rows they just moved to
+ * `released`.
+ *
+ *   handOffEmailRows(ids) → the number of rows handed to the mailer
+ *
+ *   • The caller's list is NOT trusted: each id is RE-READ and sent only while the row is
+ *     `channel = 'email' AND status = 'released'` (a WhatsApp row, a queued / sent /
+ *     failed row, a vanished id or a non-integer is skipped silently; duplicates count
+ *     once). The re-read is synchronous, so under `instances: 1` nothing interleaves
+ *     between the commit and it.
+ *   • Each send is fire-and-forget: the route answers with the rows `released`, and the
+ *     `.then` moves each to `sent`/`email` or `failed`/<code> (`writeEmailResult`). With
+ *     no Mailgun env the mailer answers `not_configured` and the row is `failed` /
+ *     `not_configured` — visible in the composer, never a silent success.
+ *   • A RETRY re-sends through this same door (`failed → released → here`).
+ *   • ⚠ A row whose send is in flight when the process stops would stay `released`
+ *     forever (retry takes `failed` rows only, rerender `queued` only, DELETE refuses a
+ *     released row). ~~nothing re-drives it; the admin can tick it by hand~~ → (WA-T6
+ *     review) the recovery path is `sweepInterruptedEmailRows()` below, run ONCE at API
+ *     boot (`index.js`): every `released` e-mail row ⇒ `failed`/`interrupted`, which the
+ *     composer's retry then re-sends. The hand tick (`PATCH /:id/manual-sent`) is a second
+ *     door: an e-mail row is exempt from its `bot_active` guard (the WA process never
+ *     drains e-mail rows, 21 §UC-WA-011 step 1). Learnings 15 §WA-T6 decision 5.
+ *   • NEVER THROWS into the route, and never an unhandled rejection.
+ */
+export function handOffEmailRows(rowIds) {
+  const wanted = ids(rowIds);
+  if (wanted.length === 0) return 0;
+  let handed = 0;
+  try {
+    const read = db.prepare(`
+      SELECT id, email, body, template_key FROM notifications
+       WHERE id = ? AND channel = 'email' AND status = 'released'
+    `);
+    const rows = wanted.map((id) => read.get(id)).filter(Boolean);
+    for (const row of rows) {
+      sendEmailRow(row);
+      handed += 1;
+    }
+  } catch (e) {
+    console.error(`[outbox] email hand-off failed: ${String(e?.message || e).slice(0, 200)}`);
+  }
+  return handed;
+}
+
+/**
+ * ⚠ THE BOOT SWEEP (WA-T6 review, learnings 15 §WA-T6 decision 5) — called ONCE by
+ * `index.js` at API startup, before `app.listen`. Every `channel = 'email'` row still
+ * `released` is a send the previous process started and never finished (the `.then`
+ * write died with it): ⇒ `status = 'failed'`, `error = 'interrupted'`, so the composer's
+ * retry re-sends it. NO AGE THRESHOLD: the API is the only e-mail sender and runs as ONE
+ * instance, so at its own boot nothing can be in flight. ⚠ Accepted cost: a mail Mailgun
+ * had already accepted before the crash goes out twice on that retry.
+ *
+ * ⚠ NOT in `db/schema.js`: schema.js runs in EVERY process that imports it (spec probes,
+ * tooling pointed at a live `DB_PATH`), and a sweep there would fail a running server's
+ * in-flight send. WhatsApp rows are never touched (the WA process owns `released` ones).
+ * Returns the number of rows swept; never throws (logged, 0).
+ */
+export function sweepInterruptedEmailRows() {
+  try {
+    const swept = db.prepare(
+      "UPDATE notifications SET status = 'failed', error = 'interrupted' WHERE channel = 'email' AND status = 'released'"
+    ).run().changes;
+    if (swept > 0) console.log(`[outbox] boot: ${swept} interrupted e-mail row(s) marked failed/interrupted`);
+    return swept;
+  } catch (e) {
+    console.error(`[outbox] boot sweep of interrupted e-mail rows failed: ${String(e?.message || e).slice(0, 200)}`);
+    return 0;
+  }
 }

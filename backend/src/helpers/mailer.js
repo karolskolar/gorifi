@@ -1,6 +1,7 @@
-// The ONE home for outbound mail (07 §UC-IA-009). Currently one caller — the
-// credential hand-off in `POST /api/invitations/:id/approve` — but every future
-// outbound message goes through `sendMail()`, never through its own fetch.
+// The ONE home for outbound mail (07 §UC-IA-009). ~~Currently one caller~~ — callers: the
+// credential hand-off (`routes/invitations.js`), the magic link, the guest confirmation and
+// (WA-T6) `helpers/outbox.js handOffEmailRows()`; every outbound message goes through
+// `sendMail()`, never through its own fetch.
 //
 // Transport: Mailgun's HTTP API over Node's global `fetch`. ⚠ NO NEW DEPENDENCY —
 // the server runs Node 20.20.2, so `fetch`, `FormData` and `AbortSignal.timeout` are

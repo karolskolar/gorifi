@@ -712,10 +712,19 @@ test.describe('WA-T5 · §2 21 §UC-WA-008 through the real routes', () => {
     const body = await res.json()
     expect(body).toMatchObject({ released: queued.length, email: queued.filter((r) => r.channel === 'email').length, skipped: 0 })
     expect(body.whatsapp + body.email).toBe(queued.length)
+    // `counts` is read in the same synchronous handler, before the e-mail hand-off's `.then` runs.
     expect(body.counts).toMatchObject({ queued: 0, released: queued.length })
+    // ~~every row reads back `released`~~ → WA-T6 (21 §UC-WA-010, learnings 15 §WA-T6): the
+    // e-mail rows go to the mailer AFTER the commit; this gate has no Mailgun env, so they
+    // settle `failed`/`not_configured`. The WhatsApp rows stay `released` (the API never
+    // sends one). Every row still carries the release's ONE `released_at`.
+    const emailIds = queued.filter((r) => r.channel === 'email').map((r) => r.id)
+    await expect.poll(async () => (await groupRows(fx.cycle.id, fx.pickupKey))
+      .filter((r) => emailIds.includes(r.id) && r.status === 'released').length, { timeout: 10_000 }).toBe(0)
     const after = await groupRows(fx.cycle.id, fx.pickupKey)
     for (const r of after) {
-      expect(r.status).toBe('released')
+      if (r.channel === 'email') expect(r).toMatchObject({ status: 'failed', error: 'not_configured', sent_at: null })
+      else expect(r.status).toBe('released')
       expect(r.released_at).toBe(after[0].released_at)
     }
     expect(of(after, 'friend', fx.E.id)[0].channel, 'non-vacuity: an e-mail row was in the group').toBe('email')
@@ -841,14 +850,21 @@ test.describe('WA-T5 · §2 21 §UC-WA-008 through the real routes', () => {
     test.skip(!DB_PATH, NEEDS_DB) // only the WA process writes `failed`
     const q = of(await groupRows(fx.cycle.id, fx.pickupKey), 'friend', fx.Q.id)[0]
     withDb((db) => db.prepare("UPDATE notifications SET status = 'failed', error = 'not_on_whatsapp', released_at = '2026-01-01 00:00:00' WHERE id = ?").run(q.id))
+    // ~~`{ released: 1, whatsapp: 1, email: 0 }` and a second retry ⇒ 0~~ → WA-T6: E's e-mail
+    // row in this group is `failed`/`not_configured` since the release (no Mailgun env on the
+    // gate), so a retry re-releases it too and the hand-off fails it again — the second retry
+    // re-sends the e-mail rows only; the WhatsApp row (Q, now `released`) is not picked up again.
+    const failedEmail = (await groupRows(fx.cycle.id, fx.pickupKey)).filter((r) => r.status === 'failed' && r.channel === 'email').length
+    expect(failedEmail, 'non-vacuity: E\'s e-mail row failed at the release').toBeGreaterThan(0)
     const res = await post('retry', { cycle_id: fx.cycle.id, segment_key: fx.pickupKey })
     expect(res.status()).toBe(200)
-    expect(await res.json()).toMatchObject({ released: 1, whatsapp: 1, email: 0, skipped: 0 })
+    expect(await res.json()).toMatchObject({ released: 1 + failedEmail, whatsapp: 1, email: failedEmail, skipped: 0 })
     const back = of(await groupRows(fx.cycle.id, fx.pickupKey), 'friend', fx.Q.id)[0]
     expect(back).toMatchObject({ status: 'released', error: 'not_on_whatsapp' })
     expect(back.released_at).not.toBe('2026-01-01 00:00:00')
+    await expect.poll(async () => of(await groupRows(fx.cycle.id, fx.pickupKey), 'friend', fx.E.id)[0].status, { timeout: 10_000 }).toBe('failed')
     const again = await post('retry', { cycle_id: fx.cycle.id, segment_key: fx.pickupKey })
-    expect(await again.json()).toMatchObject({ released: 0 })
+    expect(await again.json()).toMatchObject({ released: failedEmail, whatsapp: 0, email: failedEmail })
   })
 
   test('compose: a disabled template ⇒ 409 `template_disabled`; enabled ⇒ the not-ordered friend gets a queued row, the opted-out one none; idempotent; a locked cycle ⇒ 409 `cycle_not_open`; the empty `custom` ⇒ 409 `template_empty`; a hand-over key ⇒ 400 `not_composable`', async () => {
