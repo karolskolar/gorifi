@@ -5,6 +5,7 @@ import crypto from 'crypto';
 // WA-T1: the one-time `phone_e164` back-fill below normalises with THE one normaliser
 // (21 §UC-WA-002 — no second E.164 computation anywhere in backend/src).
 import { toE164 } from '../helpers/phone.js';
+import { TEMPLATE_KEYS, seedSettingValue, templateSettingKey } from '../helpers/template-render.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1056,8 +1057,17 @@ function initDb() {
   // ONLY when missing (the `rewards_threshold_kg` idiom above): the admin's value
   // survives every restart. `whatsapp_test_phone` = where the settings page's test
   // message goes ('' = none set); `whatsapp_paused` = '0' | '1', re-read by the
-  // `gorifi-wa` process before each send. The six `wa_template:*` keys are WA-T2's.
-  for (const [key, value] of [['whatsapp_test_phone', ''], ['whatsapp_paused', '0']]) {
+  // `gorifi-wa` process before each send.
+  // 21 §UC-WA-001/004 (WA-T2) — the six template rows join the same loop, same rule: a
+  // MISSING row is seeded, an existing one is NEVER touched (not even an invalid one —
+  // `helpers/templates.js` reads that as the seed default without rewriting it). The
+  // seed table and the setting-key spelling have ONE home, `helpers/template-render.js`.
+  const waSettingSeeds = [
+    ['whatsapp_test_phone', ''],
+    ['whatsapp_paused', '0'],
+    ...TEMPLATE_KEYS.map((key) => [templateSettingKey(key), seedSettingValue(key)]),
+  ];
+  for (const [key, value] of waSettingSeeds) {
     if (!db.prepare('SELECT 1 FROM settings WHERE key = ?').get(key)) {
       db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(key, value);
     }

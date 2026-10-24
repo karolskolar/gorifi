@@ -117,3 +117,94 @@ Spec: `docs/specification/21-whatsapp-notifications.md`. Tests: `e2e/tests/whats
   §UC-WA-003 carries the strike.
 - 21 §UC-WA-014 obligations that belong to later rows are not here. These include composer, release,
   the D5 e-mail rows, and the `not_ordered` exclusion.
+
+## WA-T2 — templates: seed, fail-quiet reader, `renderTemplate`, `GET/PUT /api/notifications/templates` (2026-10-24)
+
+Spec: 21 §UC-WA-004 as amended by „PO decisions 2026-09-19" + the orchestrator `{suma}` clarification.
+Tests: `e2e/tests/whatsapp-templates.spec.js` (26) + two `ADMIN_ENDPOINTS` rows in `api-security.spec.js`.
+
+### What shipped
+
+- **Module split (the seam later rows build on).**
+  - `backend/src/helpers/template-render.js` is PURE (its only import is `pricing.js roundMoney`, also pure).
+    It holds `TEMPLATE_KEYS`, `TEMPLATE_SEEDS` (byte-exact to the spec table, `enabled` stored 0|1),
+    `templateSettingKey()`, `seedSettingValue()`, `isTemplateKey()`, `MAX_BODY_LENGTH = 1000`,
+    `PLACEHOLDERS` (the closed eight), `unknownPlaceholders()`, `unresolvedFor(body, vars)` (WA-T4/T5's release
+    gate — see below), `NOTHING_OWED`, `renderTemplate()`, `formatMoney()`, `sumaValue()`, `formatDatum()`, `firstName()`.
+    Purity is load-bearing twice: `db/schema.js` imports the seed table at boot (a DB-importing module there
+    would be a circular import), and the spec imports the module with plain node. A spec pin checks its
+    import lines.
+  - `backend/src/helpers/templates.js` imports the DB: `getTemplate(key)` (null for a key outside the six),
+    `listTemplates()` (key order), `writeTemplate(key, {body?, enabled?})` — the ONE writer. Published shape
+    `{ key, name, body, enabled: boolean }`.
+  - The boot seed joins WA-T1's `whatsapp_test_phone`/`whatsapp_paused` loop in `schema.js`: missing ⇒ INSERT,
+    existing ⇒ untouched — including an INVALID existing row (the reader masks it; the boot never repairs it).
+  - Source pin: the seed copy and the composed `` `wa_template:${…}` `` key exist in `template-render.js`
+    only (comments excluded via `stripComments` — `outbox.js` NAMES the templates in a comment).
+- **Fail-quiet reader.** A row is valid only if the PUT could have written it: an object, `name` a non-empty
+  string, `body` a string ≤ 1000 with every `{…}` token in the vocabulary, `enabled` ∈ {0,1,true,false}.
+  Anything else (bad JSON, `null`, an array, a stray type, `{menoo}` hand-typed into the row) reads as the SEED
+  default and logs ONE bounded line (200-char excerpt) PER READ. A MISSING row reads as the seed silently.
+  Nothing throws. A PUT on a corrupt row merges onto the seed default and rewrites the whole row valid (no
+  parking — CLAUDE.md's park rule is `admin_google_subs`-specific; the corrupt excerpt is in the log).
+- **Router** `routes/notifications.js`, mounted `app.use('/api/notifications', requireAdmin, …)` (wholly admin,
+  the `/api/guest-waitlist` pattern). `GET /templates` ⇒ `{ templates: [6], placeholders: [8] }`.
+  `PUT /templates/:key` ⇒ the template. Decisions:
+  - unknown `:key` ⇒ 404 `unknown_template`, checked FIRST (prototype names `__proto__`/`constructor`/
+    `toString` and the raw `wa_template:pickup` included; no row is ever created for one);
+  - array body (incl. the one-element trap) ⇒ 400 `invalid_payload`; top-level `true`/`'abc'`/`null`/`42`
+    never reach the route (express.json strict ⇒ 400 `entity.parse.failed`);
+  - neither `body` nor `enabled` present (`{}`, bodyless, only unknown keys like `name`) ⇒ 400
+    `nothing_to_change`; `name` is NOT editable and an extra key is ignored;
+  - `body` non-string ⇒ 400 `invalid_body`; > 1000 (`.length`) ⇒ 400 `body_too_long`; an unknown token ⇒
+    400 `unknown_placeholder` with `token` = the FIRST offender; empty is legal (custom, D3); stored verbatim;
+  - `enabled` strict `true/false/1/0` else 400 `invalid_enabled`;
+  - every 400 is `{ error: <Slovak>, reason, field?, token? }`; all validation precedes the write.
+- **Tokenizer.** A token is any brace PAIR with no brace inside (`/\{[^{}]*\}/gu`) — `{}`, `{ meno }`,
+  `{Meno}` are tokens and unknown; an unpaired brace is text. Token names are NFC-normalised before lookup, so
+  a Mac-typed NFD `{objednávka}` is the same placeholder (stored body untouched).
+
+### The `{suma}` seam (WA-T3/WA-T4 read this)
+
+- `vars.suma = NOTHING_OWED` (a `Symbol.for('gorifi.wa.nothing_owed')` — registered, so it survives two module
+  URLs) DROPS every sentence holding `{suma}`: from just after the previous boundary/newline (or the start) to
+  the next boundary inclusive, or up to the next newline, or the end. **A boundary is `.`/`!`/`?` FOLLOWED BY
+  WHITESPACE OR THE END** (review fix), so `12.5 €`, `revolut.me/…`, `podpultovka.biz` never cut. A sentence
+  that began a line takes its following gap/line break with it; after a drop 3+ line breaks collapse to 2 and
+  trailing whitespace is trimmed. The drop runs on the TEMPLATE before substitution, so a `.` in a value
+  („Nám. SNP") cannot move a boundary.
+- ⚠ **Known limit, pinned as behaviour:** an ABBREVIATION followed by a space in the TEMPLATE („(vr. dopravy)")
+  IS a boundary — `'Ahoj. Suma (vr. dopravy): {suma}. Vďaka.'` ⇒ `'Ahoj. Suma (vr. Vďaka.'` when nothing is
+  owed. The rule cannot tell it from a sentence end; the seeds hold none and the admin sees the preview.
+- A NUMBER passed as `vars.suma` goes through `sumaValue()` inside the renderer (review fix): `31.1` ⇒
+  `31,10 €`, `0`/negative/rounds-to-0 ⇒ the drop, `NaN` ⇒ literal. A raw `31.1`/`0` never reaches a message.
+- ⚠ **RELEASE MUST ASK `unresolvedFor(body, vars)` — never rescan the rendered body** (review fix; the first cut
+  exported `unresolvedPlaceholders(text)`, a rescan, and it is DELETED — a spec pins its absence). A value can
+  carry braces (a guest named „{suma}"): a rescan would block that row for nothing, and the template+vars answer
+  is the only one that knows which literal came from the template. WA-T4/T5 compute it at render time, beside
+  the body. ⚠ The one case with no template+vars at hand is an admin's per-row body edit (UC-WA-008): a rescan
+  there can only OVER-block (every literal the template left is still in the text), never under-block — WA-T4
+  decides that case explicitly.
+- „No value" is DIFFERENT: undefined / null / '' / blank / non-finite / non-string ⇒ the placeholder stays
+  literal (D10) and release refuses the row. Never pass `''` to mean „paid".
+- `sumaValue(owed)`: `roundMoney(owed) > 0` ⇒ `formatMoney(owed)`; finite ≤ 0 ⇒ `NOTHING_OWED`; else `''`.
+  The CALLER computes `owed` (friend `-balance`, guest `total + delivery_fee` or 0 once paid).
+- D4's „už uhradené" is retired; spec 21 §UC-WA-004's `{suma}` row, its acceptance line and D4 carry strikes.
+
+### Formatters
+
+- `formatMoney`: `31,10 €` — comma decimal, ORDINARY space (no NBSP), via `roundMoney`, no thousands separator;
+  non-number ⇒ `''`.
+- `formatDatum`: `v piatok 12. 9.` — the seven ACCUSATIVE forms with their preposition, spelled out
+  (`v nedeľu … vo štvrtok … v sobotu`; ICU gives the nominative and the preposition changes before
+  „štvrtok"). A `YYYY-MM-DD` string (`closes_at` is a CALENDAR date) is read with UTC arithmetic — no timezone;
+  only a `Date` instant is converted to its Europe/Bratislava day. Impossible days (`2026-02-31`) ⇒ `''`.
+  Not imported from `frontend/src/lib/dates.js` (no frontend code in the backend; that file owns the genitive set).
+- `firstName`: first `\s+` token (NBSP counts) of the trimmed string; non-string ⇒ `''`.
+
+### Traps found
+
+- A pure-module spec gated on the NEW file's existence skips silently when the file is deleted — gate on
+  `db/schema.js` (the backend tree) instead, so a missing module reds.
+- `backend/public` must be REBUILT before running `whatsapp-schema.spec.js`: its three UI tests red on a stale
+  build that predates WA-T1's profile checkbox (not a regression — rebuild, re-run, green).

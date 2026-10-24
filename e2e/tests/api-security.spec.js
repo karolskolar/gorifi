@@ -214,6 +214,11 @@ const ADMIN_ENDPOINTS = [
   { method: 'post', path: '/api/pickup-locations', data: { name: 'evil' } },
   { method: 'patch', path: '/api/pickup-locations/1', data: { name: 'evil' } },
   { method: 'delete', path: '/api/pickup-locations/1' },
+  // 21 §UC-WA-004 (WA-T2): the WhatsApp templates. `/api/notifications` is a WHOLLY
+  // admin mount (`requireAdmin` on the mount in index.js); later module-21 rows add
+  // their routes to the same router and each one joins this list.
+  { method: 'get', path: '/api/notifications/templates' },
+  { method: 'put', path: '/api/notifications/templates/pickup', data: { body: 'evil', enabled: false } },
 ]
 
 const PUBLIC_ENDPOINTS = [

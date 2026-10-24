@@ -332,7 +332,7 @@ place the prototype's dative („Legovi“) is dropped.
 | `{meno}` | recipient's first name: first whitespace-token of `friends.name` / `guest_name` / `guest_waitlist.name`, trimmed |
 | `{objednávka}` | `order_cycles.name` of the row's cycle (replaces R5.3's `{kolo}`) |
 | `{miesto}` | pickup: `pickup_locations.name` + (`address` ? ` (address)` : ``); packeta: the party's `packeta_address`; else unresolved |
-| `{suma}` | the party's amount to pay: friend `orders.total + orders.delivery_fee`, guest `guest_orders.total + delivery_fee` (module 20), formatted `31,10 €`; when the party is `paid = 1` ⇒ literal `už uhradené` (Decision D4) |
+| `{suma}` | ~~the party's amount to pay: friend `orders.total + orders.delivery_fee`, guest `guest_orders.total + delivery_fee` (module 20), formatted `31,10 €`; when the party is `paid = 1` ⇒ literal `už uhradené` (Decision D4)~~ **→ PO 2026-09-19 (last section): friend = the LEDGER balance owed, guest = `total + delivery_fee` while unpaid, formatted `31,10 €`; when nothing is owed the renderer DROPS the whole `{suma}` sentence (`helpers/template-render.js NOTHING_OWED`, WA-T2)** |
 | `{odkaz}` | friend: `resolveLoginUrl()` root (production `https://podpultovka.biz`); guest: `${base}/g/o/${order_token}`; waitlist: the host's standing link `${base}/g/${guest_link_token}` (module 19) |
 | `{host}` | the host friend's first name |
 | `{datum}` | `order_cycles.closes_at` formatted `v piatok 12. 9.` (Slovak weekday + day. month.) — unresolved when NULL (module 17) |
@@ -363,7 +363,9 @@ place the prototype's dative („Legovi“) is dropped.
 
 **Acceptance criteria:** the seed matches the table byte-for-byte; `PUT` with
 `{ body: 'Ahoj {menoo}' }` ⇒ 400 `unknown_placeholder: {menoo}`; `renderTemplate` on
-the `pickup` seed with a paid friend yields `Suma na úhradu: už uhradené.`; with
+the `pickup` seed with ~~a paid friend yields `Suma na úhradu: už uhradené.`~~ **nothing
+owed drops the `Suma na úhradu: {suma}.` sentence (PO 2026-09-19 + orchestrator
+clarification; pinned on all three enabled seeds by `whatsapp-templates.spec.js`, WA-T2)**; with
 `closes_at = NULL` the `closing` body keeps the literal `{datum}`; a disabled `closing`
 makes `POST /compose` for `not_ordered:<cycle>` answer 409.
 
@@ -961,7 +963,7 @@ procedure is the acceptance for whatsapp-web.js itself.
   `waitlist` seeded off; `custom` on but empty.
 - **D3** A sixth template key `custom` („Vlastná správa“) exists so the `all_active`
   segment (R5.2 „newsletter / new features“) has a body to send.
-- **D4** `{suma}` = the party's own `total + delivery_fee`; `už uhradené` when paid.
+- **D4** ~~`{suma}` = the party's own `total + delivery_fee`; `už uhradené` when paid.~~ **→ superseded by the PO 2026-09-19 section below (ledger balance for friends; the `{suma}` sentence is dropped when nothing is owed).**
   `OPEN:` PO may prefer the friend's outstanding LEDGER balance instead — one
   substitution in `segments.js`.
 - **D5** Opted-out friends get an e-mail row for the three operational templates when

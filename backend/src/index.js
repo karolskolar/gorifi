@@ -36,6 +36,7 @@ import guestWaitlistRouter from './routes/guest-waitlist.js';
 import magicLinkRouter from './routes/magic-link.js';
 import coffeeProductsRouter from './routes/coffee-products.js';
 import imagesRouter from './routes/images.js';
+import notificationsRouter from './routes/notifications.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -125,6 +126,10 @@ app.use('/api/guest-order-items', requireAdmin, guestOrderItemsRouter);
 // (admin only), so the WHOLE mount is gated — the public signup is
 // `POST /api/guest/:token/waitlist` on the bare guest router above, never here.
 app.use('/api/guest-waitlist', requireAdmin, guestWaitlistRouter);
+// 21 §UC-WA-004 (WA-T2) onwards: the WhatsApp notifications API (templates now; segments,
+// outbox compose/release/retry in later rows). Single-audience — admin only — so the
+// WHOLE mount is gated; every route on it joins ADMIN_ENDPOINTS.
+app.use('/api/notifications', requireAdmin, notificationsRouter);
 
 // Module 12 (PC-T2): the coffee-product catalog — WHOLE-MOUNT admin, like
 // bakery-products. No public/friend route may ever live on this router
