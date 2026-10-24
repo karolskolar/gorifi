@@ -74,6 +74,14 @@ UNION ALL
   SELECT 'friends.phone_e164',         COUNT(*) FROM friends WHERE phone_e164 IS NOT NULL
 UNION ALL
   SELECT 'guest_orders.phone_e164',    COUNT(*) FROM guest_orders WHERE phone_e164 IS NOT NULL
+UNION ALL
+  -- WA-T4: the outbox snapshots (number, address, rendered body incl. guest status URLs)
+  SELECT 'notifications.phone_e164',   COUNT(*) FROM notifications WHERE phone_e164 IS NOT NULL
+UNION ALL
+  SELECT 'notifications.email',        COUNT(*) FROM notifications WHERE email IS NOT NULL
+UNION ALL
+  SELECT 'notifications.body',         COUNT(*) FROM notifications
+   WHERE body IS NOT NULL AND body <> 'Testovacia sprava ' || id
 
 -- ── CREDENTIALS ───────────────────────────────────────────────────────────────
 UNION ALL

@@ -181,10 +181,14 @@ test.describe('WA-T1 · 21 §UC-WA-001 — the schema (throwaway boots)', () => 
       const db = new DatabaseSync(file)
       db.exec('DROP TABLE notifications')
       db.exec(DP_T1_NOTIFICATIONS)
+      // ~~segment_key 'loc1'~~ → WA-T4: the same boot now RE-KEYS DP-T3's legacy
+      // `loc<id>` rows onto 21's grammar (pinned in whatsapp-handover-enqueue.spec.js §1),
+      // so a legacy key would change under this byte-for-byte claim. A 21-grammar key keeps
+      // this test about the RECREATE alone.
       for (let i = 1; i <= 5; i++) {
         db.exec(
           "INSERT INTO notifications (channel, template_key, segment_key, recipient_kind, recipient_id, body, status, cycle_id, order_id) " +
-          `VALUES ('whatsapp', 'pickup', 'loc1', 'friend', ${i}, ${i === 2 ? "'Ahoj'" : 'NULL'}, '${i === 3 ? 'sent' : 'queued'}', 9, ${100 + i})`
+          `VALUES ('whatsapp', 'pickup', 'handed_over:pickup:1:2026-10-24', 'friend', ${i}, ${i === 2 ? "'Ahoj'" : 'NULL'}, '${i === 3 ? 'sent' : 'queued'}', 9, ${100 + i})`
         )
       }
       db.exec('DELETE FROM notifications WHERE id = 5') // the high-water mark is now ABOVE every surviving id
@@ -266,29 +270,36 @@ test.describe('WA-T1 · 21 §UC-WA-001 — the schema (throwaway boots)', () => 
     expect(out.check.conflict, 'a DIFFERENT constraint is never read as „already queued"').toBe(false)
   })
 
-  test('⚠ DP-T3\'s enqueue cannot 500 on the new index: a friend with TWO orders in one cycle queues ONE row and the hand-over stamp in the same transaction survives', () => {
+  // ~~DP-T3's enqueue cannot 500 on the new index … `enqueueForHandOver([bag(o1), bag(o2)])`~~
+  // → WA-T4 (21 §UC-WA-006) changed the seam's signature to IDS and keyed its pre-check
+  // on the index's own tuple, so the conflict is caught BEFORE the INSERT. The claim this
+  // test exists for is unchanged and re-asserted on the new signature: two orders of one
+  // friend in one cycle queue ONE row, nothing throws, the stamps commit. (The ownership
+  // rule on un-hand-over lives in whatsapp-handover-enqueue.spec.js §1.)
+  test('⚠ the enqueue cannot 500 on the new index: a friend with TWO orders in one cycle queues ONE row and the hand-over stamp in the same transaction survives', () => {
     const out = withTempDb((file) => probe(file, `
       db.run("INSERT INTO order_cycles (name, status) VALUES ('wa-t1', 'locked')");
       const cyc = db.get('SELECT MAX(id) AS id FROM order_cycles').id;
-      const fid = db.run("INSERT INTO friends (cycle_id, name, access_token) VALUES (?, 'Dvojitý', 'acc-dvojity')", [cyc]).lastInsertRowid;
-      const o1 = db.run("INSERT INTO orders (friend_id, cycle_id, status) VALUES (?, ?, 'submitted')", [fid, cyc]).lastInsertRowid;
-      const o2 = db.run("INSERT INTO orders (friend_id, cycle_id, status) VALUES (?, ?, 'submitted')", [fid, cyc]).lastInsertRowid;
-      const bag = (orderId) => ({ kind: 'friend', cycleId: cyc, orderId, friendId: fid, delivery: { type: 'pickup', target_key: 'loc1' } });
-      let queued; let error = null;
+      const loc = db.run("INSERT INTO pickup_locations (name) VALUES ('WA-T1 Miesto')").lastInsertRowid;
+      const fid = db.run("INSERT INTO friends (cycle_id, name, access_token, phone, phone_e164) VALUES (?, 'Dvojitý', 'acc-dvojity', '0905 123 456', '+421905123456')", [cyc]).lastInsertRowid;
+      const o1 = db.run("INSERT INTO orders (friend_id, cycle_id, status, packed, pickup_location_id) VALUES (?, ?, 'submitted', 1, ?)", [fid, cyc, loc]).lastInsertRowid;
+      const o2 = db.run("INSERT INTO orders (friend_id, cycle_id, status, packed, pickup_location_id) VALUES (?, ?, 'submitted', 1, ?)", [fid, cyc, loc]).lastInsertRowid;
+      let result; let error = null;
       try {
         db.transaction(() => {
-          queued = outbox.enqueueForHandOver([bag(o1), bag(o2)]);
           db.run('UPDATE orders SET handed_over_at = CURRENT_TIMESTAMP WHERE id IN (?, ?)', [o1, o2]);
+          result = outbox.enqueueForHandOver({ cycleId: cyc, orderIds: [o1, o2] });
         })();
       } catch (e) { error = e.message; }
       return {
-        queued, error,
+        result, error,
         rows: db.all('SELECT order_id, status FROM notifications WHERE cycle_id = ?', [cyc]),
         stamped: db.all('SELECT id FROM orders WHERE cycle_id = ? AND handed_over_at IS NOT NULL', [cyc]).length,
       };
     `))
     expect(out.error, 'no throw out of the hand-over transaction').toBe(null)
-    expect(out.queued, 'the second bag is „already queued", counted as not queued').toBe(1)
+    expect(out.result.queued, 'ONE message queued').toBe(1)
+    expect(out.result.already, 'the second bag is „already queued", counted, not queued').toBe(1)
     expect(out.rows).toHaveLength(1)
     expect(out.stamped, 'the transaction committed the stamps').toBe(2)
   })

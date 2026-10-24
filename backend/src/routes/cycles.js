@@ -16,7 +16,7 @@ import {
   partyDelivery,
   inheritingGuests,
 } from '../helpers/handover.js';
-import { enqueueForHandOver } from '../helpers/outbox.js';
+import { enqueueForHandOver, queuedCount } from '../helpers/outbox.js';
 import { markCycleReady, CYCLE_STAGES, LOCKED_STAGE_DEFAULT } from '../helpers/cycle-stage.js';
 import { purgeWaitlistAfterTwoCompletions } from '../helpers/guest-waitlist.js';
 
@@ -1323,7 +1323,9 @@ router.post('/:id/distribution/hand-over', requireAdmin, (req, res) => {
          AND EXISTS (SELECT 1 FROM guest_order_items WHERE guest_order_id = ?)
     `);
 
-    const stampedBags = [];
+    // WA-T4: the outbox takes IDS (21 §UC-WA-006) — the bags THIS call stamped.
+    const stampedOrderIds = [];
+    const stampedGuestIds = [];
     const inheritedGuestIds = new Set();
     let handedOver = 0;
     let alreadyHanded = 0;
@@ -1381,11 +1383,7 @@ router.post('/:id/distribution/hand-over', requireAdmin, (req, res) => {
       // gate on inheritance, exactly as per bag — the colleague's bag travels inside
       // the host's, so it left when the host's did.
       const delivery = partyDelivery(cycleId, row.friend_id);
-      if (!row.handed_over_at) {
-        stampedBags.push({
-          kind: 'friend', cycleId, orderId: id, friendId: row.friend_id, delivery,
-        });
-      }
+      if (!row.handed_over_at) stampedOrderIds.push(id);
 
       for (const guest of inheritingGuests(row.friend_id, cycleId, delivery)) {
         // An already-handed guest keeps its own first record — the predicate says so
@@ -1394,10 +1392,7 @@ router.post('/:id/distribution/hand-over', requireAdmin, (req, res) => {
         if (stampInheritedGuest.run(bagStamp, guest.id).changes === 0) continue;
         guestsInherited += 1;
         inheritedGuestIds.add(guest.id);
-        stampedBags.push({
-          kind: 'guest', cycleId, guestOrderId: guest.id,
-          hostFriendId: row.friend_id, delivery: guest.delivery,
-        });
+        stampedGuestIds.push(guest.id);
       }
     }
 
@@ -1423,19 +1418,19 @@ router.post('/:id/distribution/hand-over', requireAdmin, (req, res) => {
       handedOver += 1;
       usedBatchStamp = true;
 
-      // A guest bag is classified WITH ITS HOST's delivery (the DP-T1 call-site
-      // contract): the row itself carries no pickup, and a host with no own order
-      // keeps theirs on the link.
-      const hostDelivery = partyDelivery(cycleId, row.host_friend_id);
-      stampedBags.push({
-        kind: 'guest', cycleId, guestOrderId: id, hostFriendId: row.host_friend_id,
-        delivery: deliveryOf(loadSubOrder(id), { host: hostDelivery }),
-      });
+      // ~~A guest bag is classified WITH ITS HOST's delivery (the DP-T1 call-site
+      // contract) …~~ → WA-T4: the outbox takes the id and classifies the stamped row
+      // itself (`helpers/segments.js`); `packeta` vs `via_host` needs no host delivery.
+      stampedGuestIds.push(id);
     }
 
     // ⚠ ONLY THE BAGS THIS CALL ACTUALLY STAMPED (the DP-T3 rule). A skipped
     // already-handed bag is not an event and mints nothing.
-    const queued = enqueueForHandOver(stampedBags);
+    // `queued_notifications` = rows minted in status `queued` (WhatsApp + e-mail) — the
+    // per-bag routes' meaning (`helpers/outbox.js queuedCount()`).
+    const queued = queuedCount(enqueueForHandOver({
+      cycleId, orderIds: stampedOrderIds, guestOrderIds: stampedGuestIds, handedOverAt: stamp,
+    }));
 
     // §UC-DP-009 — the module-17 seam, inside the transaction, once per request
     // (never once per row). LIVE since CS-T1: a batch hand-over on a LOCKED cycle

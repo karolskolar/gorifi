@@ -5,7 +5,13 @@ import { standingUrlPath } from './standing-link.js';
 import { guestStatusUrlPath } from './guest-orders.js';
 import { resolveLoginUrl } from './credentials-message.js';
 import { getTemplate } from './templates.js';
-import { NOTHING_OWED, bratislavaDay, firstName, formatDatum, sumaValue } from './template-render.js';
+import { NOTHING_OWED, firstName, formatDatum, sumaValue } from './template-render.js';
+import { SEGMENT_KEY_MAX, bratislavaDateOf, handOverSegmentKey, isSegmentKey } from './segment-keys.js';
+
+// WA-T4: the grammar, the bound, the Bratislava day and the hand-over key live in the PURE
+// `segment-keys.js` (schema.js's boot re-key needs them and cannot import this file);
+// re-exported here so WA-T3's surface is unchanged.
+export { SEGMENT_KEY_MAX, bratislavaDateOf, handOverSegmentKey, isSegmentKey };
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 21 §UC-WA-005 — WHO A MESSAGE GOES TO. ONE HOME for the recipient lists (R5.2),
@@ -23,8 +29,9 @@ import { NOTHING_OWED, bratislavaDay, firstName, formatDatum, sumaValue } from '
 //   • `helpers/outbox.js` is the ONLY writer of `notifications`.
 // `whatsapp-segments.spec.js` §1 pins zero row changes across every builder.
 //
-// ── THE SIX KINDS (21 §UC-WA-005's table — the SPEC grammar; DP-T3's hook still
-//    writes `loc<id>` / `packeta` / `host:<id>` until WA-T4 moves it onto these) ──
+// ── THE SIX KINDS (21 §UC-WA-005's table — the SPEC grammar; ~~DP-T3's hook still
+//    writes `loc<id>` / `packeta` / `host:<id>` until WA-T4 moves it onto these~~ →
+//    WA-T4: the hook writes these, and schema.js re-keyed DP-T3's rows at boot) ──
 //   handed_over:pickup:<location_id>:<YYYY-MM-DD>  template `pickup`
 //   handed_over:packeta:<YYYY-MM-DD>               template `packeta`
 //   host_guests:<host_friend_id>:<YYYY-MM-DD>      template `host`
@@ -81,16 +88,16 @@ import { NOTHING_OWED, bratislavaDay, firstName, formatDatum, sumaValue } from '
 //       the NOTHING_OWED Symbol — hand `vars` to `renderTemplate`/`unresolvedFor` as is.
 //   computedSegments(cycleId, { baseUrl }) ⇒ the three composer-built summaries.
 //   handOverSegmentKey({ delivery, handedOverAt, hostFriendId }) ⇒ the group key a
-//       handed-over bag belongs to (null for `in_person` / no stamp) — WA-T4 computes
+//       handed-over bag belongs to (null for `in_person` / no stamp). ~~WA-T4 computes
 //       a bag's key with THIS, then picks its recipient out of `buildSegment()` by
-//       `order_id` / `guest_order_id`.
+//       `order_id` / `guest_order_id`.~~ → WA-T4 shipped it as
+//   handOverRecipients(cycleId, { orderIds, guestOrderIds }) ⇒ the entries of the
+//       handed bags out of the SAME two halves `buildSegment()` filters (each half
+//       computes its rows' keys with `handOverSegmentKey()` from the ROW's own stamp),
+//       so the outbox never runs a second recipient query or one `buildSegment()` per key.
 //   segmentForJson(segment) ⇒ the JSON-safe preview (see that function).
 //   isSegmentKey / parseSegmentKey / segmentName — the grammar and the titles.
 // ═══════════════════════════════════════════════════════════════════════════
-
-/** 21 §UC-WA-008: `segment_key` grammar and bound. */
-export const SEGMENT_KEY_MAX = 80;
-const SEGMENT_KEY_SHAPE = /^[a-z_]+(:[A-Za-z0-9-]+)*$/;
 
 const TEMPLATE_BY_KIND = Object.freeze({
   handed_over_pickup: 'pickup',
@@ -100,11 +107,6 @@ const TEMPLATE_BY_KIND = Object.freeze({
   waitlist: 'waitlist',
   all_active: 'custom',
 });
-
-/** Is `key` a grammatical segment key (a string, ≤ 80, the §UC-WA-008 pattern)? */
-export function isSegmentKey(key) {
-  return typeof key === 'string' && key.length <= SEGMENT_KEY_MAX && SEGMENT_KEY_SHAPE.test(key);
-}
 
 // A positive safe integer out of a key segment, or null.
 function positiveId(text) {
@@ -150,38 +152,6 @@ export function parseSegmentKey(key) {
       const date = calendarDay(parts[2]);
       return date ? { kind: 'handed_over_packeta', date } : null;
     }
-  }
-  return null;
-}
-
-/**
- * The Europe/Bratislava calendar day (`YYYY-MM-DD`) of a SQLite UTC timestamp
- * (`YYYY-MM-DD HH:MM:SS`, `CURRENT_TIMESTAMP`'s shape — a `T`/`Z`/fraction is tolerated),
- * or null for anything that is not one.
- */
-export function bratislavaDateOf(stamp) {
-  if (typeof stamp !== 'string') return null;
-  const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)Z?$/.exec(stamp.trim());
-  if (!m) return null;
-  const instant = new Date(`${m[1]}T${m[2]}Z`);
-  return Number.isNaN(instant.getTime()) ? null : bratislavaDay(instant);
-}
-
-/**
- * The group a HANDED-OVER bag belongs to (§UC-WA-006's mapping table), or null when it
- * belongs to none: `in_person` (resolved conflict 4), no usable stamp, or a `via_host`
- * guest without its host id. `delivery` is `helpers/delivery.js deliveryOf()`'s answer.
- */
-export function handOverSegmentKey({ delivery, handedOverAt, hostFriendId } = {}) {
-  const date = bratislavaDateOf(handedOverAt);
-  if (!date || !delivery) return null;
-  if (delivery.type === 'pickup') {
-    const m = /^loc([1-9]\d*)$/.exec(String(delivery.target_key));
-    return m ? `handed_over:pickup:${m[1]}:${date}` : null;
-  }
-  if (delivery.type === 'packeta') return `handed_over:packeta:${date}`;
-  if (delivery.type === 'via_host') {
-    return Number.isInteger(hostFriendId) && hostFriendId > 0 ? `host_guests:${hostFriendId}:${date}` : null;
   }
   return null;
 }
@@ -332,14 +302,22 @@ function locationsById() {
   return new Map(db.all('SELECT id, name, address FROM pickup_locations').map((row) => [row.id, row]));
 }
 
-function friendHandOverCandidates(cycle, parsed, base) {
+// ⚠ WA-T4: the two halves compute EVERY handed-over party's key and return them all;
+// `buildSegment()` keeps the entries of ONE key, `handOverRecipients()` (the hand-over
+// enqueue's door) keeps the entries of the bags it was handed. One query per half,
+// one `vars` composition, two filters — never a second recipient query.
+
+// Every ACTIVE friend whose order of the cycle is handed over, as `{ key, consent,
+// recipient }`. `key` is null for a bag that belongs to no group (`in_person`).
+// An INACTIVE friend is neither a recipient nor `opted_out` (§UC-WA-005's consent
+// predicate is `active = 1 AND whatsapp_opt_in = 1`), so they are not returned.
+function friendHandOverEntries(cycle, base) {
   const locations = locationsById();
   const out = [];
   for (const row of handedOverFriendRows(cycle.id)) {
     if (row.active !== 1) continue;
     const delivery = deliveryOf(row, { locationsById: locations });
     const key = handOverSegmentKey({ delivery, handedOverAt: row.handed_over_at });
-    if (key !== parsed.key) continue;
     const vars = { meno: firstName(row.name), ...cycleVars(cycle), suma: friendSuma(row), odkaz: base };
     if (delivery.type === 'pickup') {
       if (delivery.target_label) {
@@ -348,18 +326,19 @@ function friendHandOverCandidates(cycle, parsed, base) {
     } else if (delivery.type === 'packeta') {
       vars.miesto = delivery.target_detail;
     }
-    out.push({ consent: hasConsent(row), recipient: friendRecipient(row, vars, row.order_id) });
+    out.push({ key, consent: hasConsent(row), recipient: friendRecipient(row, vars, row.order_id) });
   }
   return out;
 }
 
-function guestHandOverRecipients(cycle, parsed, base) {
+// Every LIVE handed-over guest sub-order of the cycle, as `{ key, consent: true,
+// recipient }` (guests have no flag — D6).
+function guestHandOverEntries(cycle, base) {
   const out = [];
   for (const row of handedOverGuestRows(cycle.id)) {
     const delivery = deliveryOf(row);
     const statusPath = guestStatusUrlPath(row.order_token);
     const key = handOverSegmentKey({ delivery, handedOverAt: row.handed_over_at, hostFriendId: row.host_friend_id });
-    if (key !== parsed.key) continue;
     const vars = {
       meno: firstName(row.guest_name),
       ...cycleVars(cycle),
@@ -368,7 +347,7 @@ function guestHandOverRecipients(cycle, parsed, base) {
       host: firstName(row.host_name),
     };
     if (delivery.type === 'packeta') vars.miesto = delivery.target_detail;
-    out.push(guestRecipient(row, vars));
+    out.push({ key, consent: true, recipient: guestRecipient(row, vars) });
   }
   return out;
 }
@@ -481,7 +460,6 @@ export function buildSegment(cycleId, key, options = {}) {
 
   const cycle = readCycle(parsed.cycleId ?? cycleId);
   if (!cycle) return null;
-  const withKey = { ...parsed, key };
 
   if (parsed.kind === 'not_ordered') {
     const { recipients, optedOut } = consentSplit(notOrderedCandidates(cycle, base));
@@ -493,10 +471,41 @@ export function buildSegment(cycleId, key, options = {}) {
   }
 
   // The hand-over kinds: the friend half and the guest half, merged in JS.
-  const friends = parsed.kind === 'host_guests' ? [] : friendHandOverCandidates(cycle, withKey, base);
-  const guests = guestHandOverRecipients(cycle, withKey, base);
+  const friends = parsed.kind === 'host_guests' ? [] : friendHandOverEntries(cycle, base).filter((e) => e.key === key);
+  const guests = guestHandOverEntries(cycle, base).filter((e) => e.key === key).map((e) => e.recipient);
   const { recipients, optedOut } = consentSplit(friends);
   return finish(key, parsed.kind, cycle.id, [...recipients, ...guests].sort(byName), optedOut);
+}
+
+const toIdSet = (ids) => new Set((Array.isArray(ids) ? ids : []).filter((id) => Number.isInteger(id) && id > 0));
+
+/**
+ * WA-T4 (21 §UC-WA-006) — the hand-over enqueue's door into the SAME halves
+ * `buildSegment()` reads: for the given friend `orderIds` / guest `guestOrderIds` of
+ * `cycleId`, the entries `{ key, template_key, consent, recipient }` of every one that
+ * is a handed-over party with a group, in id order (friends first). `recipient` is
+ * exactly what `buildSegment(cycleId, key)` lists for that bag (or, with `consent:
+ * false`, what it hands over as `opted_out`) — same row, same `vars`.
+ *
+ * A requested id with NO entry is a bag that owes no message to anybody: an `in_person`
+ * friend (no group), an inactive friend, a cancelled sub-order, an id that is not
+ * handed over (or not of this cycle). The caller counts those as `none`.
+ * Returns `[]` for an unknown cycle.
+ */
+export function handOverRecipients(cycleId, { orderIds = [], guestOrderIds = [], baseUrl } = {}) {
+  const cycle = readCycle(cycleId);
+  if (!cycle) return [];
+  const base = baseOf({ baseUrl });
+  const wantOrders = toIdSet(orderIds);
+  const wantGuests = toIdSet(guestOrderIds);
+  const withTemplate = (entry) => ({ ...entry, template_key: TEMPLATE_BY_KIND[parseSegmentKey(entry.key)?.kind] || null });
+  const friends = wantOrders.size === 0 ? [] : friendHandOverEntries(cycle, base)
+    .filter((e) => e.key && wantOrders.has(e.recipient.order_id))
+    .sort((a, b) => a.recipient.order_id - b.recipient.order_id);
+  const guests = wantGuests.size === 0 ? [] : guestHandOverEntries(cycle, base)
+    .filter((e) => e.key && wantGuests.has(e.recipient.guest_order_id))
+    .sort((a, b) => a.recipient.guest_order_id - b.recipient.guest_order_id);
+  return [...friends, ...guests].map(withTemplate).filter((e) => e.template_key);
 }
 
 /** The summary the composer lists for a segment (no recipients, no names). */

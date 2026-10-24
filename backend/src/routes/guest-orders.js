@@ -13,9 +13,8 @@ import {
   softCancelGuestOrder,
 } from '../helpers/guest-orders.js';
 import { guestOrderVariableSymbol } from '../helpers/payment.js';
-import { deliveryOf } from '../helpers/delivery.js';
-import { readHandedOverFlag, partyDelivery, guestOrderStage } from '../helpers/handover.js';
-import { enqueueForHandOver, cancelForUnHandOver } from '../helpers/outbox.js';
+import { readHandedOverFlag, guestOrderStage } from '../helpers/handover.js';
+import { enqueueForHandOver, cancelForUnHandOver, queuedCount } from '../helpers/outbox.js';
 import { markCycleReady } from '../helpers/cycle-stage.js';
 import { applyGuestDelivery } from '../helpers/pickup.js';
 import { hostOwnOrder } from '../helpers/packing.js';
@@ -406,22 +405,15 @@ router.patch('/:id/handed-over', requireAdmin, (req, res) => {
   }
 
   const apply = db.transaction(() => {
-    // The guest's own delivery, classified with the HOST's — the DP-T1 call-site
-    // contract (§UC-DP-003). Without it a guest would be classified as a standalone
-    // bag and enqueued against the wrong segment.
-    const hostDelivery = partyDelivery(row.cycle_id, row.host_friend_id);
-    const delivery = deliveryOf(current, { host: hostDelivery });
-    const bag = {
-      kind: 'guest',
-      cycleId: row.cycle_id,
-      guestOrderId: row.id,
-      hostFriendId: row.host_friend_id,
-      delivery,
-    };
+    // ~~The guest's own delivery, classified with the HOST's … enqueued against the
+    // wrong segment.~~ → WA-T4: the outbox takes IDS (21 §UC-WA-006) and classifies the
+    // stamped row itself through `helpers/segments.js` — `delivery.js` decides
+    // `packeta` (own address) vs `via_host` before any host inheritance, so the host's
+    // delivery is not needed for the template or the group (`host_guests:<host>:<date>`).
 
     if (!handedOver) {
       db.prepare('UPDATE guest_orders SET handed_over_at = NULL WHERE id = ?').run(row.id);
-      return { queued: 0, dequeued: cancelForUnHandOver([bag]), cycleStage: null };
+      return { queued: 0, dequeued: cancelForUnHandOver({ guestOrderIds: [row.id] }).deleted, cycleStage: null };
     }
 
     // Re-read inside the transaction, so "was it already handed over?" is answered
@@ -458,7 +450,9 @@ router.patch('/:id/handed-over', requireAdmin, (req, res) => {
       // holds only until module 21 moves one to `released`/`sent` (WA-T5). After
       // that, a repeat `handed_over: true` on an already-handed bag would mint a
       // second „odovzdané priateľovi" message for a request that changed nothing.
-      queued: stamped ? enqueueForHandOver([bag]) : 0,
+      // WA-T4: `queued` = rows minted in status `queued` (WhatsApp + e-mail), the friend
+      // route's meaning; a `skipped`/`no_phone` to-do is not a queued message.
+      queued: stamped ? queuedCount(enqueueForHandOver({ cycleId: row.cycle_id, guestOrderIds: [row.id] })) : 0,
       dequeued: 0,
       // §UC-DP-009, inside the transaction, once per request. LIVE since CS-T1: a
       // Packeta guest is their own bag and counts as a first bag, so this promotes a

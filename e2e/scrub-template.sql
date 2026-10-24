@@ -82,6 +82,21 @@ UPDATE guest_waitlist SET
 UPDATE friends      SET phone_e164 = NULL;
 UPDATE guest_orders SET phone_e164 = NULL;
 
+-- 21 §UC-WA-006 (WA-T4) — the OUTBOX SNAPSHOTS. From WA-T4 on, every hand-over writes
+-- a row whose `phone_e164` / `email` are the recipient's number / address AS OF the
+-- hand-over and whose `body` is the RENDERED message: a first name, a pickup point or a
+-- Packeta address, an amount, and — for a guest — `{odkaz}` = `<base>/g/o/<order_token>`,
+-- i.e. a live CREDENTIAL (the whole status-page key since GR-T1), which is why this is
+-- not only PII. None of it is re-derived from the scrubbed columns above, so each is
+-- overwritten here: the two snapshots NULLed, the body replaced by a per-id placeholder
+-- (non-NULL, so a scrubbed queued row never looks like a DP-T3 legacy NULL body).
+-- ⚠ Their OWN statements (the GL-T6a rule): `notifications` exists only on a production
+-- that booted DP-T1, `email` only on one that booted WA-T1 — on an older snapshot these
+-- fail ALONE, after everything above, and `make-test-db.sh` FAILS CLOSED (no new
+-- condition: WA-T1's `phone_e164` statements above already require that boot).
+UPDATE notifications SET phone_e164 = NULL, body = 'Testovacia sprava ' || id WHERE body IS NOT NULL OR phone_e164 IS NOT NULL;
+UPDATE notifications SET email = NULL;
+
 -- ── CREDENTIALS ───────────────────────────────────────────────────────────────
 -- ⚠ EVERY ONE OF THESE IS LIVE AGAINST THE PRODUCTION SITE. This is the half that
 -- matters most and the easiest to forget: without it, a template file sitting in a

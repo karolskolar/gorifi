@@ -104,8 +104,10 @@ router.put('/templates/:key', (req, res) => {
 //       groups   = the EXISTING outbox rows of the cycle (plus the cycle-less
 //                  `all_active` rows), grouped by (segment_key, template_key), with
 //                  `counts` per status, `total`, `template_name` and the segment `name`
-//                  (null for a key outside 21's grammar — DP-T3's `loc<id>`/`host:<id>`
-//                  until WA-T4 moves the hook onto it);
+//                  (null for a key outside 21's grammar — ~~DP-T3's `loc<id>`/`host:<id>`
+//                  until WA-T4 moves the hook onto it~~ → WA-T4: the hook writes 21's
+//                  grammar and the boot re-keys DP-T3's rows; only the
+//                  `legacy_handover:…` fallback stays nameless — learnings 15 §WA-T4);
 //       computed = `not_ordered:N`, `waitlist:N`, `all_active` (helpers/segments.js
 //                  `computedSegments()`): count / excluded_opt_out / no_phone /
 //                  template_enabled / requires_open_cycle;

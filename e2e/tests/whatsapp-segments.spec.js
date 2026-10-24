@@ -678,27 +678,26 @@ test.describe('WA-T3 · §2 the read routes over real hand-overs (module 16 rout
       for (const k of ['count', 'excluded_opt_out', 'no_phone']) expect(Number.isInteger(c[k]), `${c.key}.${k}`).toBe(true)
     }
 
-    // The groups are the outbox rows the hand-overs queued (DP-T3's hook). Their KEYS are
-    // DP-T3's (`loc<id>` / `packeta` / `host:<id>`) until WA-T4 moves the hook onto 21's
-    // grammar — so a key outside the grammar has `name: null` and its rows are not
-    // readable through the validated rows route (400). Both branches are asserted, so
-    // the test holds before AND after WA-T4.
+    // The groups are the outbox rows the hand-overs queued. ~~Their KEYS are DP-T3's
+    // (`loc<id>` / `packeta` / `host:<id>`) until WA-T4 moves the hook onto 21's grammar —
+    // so a key outside the grammar has `name: null` … Both branches are asserted, so the
+    // test holds before AND after WA-T4.~~ → WA-T4 SHIPPED (learnings 15 §WA-T4): the hook
+    // writes 21's grammar, so EVERY group of these hand-overs is grammatical, titled, and
+    // readable through the validated rows route — asserted unconditionally now (the dead
+    // „outside the grammar ⇒ null / 400" branch is gone; it would hide a regression).
     const pickupGroups = body.groups.filter((g) => g.template_key === 'pickup')
     expect(pickupGroups.length, 'the hand-overs queued pickup rows').toBeGreaterThan(0)
-    expect(pickupGroups.reduce((n, g) => n + g.counts.queued, 0), 'A, B, C (+ H, O) queued').toBeGreaterThanOrEqual(3)
+    expect(pickupGroups.reduce((n, g) => n + g.counts.queued, 0), 'A, B, C (+ H) queued').toBeGreaterThanOrEqual(3)
     for (const g of body.groups) {
       expect(Object.keys(g).sort()).toEqual(['counts', 'name', 'segment_key', 'template_key', 'template_name', 'total'])
       expect(Object.keys(g.counts).sort()).toEqual(['failed', 'queued', 'released', 'sent', 'skipped'])
       expect(Object.values(g.counts).reduce((a, b) => a + b, 0)).toBe(g.total)
+      expect(g.segment_key, 'in 21\'s grammar').toMatch(/^[a-z_]+(:[A-Za-z0-9-]+)*$/)
+      expect(g.name, `${g.segment_key} has a title`).toBeTruthy()
       const rows = await admin('/api/notifications', { params: { cycle_id: String(fx.cycle.id), segment_key: g.segment_key } })
-      if (/^[a-z_]+(:[A-Za-z0-9-]+)*$/.test(g.segment_key)) {
-        expect(rows.status(), g.segment_key).toBe(200)
-        const list = (await rows.json()).rows
-        expect(list.filter((r) => r.template_key === g.template_key).length, 'counts agree with the rows').toBe(g.total)
-      } else {
-        expect(g.name, `${g.segment_key} is outside 21's grammar ⇒ no title`).toBe(null)
-        expect(rows.status(), `${g.segment_key} ⇒ 400 on the validated rows route`).toBe(400)
-      }
+      expect(rows.status(), g.segment_key).toBe(200)
+      const list = (await rows.json()).rows
+      expect(list.filter((r) => r.template_key === g.template_key).length, 'counts agree with the rows').toBe(g.total)
     }
     const pickupTemplate = body.groups.find((g) => g.template_key === 'pickup')
     expect(pickupTemplate.template_name).toBe('Doručené na odberné miesto')
@@ -707,9 +706,14 @@ test.describe('WA-T3 · §2 the read routes over real hand-overs (module 16 rout
   // ── §3 DB_PATH: the rows route over a 21-grammar group ─────────────────────
   // ⚠ No writer of 21-grammar rows exists before WA-T4/WA-T5, so the group is written
   // here — every status, all three recipient tables — the way a later row will.
+  // ⚠ WA-T4: the hand-over hook NOW writes 21-grammar rows, so `…:<L>:<today>` already
+  // holds A/B/C's queued rows and an exact count over it would be a count over rows this
+  // test does not own. The hand-written group therefore takes a day no hand-over of this
+  // run can produce (~~`handed_over:pickup:${fx.L.id}:${fx.today}`~~).
   test('§3 · GET /notifications: the rows of one group, `name`/`phone` from each recipient table, the listed fields only; GET /segments counts them per status', async () => {
     test.skip(!DB_PATH, NEEDS_DB)
-    const key = `handed_over:pickup:${fx.L.id}:${fx.today}`
+    const groupDay = '2026-01-15'
+    const key = `handed_over:pickup:${fx.L.id}:${groupDay}`
     const db = new DatabaseSync(DB_PATH)
     const ids = []
     let waitId = null
@@ -731,7 +735,7 @@ test.describe('WA-T3 · §2 the read routes over real hand-overs (module 16 rout
     try {
       const group = (await segments(fx.cycle.id)).groups.find((g) => g.segment_key === key)
       expect(group).toEqual({
-        segment_key: key, name: `${fx.L.name} — odovzdané ${dm(fx.today)}`, template_key: 'pickup',
+        segment_key: key, name: `${fx.L.name} — odovzdané ${dm(groupDay)}`, template_key: 'pickup',
         template_name: 'Doručené na odberné miesto', counts: { queued: 1, released: 0, sent: 1, failed: 1, skipped: 1 }, total: 4,
       })
       const res = await admin('/api/notifications', { params: { cycle_id: String(fx.cycle.id), segment_key: key } })
@@ -897,8 +901,9 @@ test.describe('WA-T3 · query validation of the two read routes', () => {
       expect(r.status(), k).toBe(400)
       expect((await r.json()).reason).toBe('segment_cycle_mismatch')
     }
-    // ⚠ DP-T3's `loc<id>` key is outside the grammar: 400 on BOTH routes (the seam WA-T4
-    // closes by moving the hook onto 21's keys). A grammatical non-segment key is
+    // ⚠ DP-T3's `loc<id>` key is outside the grammar: 400 on BOTH routes (~~the seam WA-T4
+    // closes by moving the hook onto 21's keys~~ → closed by WA-T4: the hook writes 21's
+    // keys and the boot re-keys legacy rows — learnings 15 §WA-T4). A grammatical non-segment key is
     // readable on the rows route (an empty group is `[]`).
     for (const base of ['/api/notifications/segments', '/api/notifications']) {
       const legacy = await raw(`${base}?cycle_id=${cycleId}&segment_key=loc5`)

@@ -57,7 +57,8 @@ Spec: `docs/specification/21-whatsapp-notifications.md`. Tests: `e2e/tests/whats
      re-issued. The spec proves this: it deletes id 5, reboots, and checks that the next insert is 6.
    - The table's ONE definition is `notificationsTableSql(target)`. Both the fresh CREATE and the
      recreate use it, so they cannot drift.
-2. **`segment_key` and `body` STAY NULLABLE.** Module 16 writes `body = NULL` rows. Module 21's own
+2. **`segment_key` and `body` STAY NULLABLE.** ~~Module 16 writes `body = NULL` rows.~~ → WA-T4 (§WA-T4 below): the
+   hook renders every body; only pre-WA-T4 legacy rows are NULL, and WA-T5's release must refuse them. Module 21's own
    writers (WA-T4 onwards) enforce non-NULL themselves.
 3. **NO FOREIGN KEYS, permanently.** `DELETE /cycles/:id` exists, and an FK would either block it or
    CASCADE away outbox history. `recipient_id` is polymorphic in any case.
@@ -298,7 +299,8 @@ Spec: 21 §UC-WA-005 (segments), §UC-WA-007 (the `waitlist:<cycle>` SEGMENT onl
 
 ### Traps found
 
-- **DP-T3's segment keys are OUTSIDE 21's grammar.** `loc5` has a digit in the kind (`[a-z_]+`), `in_person` an
+- ~~**DP-T3's segment keys are OUTSIDE 21's grammar.**~~ → **RESOLVED by WA-T4** (§WA-T4 below: the hook writes 21's
+  grammar, the boot re-keys the old rows; `whatsapp-segments.spec.js`'s dead branch removed). Original note: `loc5` has a digit in the kind (`[a-z_]+`), `in_person` an
   `_` in a qualifier. So today's hook rows (`loc<id>`) show in `groups` with `name: null` but their rows 400 on the
   validated rows route. Deliberately NOT relaxed (spec regex); **WA-T4 must move the hook onto
   `handOverSegmentKey()`** — the groups test asserts both branches so it holds before and after. Existing DP-T3
@@ -313,9 +315,115 @@ Spec: 21 §UC-WA-005 (segments), §UC-WA-007 (the `waitlist:<cycle>` SEGMENT onl
 
 ### Open / for WA-T4/T5
 
-- WA-T4: replace `outbox.js rowFor()`'s `segment_key` with `handOverSegmentKey()`; source vars/phone from
+- ~~WA-T4: replace `outbox.js rowFor()`'s `segment_key` with `handOverSegmentKey()`;~~ → DONE, §WA-T4 below. source vars/phone from
   `buildSegment()`; `opted_out` feeds D5. ⚠ **Re-key DP-T3's existing hook rows** (`loc<id>` / `packeta` /
   `host:<id>`) to the 21 grammar (recorded on the PROGRESS WA-T4 row).
 - WA-T5: compose = `buildSegment()` + `renderTemplate(body, vars)` + `unresolvedFor(body, vars)`; refuse a
   `not_ordered`/`waitlist` compose while `requires_open_cycle && cycle.status !== 'open'`.
 - Scrub: no new column. (WA-T4's non-NULL `notifications.phone_e164/email/body` remain that row's scrub item.)
+
+## WA-T4 — the hand-over enqueue on module 21 (`helpers/outbox.js`, 2026-10-24)
+
+Spec: 21 §UC-WA-006 (+ §UC-WA-003 D5, PO 2026-09-19). Tests: `e2e/tests/whatsapp-handover-enqueue.spec.js` (19 after review: 5
+throwaway-boot probes, 13 HTTP over the real module-16 routes, 1 `DB_PATH`-gated). Retargeted with strike notes:
+`whatsapp-schema.spec.js` (two-orders test on the new signature; the WA-T1 RECREATE test now seeds a 21-grammar key — a `loc1` would be re-keyed by the same boot), `distribution-foundation.spec.js` (body/phone now
+set, 21-grammar keys, host fixture gains a phone), `guest-packeta.spec.js` GP-T6 (key), `whatsapp-segments.spec.js`
+§3 (its hand-written group moved to a day no hand-over produces — the hook now writes into `…:<L>:<today>`).
+
+### What shipped
+
+- **The seam** (`helpers/outbox.js`, still the one `notifications` writer outside schema.js's migrations):
+  - `enqueueForHandOver({ cycleId, orderIds, guestOrderIds, handedOverAt }) → { queued, email, skipped, none, already, groups }`
+  - `cancelForUnHandOver({ orderIds, guestOrderIds }) → { deleted, requeued }`
+  - `planRow(template, recipient, { consent })` — §UC-WA-006's five rules as a PURE decision (WA-T5's compose reuses
+    it), `OPERATIONAL_TEMPLATES` (D5's three), `queuedCount(result)` (= `queued + email`, what the routes publish).
+  - Every distinct requested id lands in EXACTLY ONE count (`already` is an ADDITION to the spec's shape — the
+    „counted as already queued" bucket). `none` = in_person, inactive friend, cancelled/unstamped bag, disabled
+    template, opted-out friend without e-mail.
+- **Recipients/vars**: `helpers/segments.js handOverRecipients(cycleId, { orderIds, guestOrderIds })` — the SAME two
+  halves `buildSegment()` reads (refactored to compute EVERY row's key, `buildSegment` filters by key, this filters
+  by id). One query per half, never a second recipient query and never one `buildSegment()` per key.
+- **Callers** (all three module-16 hand-over routes, inside their existing transaction, after the UPDATEs): per-bag
+  friend (stamp + host's inheriting guests; reversal clears guests only when the host was really handed), per-bag
+  guest, bulk. They now pass IDS of what the call STAMPED (DP-T3's no-op rule unchanged); `guest-orders.js` no
+  longer imports `deliveryOf`/`partyDelivery` (the outbox classifies the stamped row itself).
+- **`queued_notifications`** = rows minted in status `queued` (WhatsApp + e-mail); a `skipped` to-do is not a queued
+  message — so a hand → un-hand pair balances against `dequeued_notifications` (queued-only delete).
+- **Row columns**: `body = renderTemplate(template.body, vars)` at enqueue (DP-T3's „NULL on purpose, rendered at
+  release" is struck — 21 §UC-WA-001 stores the rendered body per row); `phone_e164` snapshot on `whatsapp/queued`
+  rows only, `email` snapshot on `email` rows only (an opted-out friend's number is not copied into a row whose
+  channel cannot use it); `skipped` rows carry `error='no_phone'`, a rendered body, neither snapshot.
+- **Pure key module** `helpers/segment-keys.js`: `SEGMENT_KEY_MAX`, `isSegmentKey`, `bratislavaDateOf`,
+  `handOverSegmentKey` MOVED here from segments.js (re-exported there — WA-T3's surface unchanged) because schema.js
+  needs them at boot and cannot import segments.js (it imports the DB = schema.js; the cycle would hand schema.js a
+  module whose `db` binding is still in its TDZ). Plus `isLegacyHandOverKey` / `legacyHandOverSegmentKey`.
+- **Boot re-key** `schema.js rekeyLegacyHandOverRows()` (after the indexes): DP-T3's `loc<id>` / `packeta` /
+  `host:<id>` rows → `handed_over:pickup:<id>:<date>` / `handed_over:packeta:<date>` / `host_guests:<id>:<date>`
+  through the SAME `handOverSegmentKey()`. Logged, never thrown, idempotent (only the three legacy shapes are
+  selected; each UPDATE is guarded by its old key).
+- **Scrub**: `notifications.phone_e164`/`email` NULLed, `body` → `'Testovacia sprava ' || id` (it holds a guest's
+  `/g/o/<order_token>` — a CREDENTIAL — plus names/addresses/amounts); three verify lines. No NEW fail-closed
+  condition: the statements need `notifications` (DP-T1) and `email` (WA-T1), which WA-T1's own scrub lines
+  already require production to have booted. Checked on a booted copy (all three verify counts 0).
+
+### Decisions (orchestrator: confirm or overturn)
+
+1. **Pre-check key = the index's own tuple** `(template_key, recipient_kind, recipient_id, cycle_id)` with status
+   `queued` (any channel — the index ignores channel). The two-orders-in-one-cycle case is now coherent: the second
+   bag is `already`, never a caught constraint. The constraint catch (`isQueuedOnceConflict`) stays as the belt.
+2. **`skipped` to-dos do not stack**: an existing `skipped` row blocks a second `skipped` (the partial index does
+   not cover it, and the reversal deletes `queued` only, so a hand → un-hand → hand loop on a number-less friend
+   would otherwise stack to-dos) — but does NOT block a `queued` row: a friend who has since entered a number gets
+   the message; the old to-do stays (history, the admin DELETEs it — WA-T5).
+3. **Cancel stays `queued` only** (§UC-WA-006 literal + the backlog row): `skipped` rows survive an un-hand-over.
+   Arguable (a to-do about a bag that is back in hand is stale), recorded, not changed.
+4. **Cancel ownership** (the WA-T1 caveat, closed): the one queued row of a two-order friend is owned by the FIRST
+   bag; un-handing that bag deletes it and then RE-ENQUEUES every other still-handed submitted order of that friend
+   in that cycle through `enqueueForHandOver` (fresh body, its own key) — `requeued` counts it. Delete + re-mint
+   rather than re-point: an admin's per-row body edit (WA-T5) on that row is lost in this double-order edge only.
+5. **Key date = the ROW's own `handed_over_at`**, not the `handedOverAt` argument (accepted for the signature,
+   unused): it is what `buildSegment()` regroups by, and the bulk route stamps a late colleague with the HOST BAG's
+   older stamp, where the batch stamp would be wrong.
+6. **Re-key date source**: a `queued` legacy row takes its party's CURRENT stamp first (the reversal deletes queued
+   rows, so a surviving one's party stamp is the hand-over that minted it), then `created_at`; any other status is
+   history and takes `created_at` first. A `loc<id>` naming a deleted point keeps its id (FUP-T23: keep the group,
+   lose the label — `segmentName()` falls back to „Odberné miesto"). **Fallback key** when no usable date exists:
+   `legacy_handover:<old key, ':' → '-'>` (grammatical, `parseSegmentKey()` null ⇒ nameless group, rows readable).
+7. **Legacy NULL bodies are NOT back-filled** (schema.js cannot import the renderer's recipient reader). ⚠ **WA-T5:
+   release MUST treat `body IS NULL` as unresolved (refuse it with `unresolved_placeholders` or require a rerender
+   first) — a NULL body must never be released**; rerender should also refresh `phone_e164`/`email` for those rows.
+8. **Inactive friends get no row** (segments' consent predicate `active = 1`), overturning DP-T3's „a deactivated
+   friend still enqueues". Counted `none`.
+9. **The cancelled-after-hand-over seam is NOT closed here** (DP-T4/WA-T5 rows). It is not a hand-over-route
+   concern: the stale row is born by the CANCEL door, not by a hand-over. What WA-T4 changes: segments already drop
+   a cancelled sub-order, so a WA-T5 rerender of the group would not re-find it — but the queued row itself stays
+   until release. WA-T5's release-time guard (skip/`skipped` a row whose `guest_order_id` is cancelled) remains the
+   cheapest complete fix; alternatively `softCancelGuestOrder()` could call `cancelForUnHandOver({guestOrderIds})`.
+
+10. **(review) An e-mail counts only when it passes `helpers/mailer.js EMAIL_SHAPE`** (`planRow`'s `usableEmail()`,
+    the `storedEmailUsable()` rule — the CONSTANT is the outbox's only mailer import). An unshaped address is ABSENT
+    for rules 2 and 4: unshaped + a phone that did not normalise ⇒ `skipped`/`no_phone`; opted-out + unshaped ⇒ none.
+11. **(review) For WA-T5** (also on its PROGRESS row): release must refuse/rerender NULL-body legacy rows; rerender
+    refreshes the snapshots; `{suma}` is frozen at enqueue (stale after a payment until a rerender);
+    `dequeued_notifications` is GROSS in the two-order requeue case (the routes publish `deleted`, not `deleted − requeued`).
+
+### Review round (2026-10-24)
+
+- Stale copies struck with a pointer here: CLAUDE.md (nullable-body + „OUTSIDE the grammar until WA-T4" rules),
+  01-architecture (notifications nullable body), 16 §UC-DP-008 (key column, fixed NULL columns, „facts, not text",
+  idempotency tuple, deactivated-friend rule, acceptance + test-obligation lines), schema.js (DP-T1 difference 2),
+  routes/notifications.js (group `name` comment), learnings 06 (frozen `loc<id>`), learnings 15 §WA-T1/§WA-T3, the
+  DP-T3 PROGRESS row + log entry.
+- `whatsapp-segments.spec.js` groups test: the dead „outside the grammar ⇒ `name: null` / 400" branch removed; the
+  grammar, a title and a 200 rows route are asserted for EVERY group unconditionally.
+- New tests: the unshaped-e-mail probe (§1) and a via_host guest handed over DIRECTLY on the guest route (`host`
+  template, `host_guests:<host>:<date>`, the guest's number) then un-handed there (row deleted).
+
+### Traps found
+
+- `git stash -u -- backend/src` + a restarted gate server is a cheap whole-row red check for an e2e-only repo:
+  5 failed / 12 did not run against the pre-change backend.
+- A spec that asserts an EXACT count over a 21-grammar group it hand-wrote (WA-T3 §3) breaks the moment the hook
+  writes into the same key — hand-written groups should use a date no hand-over of the run can produce.
+- `DELETE … RETURNING` (better-sqlite3 `.all()`) gives the deleted rows' `recipient_id`/`cycle_id` without a
+  pre-SELECT — the ownership re-enqueue keys on it.

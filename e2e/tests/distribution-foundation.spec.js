@@ -641,7 +641,10 @@ test.describe('DP-T1 · handed_over_at is published, notifications stays empty',
 
     // host friend with a login (the share link is a host-authenticated route)
     const name = `DPT1 Host ${uniq}`
-    const created = await admin('post', '/api/friends', { name })
+    // WA-T4: a PHONE, so the host's hand-over row is a `queued` WhatsApp message (21
+    // §UC-WA-006 rule 3) — without one it is a `skipped`/`no_phone` to-do, which the
+    // reversal (queued only) never deletes, and the counts below are about queued rows.
+    const created = await admin('post', '/api/friends', { name, phone: '0903 456 789' })
     expect(created.status(), 'friend create').toBe(201)
     const friend = await created.json()
     const username = `dpt1_${uniq}`.slice(0, 30)
@@ -810,14 +813,16 @@ test.describe('DP-T1 · handed_over_at is published, notifications stays empty',
     expect(rows.length, 'one per (recipient, bag) — and not one more').toBe(3)
 
     for (const row of rows) {
-      // ⚠ The fixed columns of §UC-DP-008. `body` and `phone_e164` are NULL ON
+      // ⚠ The fixed columns of §UC-DP-008. ~~`body` and `phone_e164` are NULL ON
       // PURPOSE: module 21 renders the text and resolves the number at RELEASE
-      // time, because the template is editable in its composer first — rendering
-      // here would freeze stale wording into rows.
+      // time …~~ → WA-T4 (21 §UC-WA-001/006): the body is RENDERED and the number
+      // SNAPSHOT at enqueue — the admin reviews the text in the composer, and WA-T5's
+      // rerender is the door for a template edited afterwards. (Column-level detail
+      // of the new rows: whatsapp-handover-enqueue.spec.js.)
       expect(row.channel).toBe('whatsapp')
       expect(row.status, 'no `released` transition exists in module 16').toBe('queued')
-      expect(row.body, 'facts, not text').toBe(null)
-      expect(row.phone_e164, 'resolved by module 21 at release').toBe(null)
+      expect(typeof row.body === 'string' && row.body.length > 0, 'a rendered body').toBe(true)
+      expect(row.phone_e164, 'the recipient\'s E.164 snapshot').toMatch(/^\+421\d{9}$/)
       expect(row.released_at).toBe(null)
       expect(row.sent_at).toBe(null)
       expect(row.error).toBe(null)
@@ -828,7 +833,8 @@ test.describe('DP-T1 · handed_over_at is published, notifications stays empty',
     expect(friendRows.length, 'one for the friend whose bag it is').toBe(1)
     expect(friendRows[0]).toMatchObject({
       template_key: 'pickup',
-      segment_key: `loc${fixture.location.id}`,
+      // ~~`loc${fixture.location.id}`~~ → WA-T4: 21's grammar, dated (Bratislava day).
+      segment_key: expect.stringMatching(new RegExp(`^handed_over:pickup:${fixture.location.id}:\\d{4}-\\d{2}-\\d{2}$`)),
       recipient_id: fixture.friend.id,
       order_id: fixture.order.id,
       guest_order_id: null,
@@ -841,8 +847,9 @@ test.describe('DP-T1 · handed_over_at is published, notifications stays empty',
     )
     for (const row of guestRows) {
       expect(row.template_key, 'a guest travelling with their host hears about the HOST').toBe('host')
+      // ~~`host:${fixture.friend.id}`~~ → WA-T4: `host_guests:<host>:<date>` (21 grammar).
       expect(row.segment_key, 'grouped by host, not by where the host collects')
-        .toBe(`host:${fixture.friend.id}`)
+        .toMatch(new RegExp(`^host_guests:${fixture.friend.id}:\\d{4}-\\d{2}-\\d{2}$`))
       expect(row.recipient_id, 'a guest recipient IS the sub-order').toBe(row.guest_order_id)
       expect(row.order_id).toBe(null)
     }

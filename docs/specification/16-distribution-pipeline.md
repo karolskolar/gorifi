@@ -450,23 +450,36 @@ never sends** (01-architecture).
 **Contract — one row per (recipient, bag) at hand-over, written INSIDE the hand-over
 transaction (UC-DP-004/005/006):**
 
+> ⚠ **SUPERSEDED IN PART by module 21 (WA-T4, 21 §UC-WA-006 — learnings 15 §WA-T4).** The
+> `segment_key` column below is struck: keys are 21's grammar
+> (`handed_over:pickup:<loc>:<date>` / `handed_over:packeta:<date>` /
+> `host_guests:<host>:<date>`, Europe/Bratislava day of the row's `handed_over_at`), and
+> DP-T3's rows were re-keyed at boot. The rows now carry a RENDERED `body` and
+> `phone_e164`/`email` snapshots, follow 21's per-recipient rules (disabled template / opted
+> out / no phone ⇒ none, `email` or `skipped`/`no_phone`), deduplicate on the index's own
+> tuple (template, recipient, CYCLE), and a deactivated friend gets no row. The template
+> mapping and the „no row for `in_person`" rule are unchanged.
+
 | bag handed over | recipient_kind / recipient_id | template_key | segment_key |
 |---|---|---|---|
-| friend order, `delivery.type = 'pickup'` | `friend` / `orders.friend_id` | `pickup` | `loc<id>` |
-| friend order, `packeta` | `friend` / `orders.friend_id` | `packeta` | `packeta` |
+| friend order, `delivery.type = 'pickup'` | `friend` / `orders.friend_id` | `pickup` | ~~`loc<id>`~~ → `handed_over:pickup:<loc>:<date>` |
+| friend order, `packeta` | `friend` / `orders.friend_id` | `packeta` | ~~`packeta`~~ → `handed_over:packeta:<date>` |
 | friend order, `in_person` | — **no row** (module 21 UC-WA-004 defines no template for in-person hand-over; the admin arranges it directly) | — | `in_person` (segment only, for the board's „Správa skupine“ with template `custom`) |
-| each guest **inherited** from a host (via_host) | `guest` / `guest_orders.id` | `host` | `host:<host_friend_id>` |
-| guest handed over on its own, `via_host` (UC-DP-005 cases b/c) | `guest` / `guest_orders.id` | `host` | `host:<host_friend_id>` |
-| guest handed over on its own, `packeta` (module 20) | `guest` / `guest_orders.id` | `packeta` | `packeta` |
+| each guest **inherited** from a host (via_host) | `guest` / `guest_orders.id` | `host` | ~~`host:<host_friend_id>`~~ → `host_guests:<host>:<date>` |
+| guest handed over on its own, `via_host` (UC-DP-005 cases b/c) | `guest` / `guest_orders.id` | `host` | ~~`host:<host_friend_id>`~~ → `host_guests:<host>:<date>` |
+| guest handed over on its own, `packeta` (module 20) | `guest` / `guest_orders.id` | `packeta` | ~~`packeta`~~ → `handed_over:packeta:<date>` |
 | a host with NO own order (synthetic party) | — no `friend` row; only the guest rows above | — | — |
 
-Fixed columns: `channel = 'whatsapp'`, `status = 'queued'`, `cycle_id`, `order_id` (friend
-rows) / `guest_order_id` (guest rows), `created_at = CURRENT_TIMESTAMP`, **`body = NULL`,
-`phone_e164 = NULL`, `released_at/sent_at/error = NULL`**.
+Fixed columns: ~~`channel = 'whatsapp'`, `status = 'queued'`,~~ `cycle_id`, `order_id` (friend
+rows) / `guest_order_id` (guest rows), `created_at = CURRENT_TIMESTAMP`, ~~**`body = NULL`,
+`phone_e164 = NULL`,**~~ `released_at/sent_at = NULL` (→ WA-T4: channel/status/`body`/`phone_e164`/
+`email`/`error` per 21 §UC-WA-006 — learnings 15 §WA-T4).
 
 **Business rules:**
 
-- **Facts, not text.** This module stores WHICH template for WHOM about WHICH bag. Module 21
+- ~~**Facts, not text.**~~ → **SUPERSEDED by 21 §UC-WA-001/006 (WA-T4)**: the body is rendered and the
+  number snapshot at ENQUEUE; WA-T5's rerender is the door for a later template edit. Original text:
+  This module stores WHICH template for WHOM about WHICH bag. Module 21
   renders `body` from the template key + the live row (recipient name, place, address, host,
   amount) at RELEASE time and resolves `phone_e164` then (from `friends.phone_e164` /
   `guest_phone`, opt-in, `skipped` on a missing number — all 21's rules). ⚠ Reason: template
@@ -478,15 +491,16 @@ rows) / `guest_order_id` (guest rows), `created_at = CURRENT_TIMESTAMP`, **`body
   arranges the hand-over directly — orchestrator reconciliation 2026-09-19). Recipients are never friends without
   a bag: the „everyone at point X“ segments are 21's composer, not a hand-over row.
 - **Idempotent enqueue:** before INSERT, if a `queued` row exists for the same `(template_key,
-  recipient_kind, recipient_id, order_id/guest_order_id)` no second row is written. A
+  recipient_kind, recipient_id, ~~order_id/guest_order_id~~ → WA-T4: cycle_id)` no second row is written. A
   `released`/`sent` row does not block a new `queued` one (a genuine re-hand-over after a
   reversal is a new event).
 - **Reversal dequeues:** `handed_over: false` **DELETEs** this bag's rows with `status =
   'queued'` (and, on a host reversal, its inherited guests' `queued` rows) — never
   `released`/`sent`/`failed`/`skipped` rows (those are history). The row count returned as
   `dequeued_notifications`.
-- Hand-over of a bag whose recipient is a deactivated friend still enqueues (21 decides
-  whether to skip; this module records the event).
+- ~~Hand-over of a bag whose recipient is a deactivated friend still enqueues (21 decides
+  whether to skip; this module records the event).~~ → WA-T4: 21 decided — no row (consent
+  predicate `active = 1`), counted `none`.
 - ⚠ **No sending, no outbound call, no import of any WhatsApp/mail code from these routes**;
   no `released` transition exists in this module.
 - Board copy that mentions the messages (confirm modal second sentence, toast half „· n správ
@@ -496,7 +510,7 @@ rows) / `guest_order_id` (guest rows), `created_at = CURRENT_TIMESTAMP`, **`body
 
 **Acceptance criteria:** hand-over of a `pickup` friend with two live guests inserts exactly
 three `queued` rows (1 × `pickup` for the friend with `order_id`, 2 ×
-`host` with the guest ids, `segment_key = 'host:<id>'`), all `body IS NULL`;
+`host` with the guest ids, `segment_key = ~~'host:<id>'~~ → 'host_guests:<id>:<date>'`), ~~all `body IS NULL`~~ (→ WA-T4: rendered bodies);
 a repeat hand-over inserts none; reversal deletes exactly those three and leaves a pre-existing
 `sent` row alone; a synthetic host's guest hand-over inserts guest rows only; no row ever has
 `status <> 'queued'` after any route in this module.
@@ -819,7 +833,8 @@ every module: Playwright in `e2e/`, no unit runner, `node --check` on changed ba
   `handed_over`, rows unchanged; after reversal the un-pack posts exactly one reversal row.
 - **Outbox contract (UC-DP-008):** row counts and columns per case in its acceptance
   criteria; dedupe; dequeue on reversal leaves a hand-inserted `sent` row; every row
-  `status = 'queued'`, `body IS NULL`. Uses `node:sqlite` on `DB_PATH` (self-skips without it,
+  `status = 'queued'`, ~~`body IS NULL`~~ (→ WA-T4: a rendered body; per-recipient statuses in
+  `whatsapp-handover-enqueue.spec.js` — learnings 15 §WA-T4). Uses `node:sqlite` on `DB_PATH` (self-skips without it,
   the documented skip) — and remember its constraint error codes differ from better-sqlite3's.
 - **Bodies:** `{}`, `true`, `[3]`, `'abc'`, `{ handed_over: 'yes' }` ⇒ 400, never 500; ids from
   another cycle ⇒ 400 `foreign_id`.

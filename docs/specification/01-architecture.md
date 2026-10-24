@@ -161,7 +161,8 @@ spec, so this documents the **existing** system, not a greenfield design.
     (appended after `error`, by ALTER on a deployed table and in the CREATE on a fresh
     one); `recipient_kind` widened to `('friend','guest','waitlist','admin')` by a guarded
     table RECREATE (rows + ids + the AUTOINCREMENT mark kept); `segment_key`/`body` stay
-    NULLABLE (module 16 writes NULL bodies) and the table has NO foreign keys
+    NULLABLE (~~module 16 writes NULL bodies~~ → WA-T4: the hook renders every body at enqueue;
+    only pre-WA-T4 legacy rows hold NULL, and release must refuse them — learnings 15 §WA-T4) and the table has NO foreign keys
     (`DELETE /cycles/:id` must neither block nor cascade outbox history); indexes
     `idx_notifications_status (status)`, `idx_notifications_group (cycle_id, segment_key)`
     and the PARTIAL UNIQUE `idx_notifications_queued_once (template_key, recipient_kind,

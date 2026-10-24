@@ -257,7 +257,8 @@ reddens only one of them.
 - Every location this spec creates is retired or deleted before the file ends, so none
   lengthens the `PickupLocationPicker` options in other files — the global-fixture leak
   `distribution-handover.spec.js` warns about.
-- `segment_key` freezes `loc<id>` at enqueue (DP-T3), and a re-point + delete can now leave
+- `segment_key` freezes `loc<id>` at enqueue (DP-T3; ~~`loc<id>`~~ → since WA-T4 `handed_over:pickup:<id>:<date>`, the id
+  frozen the same way, and the boot re-key keeps a deleted point's id — learnings 15 §WA-T4), and a re-point + delete can now leave
   a frozen key naming a row that is genuinely gone — correct behaviour, inert today because
   nothing reads the key back. A line went on **WA-T5**'s row: when that module groups by it,
   treat a frozen key the way the distribution payload treats a dangling id.

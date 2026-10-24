@@ -3028,7 +3028,8 @@ test.describe('GP-T6 · 20 §UC-GP-010 — hand-over inheritance stamps via_host
     expect(own.status()).toBe(200)
     expect(guestRow(s.B.id).handed_over_at).toBeTruthy()
     expect(gp6Notifications(s.B.id)).toEqual([
-      { template_key: 'packeta', segment_key: 'packeta', recipient_kind: 'guest', recipient_id: s.B.id, status: 'queued' },
+      // ~~segment_key: 'packeta'~~ → WA-T4: 21's grammar, `handed_over:packeta:<Bratislava day>`.
+      { template_key: 'packeta', segment_key: expect.stringMatching(/^handed_over:packeta:\d{4}-\d{2}-\d{2}$/), recipient_kind: 'guest', recipient_id: s.B.id, status: 'queued' },
     ])
     const party = gp6Guest(await gp6Dist(s.cycle.id), s.B.id)
     expect(party.stage).toBe('handed')

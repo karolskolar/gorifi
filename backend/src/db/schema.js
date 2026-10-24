@@ -6,6 +6,7 @@ import crypto from 'crypto';
 // (21 §UC-WA-002 — no second E.164 computation anywhere in backend/src).
 import { toE164 } from '../helpers/phone.js';
 import { TEMPLATE_KEYS, seedSettingValue, templateSettingKey } from '../helpers/template-render.js';
+import { isLegacyHandOverKey, legacyHandOverSegmentKey } from '../helpers/segment-keys.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1499,9 +1500,11 @@ function initDb() {
   //      `sqlite_master.sql` lacking `'admin'` (a no-op on every later boot), every
   //      row and every id preserved, `sqlite_sequence` carried over so a deleted top
   //      id is never re-issued.
-  //   2. `segment_key` / `body` STAY NULLABLE — module 16 writes `body = NULL` rows
-  //      (§UC-DP-008) and keeps doing so; module 21's own writers (WA-T4 onwards)
-  //      enforce non-NULL themselves.
+  //   2. `segment_key` / `body` STAY NULLABLE — ~~module 16 writes `body = NULL` rows
+  //      (§UC-DP-008) and keeps doing so~~ → WA-T4: the hand-over hook renders every
+  //      body at enqueue (`helpers/outbox.js`); only PRE-WA-T4 legacy rows hold NULL,
+  //      and WA-T5's release must refuse them (learnings 15 §WA-T4). Module 21's
+  //      writers enforce non-NULL themselves.
   //   3. NO FOREIGN KEYS, permanently: `DELETE /cycles/:id` exists, and an FK would
   //      either block it or CASCADE away outbox history. Neither is wanted.
   // The CREATE below is therefore the FULL module-21 shape (a fresh database never
@@ -1578,6 +1581,8 @@ function initDb() {
     }
   }
 
+  // WA-T4 — DP-T3's hook rows onto 21's segment-key grammar (one-time, idempotent).
+  rekeyLegacyHandOverRows();
 }
 
 // ── The outbox table's ONE definition (WA-T1) ───────────────────────────────────
@@ -1615,6 +1620,56 @@ const NOTIFICATION_COLUMNS = [
   'phone_e164', 'body', 'status', 'cycle_id', 'order_id', 'guest_order_id',
   'created_at', 'released_at', 'sent_at', 'error', 'sent_via', 'email',
 ];
+
+// ── The one-time RE-KEY of DP-T3's hook rows (WA-T4, 21 §UC-WA-005/006) ─────────────
+// DP-T3 wrote `segment_key` = `loc<id>` / `packeta` / `host:<id>`: outside 21's grammar
+// (`/^[a-z_]+(:[A-Za-z0-9-]+)*$/`), so those groups had no title and their rows 400'd on
+// the validated `GET /api/notifications` (learnings 15 §WA-T3). Each such row is re-keyed
+// to `handed_over:pickup:<loc>:<date>` / `handed_over:packeta:<date>` /
+// `host_guests:<host>:<date>` through `segment-keys.js legacyHandOverSegmentKey()` —
+// the SAME `handOverSegmentKey()` the live hook uses (schema.js cannot import
+// segments.js: that module imports this one).
+//   • The TARGET stays what was frozen into the key: a `loc<id>` naming a since-deleted
+//     pickup point keeps its group and loses only its label (FUP-T23's rule — never
+//     drop the message). Only the DATE is new.
+//   • The date: a `queued` row takes its party's CURRENT `handed_over_at` first (the
+//     reversal deletes queued rows, so a surviving queued row's party stamp IS the
+//     hand-over that minted it — and it is what `buildSegment()` regroups by), then the
+//     row's `created_at`; every other status is HISTORY and takes `created_at` first
+//     (the party may since have been un-handed or handed over again), then the party
+//     stamp. All UTC, converted to the Europe/Bratislava day.
+//   • No usable date at all ⇒ `legacy_handover:<old key, ':' → '-'>` — grammatical, the
+//     group kept, never dropped.
+//   • `body` / `phone_e164` / `email` are NOT back-filled here: rendering needs the
+//     templates + recipient reader (`helpers/segments.js`), which this module cannot
+//     import. A legacy `queued` row keeps `body = NULL` until WA-T5's rerender, and
+//     WA-T5's release MUST treat a NULL body as unresolved (never send it) — recorded
+//     in learnings 15 §WA-T4.
+// Idempotent by construction: only the three legacy shapes are selected, and no new key
+// has one of them. Each row is an UPDATE guarded by its old key. LOGGED, never thrown.
+function rekeyLegacyHandOverRows() {
+  try {
+    const rows = bdb.prepare(`
+      SELECT n.id, n.segment_key, n.status, n.created_at,
+             (SELECT o.handed_over_at FROM orders o WHERE n.order_id IS NOT NULL AND o.id = n.order_id) AS order_stamp,
+             (SELECT g.handed_over_at FROM guest_orders g WHERE n.guest_order_id IS NOT NULL AND g.id = n.guest_order_id) AS guest_stamp
+        FROM notifications n
+       WHERE n.segment_key = 'packeta' OR n.segment_key LIKE 'loc%' OR n.segment_key LIKE 'host:%'
+    `).all().filter((row) => isLegacyHandOverKey(row.segment_key));
+    if (rows.length === 0) return;
+    const update = bdb.prepare('UPDATE notifications SET segment_key = ? WHERE id = ? AND segment_key = ?');
+    bdb.transaction(() => {
+      for (const row of rows) {
+        const partyStamp = row.order_stamp || row.guest_stamp || null;
+        const stamps = row.status === 'queued' ? [partyStamp, row.created_at] : [row.created_at, partyStamp];
+        update.run(legacyHandOverSegmentKey(row.segment_key, stamps), row.id, row.segment_key);
+      }
+    })();
+    console.log(`[outbox] re-keyed ${rows.length} DP-T3 hand-over row(s) onto the 21 segment grammar`);
+  } catch (e) {
+    console.error('Migration error (notifications legacy segment_key re-key):', e.message);
+  }
+}
 
 // ── The one-time `phone_e164` back-fill (WA-T1, 21 §UC-WA-001 rule 3) ───────────
 // See the call site in initDb. Reads only `phone_e164 IS NULL` rows, writes only
