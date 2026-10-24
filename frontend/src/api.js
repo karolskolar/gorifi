@@ -101,6 +101,12 @@ async function request(endpoint, options = {}) {
     // 21 §UC-WA-004 (WA-T7): the template PUT's `unknown_placeholder` 400 names the
     // offending `{token}` — the settings page shows it inline.
     if (typeof error.token === 'string') err.token = error.token
+    // 21 §UC-WA-008/012 (WA-T8): the release's all-or-nothing 409
+    // `unresolved_placeholders` names the blocking rows (`ids`) — the composer scrolls to
+    // the first one; the test message's 409 `test_pending` names the pending row (`id`) —
+    // the settings page offers to close it.
+    if (Array.isArray(error.ids)) err.ids = error.ids
+    if (Number.isInteger(error.id)) err.id = error.id
     if (Array.isArray(error.order_ids)) err.orderIds = error.order_ids
     if (Array.isArray(error.guest_order_ids)) err.guestOrderIds = error.guest_order_ids
     if (Array.isArray(error.cancelled_guest_order_ids)) {
@@ -335,6 +341,29 @@ export const api = {
   getNotificationTemplates: () => request('/notifications/templates'),
   updateNotificationTemplate: (key, data) =>
     request(`/notifications/templates/${encodeURIComponent(key)}`, { method: 'PUT', body: data }),
+  // 21 §UC-WA-008 (WA-T3/WA-T5's routes, WA-T8's composer). Groups are addressed by
+  // `{ cycle_id, segment_key }` — `cycle_id` a NUMBER in the POST bodies (a numeric string
+  // 400s there), a query string on the two GETs.
+  getNotificationSegments: (cycleId) =>
+    request(`/notifications/segments?cycle_id=${encodeURIComponent(cycleId)}`),
+  getNotifications: (cycleId, segmentKey) =>
+    request(`/notifications?cycle_id=${encodeURIComponent(cycleId)}&segment_key=${encodeURIComponent(segmentKey)}`),
+  composeNotifications: (cycleId, segmentKey) =>
+    request('/notifications/compose', { method: 'POST', body: { cycle_id: Number(cycleId), segment_key: segmentKey } }),
+  // 409 `unresolved_placeholders` carries `err.ids` (nothing released).
+  releaseNotifications: (cycleId, segmentKey) =>
+    request('/notifications/release', { method: 'POST', body: { cycle_id: Number(cycleId), segment_key: segmentKey } }),
+  retryNotifications: (cycleId, segmentKey) =>
+    request('/notifications/retry', { method: 'POST', body: { cycle_id: Number(cycleId), segment_key: segmentKey } }),
+  // `queued` + `failed` rows (WA-T8: the failed-row repair door before a retry).
+  rerenderNotifications: (cycleId, segmentKey) =>
+    request('/notifications/rerender', { method: 'POST', body: { cycle_id: Number(cycleId), segment_key: segmentKey } }),
+  updateNotificationBody: (id, body) =>
+    request(`/notifications/${encodeURIComponent(id)}/body`, { method: 'PATCH', body: { body } }),
+  // The wa.me tick (and the stuck-test-row door). 409 `bot_active` / `not_pending` / `not_waiting`.
+  markNotificationManualSent: (id) =>
+    request(`/notifications/${encodeURIComponent(id)}/manual-sent`, { method: 'PATCH', body: { sent: true } }),
+  deleteNotification: (id) => request(`/notifications/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   // Products
   getProducts: (cycleId) => request(`/products/cycle/${cycleId}`),

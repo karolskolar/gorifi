@@ -285,8 +285,12 @@ router.get('/', (req, res) => {
 //   POST   /release              { cycle_id, segment_key } ⇒ 200 { released, whatsapp, email, skipped, counts }
 //                                                            409 unresolved_placeholders { ids }
 //   POST   /retry                { cycle_id, segment_key } ⇒ 200 { released, whatsapp, email, skipped, counts }
+//                                                            409 unresolved_placeholders { ids } (WA-T8 review)
 //   POST   /rerender             { cycle_id, segment_key } ⇒ 200 { rerendered, unchanged, counts }
-//   PATCH  /:id/body             { body }                  ⇒ 200 row · 409 not_queued
+//                                 (`queued` rows — and since WA-T8 `failed` ones, status kept: the
+//                                 repair door before a retry, learnings 15 §WA-T8)
+//   PATCH  /:id/body             { body }                  ⇒ 200 row · 409 not_queued (queued AND, since the
+//                                                            WA-T8 review, failed rows — status kept)
 //   PATCH  /:id/manual-sent      { sent: true }            ⇒ 200 row · 409 bot_active / not_pending / not_waiting
 //   DELETE /:id                                            ⇒ 200 { deleted: true, id } · 409 not_queued
 //
@@ -374,6 +378,9 @@ router.post('/retry', (req, res) => {
   const group = groupFromBody(req, res);
   if (!group) return undefined;
   const result = retryGroup(group);
+  // WA-T8 review: the release's all-or-nothing gate (a rerendered failed row may carry a
+  // literal) — 409 `unresolved_placeholders` { ids }, nothing written.
+  if (result.refused) return refuse(res, result.refused, { ids: result.ids });
   return res.json({ ...result, counts: groupCounts(group.segmentKey, group.cycleId) });
 });
 

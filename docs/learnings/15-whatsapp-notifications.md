@@ -706,6 +706,7 @@ one `WA_HEALTH_URL`-gated) + two `ADMIN_ENDPOINTS` rows. No retargets.
    `released` row while the bot is not connected (exactly when a test row gets stuck — process down/paused). The spec
    uses that door for cleanup. While the bot IS connected it drains the row itself. No dedicated UI door (the
    composer is per cycle; a cycle-less `'test'` group is not listable there) — flag for WA-T8 if the PO wants one.
+   **→ WA-T8 built it on THIS page (§WA-T8 decision 2): the 409's `id` ⇒ „Uzavrieť čakajúcu testovaciu správu“.**
 6. **Health contract for WA-T9 (the Tempo card)**: the page reads `pace: { min_ms, max_ms }` and `hourly_max`
    (integer) when the process reports them, else 3–10 s / 30. §UC-WA-011's `/health` field list carries NEITHER — WA-T9
    should publish them from its env (`WA_PACE_MIN_MS`/`MAX`, `WA_HOURLY_MAX`), or the card always shows the defaults.
@@ -750,3 +751,173 @@ one `WA_HEALTH_URL`-gated) + two `ADMIN_ENDPOINTS` rows. No retargets.
 - The template `<textarea>` has an accessible name (`aria-label="Text šablóny {name}"`, pinned).
 - WA-T8 PROGRESS row: a `'test'` row stuck `released` (bot down / paused / `auth_failure`) 409s every later test click
   with no UI door — the composer/settings need one; consider disabling/hinting the button while `reachable` is false.
+
+## WA-T8 — the composer `/admin/whatsapp` (`AdminWhatsApp.vue`) + module 16's message buttons (2026-10-24)
+
+Spec: 21 §UC-WA-009 (+ §UC-WA-008's API, §UC-WA-012's banner, PO 2026-09-19 default tab „Cez bota“), 16 §UC-DP-010/012's
+deferred halves. Tests: NEW `e2e/tests/whatsapp-composer.spec.js` (14: §1 11 UI over real module-16 hand-overs — two
+`TARGET_IS_LOCAL`-gated; §2 1 `WA_HEALTH_URL`-gated; §3 1 settings-page door, local-gated). No new route ⇒ nothing joins
+`ADMIN_ENDPOINTS`. Retargeted with strike notes: `whatsapp-outbox.spec.js` (rerender test — failed rows now refreshed),
+`distribution-board.spec.js` (the „NO Správa skupine“ pin), `distribution-group-handover.spec.js` (header note 5, the modal
+„no WhatsApp“ pin, both toast texts), `guest-packeta.spec.js` GP-T6 (the Packeta group's toast).
+
+### What shipped
+
+- **`views/AdminWhatsApp.vue`** at `/admin/whatsapp` (`admin-whatsapp`, under the `/admin` guard), linked from the dashboard
+  (`admin-whatsapp-composer-link`, + the mobile menu), from the settings page (`wa-composer-link`) and back
+  (`wa-settings-link`), and from the board. Header „Správy skupinám“ + the spec's sub-line (`wa-composer-sub`); cycle
+  `<select v-model>` (`wa-cycle-select`, writes `?cycle=`); tabs `wa-tab-bot` (default) / `wa-tab-manual` (`aria-selected`);
+  `wa-offline-banner` (health `!connected || paused`). Three cards:
+  - **Komu** `wa-komu`: groups `wa-group-<segment_key>` (`data-segment-key`, `aria-pressed` = selected) with `wa-group-count`
+    (queued+released+failed) and chips `wa-group-sent` „n odoslané“ / `wa-group-failed` „n chyby“ / `wa-group-skipped`
+    ~~„n bez čísla“~~ „n preskočené“ (→ WA-T8 review, below); computed segments `wa-computed-<key>` with „{n} bez súhlasu · {n} bez čísla“, `wa-compose-<key>`
+    „Pripraviť správy (n)“ (disabled + `wa-compose-hint-<key>`, JS-guarded), the spec's help line; `wa-deeplink-miss`.
+  - **Šablóna** `wa-template-card`: `wa-template-title` „Šablóna · {name}“, chips `wa-placeholder-chip` (from the templates
+    GET's `placeholders`; `@mousedown.prevent` keeps focus + caret, insert at the caret), `wa-template-text` (`maxlength=1000`,
+    bound to the TEMPLATE, PUT on blur), `wa-template-error` (the 400 `unknown_placeholder` inline), `wa-template-saved`,
+    `wa-rerender` „Prepísať texty vo fronte (n)“ + `wa-rerender-note`.
+  - **Náhľad** `wa-preview`: `wa-preview-title` „Náhľad · {recipientsLabel}“; bot tab `wa-release` „Poslať skupine (n)“,
+    `wa-retry` „Skúsiť znova (n)“, `wa-release-error`, `wa-bot-help`; wa.me tab `wa-manual-help`. Rows `wa-row-<id>`
+    (`data-status`, `data-unresolved`): `wa-row-name`, `wa-row-phone` (as entered, „ · e-mail“ on an e-mail row),
+    `wa-row-badge` (`title` = the error code on a failed row), `wa-row-body` (TEXT), `wa-row-edit` → `wa-row-textarea`
+    (`maxlength=1000`) / `wa-row-save` / `wa-row-cancel`, `wa-row-delete` „×“ (queued/skipped), `wa-row-unresolved`,
+    `wa-row-error`, wa.me `wa-row-open` „Otvoriť chat“ / `wa-row-opened` „Otvorené ✓“. Skipped rows last, `opacity-60`.
+  - Toast `wa-toast` (Teleport, 3.5 s).
+- **`lib/use-wa-health.js`** — the health poller MOVED out of `AdminWhatsAppSettings.vue` (5 s, seq guard, `invalidate()`,
+  drops the answer/QR on unmount); both pages call it. Not a fork.
+- **`api.js`**: `getNotificationSegments`, `getNotifications`, `composeNotifications`, `releaseNotifications`,
+  `retryNotifications`, `rerenderNotifications`, `updateNotificationBody`, `markNotificationManualSent`, `deleteNotification`;
+  `request()` carries `ids` (the release 409) and `id` (the `test_pending` 409) onto the thrown error.
+- **`lib/plural.js`**: `messagesLabel`, `queuedMessagesAdjective`, `releasedMessagesAdjective`, `recipientsLabel`.
+- **Board (`Distribution.vue`)**: header `board-messages` „Správy (n vo fronte)“ (n = Σ `counts.queued` over the cycle's
+  `GET /segments` groups — re-read on every board re-fetch, own seq guard, „Správy“ alone if the read fails); per group
+  `messages-group-<key>` „Správa skupine“ (pickup points + Packeta under „Podľa doručenia“ only); the modal's
+  `handover-message-note`; the toast's „· n správ zaradených na odoslanie (WhatsApp)“ half.
+
+### Decisions (orchestrator: confirm or overturn)
+
+1. **The failed-row repair door = `/rerender` also refreshes `failed` rows, status KEPT** (`helpers/outbox.js rerenderGroup`:
+   `status IN ('queued','failed')`, the UPDATE re-asserts the status it read). Why this and not the alternatives: retry
+   re-sends the FROZEN snapshot by contract; DELETE of a failed row only DISMISSES (a hand-over group cannot be re-composed
+   — `not_composable`), it repairs nothing; `rerenderGroup` is already the one function that re-plans a recipient through
+   `planRow()` against the live segment, so the change is two predicates. Flow: fix the contact (friend detail) → „Prepísať
+   texty vo fronte (n)“ (n = queued + failed) → „Skúsiť znova (n)“. It also refreshes the body of a failed row from the
+   CURRENT template (the admin pressed the button that says so) and may switch its channel (e-mail ⇒ WhatsApp once a number
+   exists). `error` is kept until the sender overwrites it (WA-T5 decision 9). Mutation-checked: queued-only reds the
+   composer's repair test („Prepísané: 0.“). DELETE stays `queued|skipped` — failed rows are history.
+   **AMENDED by the review (accepted only with these):** (a) `retryGroup()` now carries the release's ALL-OR-NOTHING
+   `releasable()` gate — a re-rendered failed row can hold a literal (`{tracking}` added to the template, a vanished
+   `{odkaz}`) or a NULL `unresolved`, and before this it left via „Skúsiť znova“ (reproduced by the reviewer): 409
+   `unresolved_placeholders {ids}`, nothing written, nothing handed to the mailer (cancelled sub-orders excepted, as in
+   the release); (b) `PATCH /:id/body` accepts a `failed` row too (status kept, `unresolved` = the rescan) — CHOSEN over
+   „fix the template and rerender“ because a hand-filled placeholder (`{tracking}`) has no template-level value at all;
+   (c) the composer outlines failed rows from `unresolved` like queued ones, offers „Upraviť text“ on them, and scrolls to
+   the first flagged row on the retry's 409. Pinned in the repair-door test (template + `{tracking}` → rerender → retry ⇒
+   409, rows read back byte-equal incl. `released_at`, the API 409 names exactly the row; then the per-row edit fills it,
+   still `failed`).
+2. **The stuck `'test'` row door = the settings page, no server change.** The `test_pending` 409 already names the row; the
+   page shows `wa-test-finalise` „Uzavrieť čakajúcu testovaciu správu“ → `PATCH /api/notifications/:id/manual-sent` (allowed
+   exactly while the bot is not connected — when a test row gets stuck; `bot_active` otherwise, the bot will send it). The
+   row then reads `sent`/`wa_me` — a small lie (nobody opened wa.me), accepted: the outbox has no other admin-writable
+   terminal state for a released row, and a DELETE of a `released` row would race the bot. Plus `wa-test-offline-hint`
+   while health is unreachable (NOT disabling the button — the WA-T7 UI tests send a test on a process-less gate). The
+   composer does not list test rows (cycle-less, `segment_key='test'`).
+3. **wa.me click order = the spec's: `window.open(url,'_blank','noopener,noreferrer')` SYNCHRONOUSLY in the click, then
+   `PATCH manual-sent`.** A popup opened after an `await` is blocked on mobile Safari. So the WA-T5 note („re-render a
+   WAITLIST row before composing its wa.me link“) is honoured UP FRONT: entering the wa.me tab on a `waitlist:` group with
+   queued rows POSTs `/rerender` once (buttons disabled meanwhile), then re-reads the rows; the click itself never awaits
+   before opening. A rotation between that re-render and the click is the accepted gap. A 409 after the open
+   (`bot_active` / `not_waiting` / `not_pending`) is rendered on the row; the tab already opened — the admin simply does not
+   press send. `bot_active` copy is the spec's „Bot je pripojený — správu pošle bot“.
+4. **Released rows show „Otvoriť chat“ only while health says not connected** (spec); `paused` does not count (the server's
+   guard is `state === 'connected'` alone). The banner uses `!connected || paused` (spec). An `email` row never shows the
+   chat button (no number).
+5. **Deep link `?segment=` = an exact key, or a date-less PREFIX** (`handed_over:pickup:<loc>` / `handed_over:packeta`)
+   resolving to that target's NEWEST day group present (keys sort lexicographically by ISO date). A board group is a TARGET,
+   a message group a target PER DAY — the board cannot know which day the admin means, the newest is the one just handed
+   over. No match ⇒ no selection + `wa-deeplink-miss`. Without a deep link the first group with something pending (else the
+   first) is selected silently (no query write).
+6. **Cycle default**: query → newest `locked` → newest `open` → (DRAFT) the newest of any status; „newest“ = highest id.
+7. **Warning outline** = the row's `unresolved` (non-empty, or `null` on a ~~queued~~ queued OR FAILED row (→ WA-T8 review) —
+   release / retry refuse both) plus the ids of
+   the last `unresolved_placeholders` 409 (release or retry); never a client rescan. After the 409 the rows are re-read and the first flagged
+   row is `scrollIntoView({block:'center'})`.
+8. **„Prepísať texty“ waits for the template save**: its click blurs the textarea, so `rerender()` awaits the in-flight PUT
+   (~~`inflightSave`~~ → WA-T8 review: per-key `inflightSaves`, and `saveTemplate(key)` resolves a BOOLEAN — compose and
+   rerender abort on `false`; a draft reverted to the saved text clears its refusal and resolves `true`) before posting —
+   otherwise it re-renders from the old template.
+9. **Row body edit** = an explicit „Upraviť text“ editor per ~~queued~~ queued OR FAILED row (→ WA-T8 review) (not an
+   always-open textarea); a refusal keeps the
+   editor open with the server's message, the row keeps its server text; `not_queued` closes the editor and re-reads.
+10. **Board toast half only when `queued_notifications > 0`** — an `in_person` drop queues nothing, and „0 správ
+    zaradených“ reads as a failure. **The modal sentence**: none for `in_person` (21 resolved conflict 4).
+11. **`/segments` on every board re-fetch** — one extra admin GET per board load (it also builds the three computed
+    segments); acceptable at this scale. The count includes cycle-less `all_active` rows (they show in every cycle's composer
+    too).
+
+### Review round (2026-10-24, REVISE → fixed)
+
+- **[major] retry gate** — decision 1 amendment above.
+- **Cycle switch race**: `resetGroupState()` (run by every group switch AND `enterCycle()`) bumps `rowsSeq` and clears
+  `rowsLoading`, so a row GET of the previous cycle cannot paint under a cycle that loads no rows at all. Pinned: the M
+  answer held 4 s, switch to an EMPTY planned cycle, assert after it landed.
+- **Template save is a boolean**: `saveTemplate(key)` resolves `true` (saved / nothing to save) or `false` (refused);
+  rerender AND compose await it and abort on `false` („Šablóna sa neuložila — texty sa neprepísali.“ / „Šablóna sa
+  neuložila — opravte ju a skúste znova.“, DRAFT copy). Drafts and refusals are kept PER TEMPLATE KEY (`drafts`,
+  `templateErrors`), so a group switch never drops a refused edit or its message (pinned: switch to the `closing` group and
+  back — the `{menoo}` draft and its error are still there).
+- **wa.me waitlist re-render**: runs ONCE per group load (its marker is cleared only by `resetGroupState()`, not by a tab
+  switch — re-running it overwrote per-row edits); its `unchanged` ids (`staleIds`) get NO „Otvoriť chat“ (JS guard in
+  `canOpenChat`) and a hint „Text sa nepodarilo obnoviť — chat sa neotvorí. Hosť už pravdepodobne nečaká.“ (DRAFT). Not
+  e2e-pinned: building a waitlist group needs the `guest_waitlist` writer, which is parked/open-round-gated (decision
+  recorded; the guard is one `includes()`).
+- **Released row chat needs a POSITIVE down reading**: `!!health.value && !connected.value` — an unknown health is not
+  „down“.
+- **Rows follow the bot without a reload**: the composer passes `onHealth` to `useWaHealth()` and re-reads its rows
+  (seq-guarded) on each 5 s tick while any visible row is `released`. Pinned (DB_PATH-gated): a `released → sent/bot` write
+  behind the page's back flips the badge to „Odoslané“ with no navigation. The stub-sender twin is WA-T9's (PROGRESS ⚠).
+  This CLOSES the composer half of §UC-WA-009's „within the poll interval“ (the section below kept for the stub proof).
+- **Komu chip** prints „{n} preskočené“ (not the spec's „bez čísla“): `counts.skipped` also holds `cancelled` /
+  `not_waiting` rows; minimal — no server split.
+
+### Copy drafted here (PO may reword — admin vy-form, no „kolo/cyklus“)
+
+- Declensions (the specs print the 5+ form for every n): „Náhľad · 1 príjemca / 2 príjemcovia / 5 príjemcov“, toast „1 správa
+  uvoľnená — bot ju odošle … / 2 správy uvoľnené — bot ich odošle … / 5 správ uvoľnených — bot ich odošle s odstupom 3–10 s“,
+  board toast „· 1 správa zaradená / 2 správy zaradené / 5 správ zaradených na odoslanie (WhatsApp)“.
+- Composer: label „Objednávka“, status words „plánovaná / otvorená / uzamknutá / ukončená“ (admin register keeps
+  „uzamknutá“), „Nastavenia bota →“, „Zatiaľ nie je žiadna objednávka.“, „Zatiaľ žiadne správy vo fronte.“, „Pre túto skupinu
+  zatiaľ nie sú žiadne správy.“, „Vyberte skupinu vľavo.“, „Táto skupina nemá šablónu.“, „V tejto skupine zatiaľ nie sú žiadne
+  správy.“, compose hints „Len pre otvorenú objednávku.“ / „V tejto skupine nikto nie je.“ (the template-off hint is 21
+  §UC-WA-004's „Šablóna je vypnutá — zapnite ju v Nastaveniach“), „Šablóna uložená.“, rerender note „Prepísané: n.“ /
+  „Prepísané: n. Bez zmeny: m — príjemca už nie je v skupine alebo nemá kontakt.“, „Upraviť text“, badge „Preskočené“ (a
+  skipped row whose error is not `no_phone`: `cancelled` / `not_waiting`), row hints „Text treba prepísať — „Prepísať texty vo
+  fronte“.“ (a NULL `unresolved`) and „Správa sa nedá uvoľniť — skontrolujte text.“ (flagged by the 409 only), failed help
+  „Pri chybe opravte kontakt v profile príjemcu, potom „Prepísať texty vo fronte“ a „Skúsiť znova“.“, dashboard button
+  „Správy“.
+- ~~⚠ The Komu chip „n bez čísla“ is the spec's word for `counts.skipped`, which also counts `cancelled` / `not_waiting` rows
+  (the group summary does not split skipped reasons).~~ → review: the chip reads „n preskočené“.
+- Board modal: „Pre každý balíček sa pripraví WhatsApp správa („Doručené na odberné miesto“ | „Odovzdané Packete“). Odošlete
+  ju jedným tlačidlom v záložke Správy.“ (the prototype's, names = the template names); the stage/friend groupings: „Pre
+  balíčky na odberné miesto a do Packety sa pripraví WhatsApp správa. Odošlete ju jedným tlačidlom v záložke Správy.“
+  (DRAFT). The sentence promises a message even while that template is disabled (the toast's count tells the truth).
+- Settings: „Uzavrieť čakajúcu testovaciu správu“, „Čakajúca testovacia správa je uzavretá — môžete poslať novú.“, „Bot
+  nebeží — testovacia správa počká vo fronte, kým sa nespustí.“, „Správy skupinám →“.
+
+### Acceptance clauses left to WA-T9 (the stub sender)
+
+- §UC-WA-009: „„Poslať skupine (2)“ flips both to `Uvoľnené` **and (with the stub sender running) to `Odoslané` within the
+  poll interval**“ — ~~the composer re-reads rows only on its own actions~~ → review: it re-reads them on the 5 s health
+  tick while a row is `released` (pinned with a DB write); only the STUB-DRAINED proof is WA-T9's.
+- §UC-WA-014 item 4's „settings page: `Pripojené` with stub“ (WA-T7 already noted).
+
+### Traps found
+
+- `router.replace({ query })` leaves `:` unescaped (`segment=not_ordered:155`) — a `toHaveURL(encodeURIComponent(…))` regex
+  never matches; assert the PARSED query (`expectQuery()` in the spec).
+- A parcel-off round renders NO Packeta and NO in-person group on the board (only targets with parties/points), so a
+  „no button for in-person“ absence pin there is vacuous — `distribution-board.spec.js` (which has both) carries it.
+- Tests after the review: 16 in `whatsapp-composer.spec.js` (§1 14 incl. the rows-poll one, `DB_PATH`-gated, and the
+  cycle-switch race; the repair door `TARGET_IS_LOCAL`; §2 1; §3 1).
+- Mutation-checked: dropping the rows loader's seq guard reds the `loadSeq` test (the held answer — 4 s, asserted only
+  AFTER it landed, so no retry window can wait the defect out); queued-only rerender reds the repair-door test.

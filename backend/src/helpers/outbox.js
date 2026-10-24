@@ -331,8 +331,10 @@ export function cancelForUnHandOver({ orderIds = [], guestOrderIds = [] } = {}) 
 //   composeSegment({ cycleId, segmentKey, baseUrl })   computed segment → rows
 //   releaseGroup({ cycleId, segmentKey })               THE `queued → released`
 //   retryGroup({ cycleId, segmentKey })                 `failed → released`
-//   rerenderGroup({ cycleId, segmentKey, baseUrl })     queued rows ← current template
-//   editRowBody(id, body)                               one queued row's text
+//   rerenderGroup({ cycleId, segmentKey, baseUrl })     ~~queued rows~~ queued + failed rows ← current template
+//                                                       (→ WA-T8 review, learnings 15 §WA-T8)
+//   editRowBody(id, body)                               ~~one queued row's text~~ one queued or failed row's
+//                                                       text (→ WA-T8 review, learnings 15 §WA-T8)
 //   markManualSent(id, fromStatuses)                    the wa.me tick (sync half)
 //   deleteRow(id)                                       a queued/skipped row
 //   composeWaitlistOnOpen(cycleId, { baseUrl })         PO 2026-09-19 auto-compose
@@ -601,17 +603,25 @@ function waitlistRecipients(rows, cycleId, segmentKey, baseUrl) {
  * refreshed, `error` KEPT until the sender overwrites it. 0 is fine. The same
  * cancelled-sub-order defence as the release (⇒ `skipped`/`cancelled`, never re-sent),
  * and the same post-commit e-mail hand-off. ⇒ `{ released, whatsapp, email, skipped }`.
+ *
+ * ⚠ WA-T8 review: the release's ALL-OR-NOTHING gate applies here too. Since WA-T8 the
+ * rerender rewrites `failed` rows (the repair door), so a failed row can carry a literal
+ * `{tracking}` / NULL `unresolved` it never had at its release — any non-`releasable()`
+ * failed row (cancelled sub-orders excepted, as in the release) ⇒ `{ refused:
+ * 'unresolved_placeholders', ids }`, NOTHING written, nothing handed to the mailer.
  */
 export function retryGroup({ cycleId, segmentKey } = {}) {
   const where = groupWhere(segmentKey, cycleId, 'n');
   const outcome = db.transaction(() => {
     const rows = db.prepare(`
-      SELECT n.id, n.channel, n.guest_order_id, g.status AS guest_status
+      SELECT n.id, n.channel, n.body, n.unresolved, n.guest_order_id, g.status AS guest_status
         FROM notifications n
         LEFT JOIN guest_orders g ON n.guest_order_id IS NOT NULL AND g.id = n.guest_order_id
        WHERE n.status = 'failed' AND ${where.sql}
        ORDER BY n.id
     `).all(...where.params);
+    const blocked = rows.filter((row) => !cancelledGuest(row) && !releasable(row)).map((row) => row.id);
+    if (blocked.length > 0) return { refused: 'unresolved_placeholders', ids: blocked };
     const now = nowStamp();
     const skip = db.prepare(
       "UPDATE notifications SET status = 'skipped', error = 'cancelled' WHERE id = ? AND status = 'failed'"
@@ -628,13 +638,15 @@ export function retryGroup({ cycleId, segmentKey } = {}) {
     }
     return out;
   })();
+  if (outcome.refused) return outcome;
   handOffEmailRows(outcome.emailIds);
   return { released: outcome.released, whatsapp: outcome.whatsapp, email: outcome.email, skipped: outcome.skipped };
 }
 
 /**
  * `POST /rerender` (21 §UC-WA-004 „Prepísať texty vo fronte"): re-render the group's
- * `queued` rows from the CURRENT template and the recipient AS THEY ARE NOW.
+ * `queued` (and, since WA-T8, `failed`) rows from the CURRENT template and the recipient
+ * AS THEY ARE NOW.
  *
  *   • The recipient comes from `buildSegment()` (consenting half + `opted_out`), matched
  *     by `(recipient_kind, recipient_id)`; the row's OWN `template_key` is rendered.
@@ -647,10 +659,17 @@ export function retryGroup({ cycleId, segmentKey } = {}) {
  *     key that is no segment, like the re-key's `legacy_handover:…`), or when the plan is
  *     no longer a QUEUED row (the number/e-mail/consent is gone — the row stays for the
  *     admin to DELETE; a rerender never changes a status).
- *   • NEVER touches `released`/`sent`/`failed`/`skipped` rows, and NEVER `segment_key`:
- *     the grouping FREEZES at enqueue (DP-T3/FUP-T23 — a dangling `loc<id>` keeps its
- *     group and loses only its label; a party re-pointed after its hand-over is re-found
- *     only if its new key is this one, else it is `unchanged`).
+ *   • ~~NEVER touches `released`/`sent`/`failed`/`skipped` rows~~ → **WA-T8 (learnings 15
+ *     §WA-T8 decision 1): `failed` rows are refreshed TOO, and KEEP their status.** A
+ *     `failed`/`invalid_recipient` e-mail row (or a `not_on_whatsapp` WhatsApp one) had no
+ *     repair door: retry re-sends the FROZEN snapshot and this function was the only code
+ *     that re-plans a recipient. Now the admin corrects the contact, presses „Prepísať
+ *     texty“ (fresh `email`/`phone_e164`/`channel`/`body`), then „Skúsiť znova“ (retry,
+ *     unchanged). The UPDATE re-asserts the status it READ, so a row that moved meanwhile
+ *     is `unchanged`. `released`/`sent`/`skipped` rows are never touched, and NEVER
+ *     `segment_key`: the grouping FREEZES at enqueue (DP-T3/FUP-T23 — a dangling
+ *     `loc<id>` keeps its group and loses only its label; a party re-pointed after its
+ *     hand-over is re-found only if its new key is this one, else it is `unchanged`).
  *
  * ⇒ `{ refused }` (`template_disabled` / `template_empty`, nothing written) or
  * ⇒ `{ rerendered, unchanged: [ids] }`.
@@ -671,13 +690,13 @@ export function rerenderGroup({ cycleId, segmentKey, baseUrl } = {}) {
   const where = groupWhere(segmentKey, cycleId);
   return db.transaction(() => {
     const rows = db.prepare(`
-      SELECT id, template_key, recipient_kind, recipient_id FROM notifications
-       WHERE status = 'queued' AND ${where.sql} ORDER BY id
+      SELECT id, status, template_key, recipient_kind, recipient_id FROM notifications
+       WHERE status IN ('queued', 'failed') AND ${where.sql} ORDER BY id
     `).all(...where.params);
     const update = db.prepare(`
       UPDATE notifications
          SET channel = ?, phone_e164 = ?, email = ?, body = ?, unresolved = ?
-       WHERE id = ? AND status = 'queued'
+       WHERE id = ? AND status = ?
     `);
     const templates = new Map();
     const templateOf = (key) => {
@@ -696,7 +715,7 @@ export function rerenderGroup({ cycleId, segmentKey, baseUrl } = {}) {
         plan.channel, plan.phone_e164, plan.email,
         renderTemplate(template.body, entry.recipient.vars),
         unresolvedColumn(unresolvedFor(template.body, entry.recipient.vars)),
-        row.id
+        row.id, row.status
       ).changes;
       if (changed === 1) out.rerendered += 1; else out.unchanged.push(row.id);
     }
@@ -705,19 +724,21 @@ export function rerenderGroup({ cycleId, segmentKey, baseUrl } = {}) {
 }
 
 /**
- * `PATCH /:id/body` (21 §UC-WA-008): the admin's text for ONE `queued` row. There is no
- * template + vars for an admin's own words, so `unresolved` is the RESCAN of the new body
- * (`outbox-scan.js` — can only over-block). ⇒ `{ refused: 'not_found' | 'not_queued' }`
- * or `{ ok: true }`.
+ * `PATCH /:id/body` (21 §UC-WA-008): the admin's text for ONE `queued` row — and, since
+ * the WA-T8 review, ONE `failed` row (status KEPT): a failed row re-rendered by the repair
+ * door can carry a hand-filled placeholder (`{tracking}`) that only a per-row edit can
+ * fill, and `retryGroup()` refuses it until then. There is no template + vars for an
+ * admin's own words, so `unresolved` is the RESCAN of the new body (`outbox-scan.js` —
+ * can only over-block). ⇒ `{ refused: 'not_found' | 'not_queued' }` or `{ ok: true }`.
  */
 export function editRowBody(id, body) {
   return db.transaction(() => {
     const row = db.prepare('SELECT status FROM notifications WHERE id = ?').get(id);
     if (!row) return { refused: 'not_found' };
-    if (row.status !== 'queued') return { refused: 'not_queued' };
+    if (row.status !== 'queued' && row.status !== 'failed') return { refused: 'not_queued' };
     const changed = db.prepare(
-      "UPDATE notifications SET body = ?, unresolved = ? WHERE id = ? AND status = 'queued'"
-    ).run(body, unresolvedColumn(scanPlaceholders(body)), id).changes;
+      'UPDATE notifications SET body = ?, unresolved = ? WHERE id = ? AND status = ?'
+    ).run(body, unresolvedColumn(scanPlaceholders(body)), id, row.status).changes;
     return changed === 1 ? { ok: true } : { refused: 'not_queued' };
   })();
 }

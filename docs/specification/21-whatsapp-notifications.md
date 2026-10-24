@@ -359,7 +359,8 @@ place the prototype's dative („Legovi“) is dropped.
 - Body text is stored per ROW at enqueue (`notifications.body`); editing a template
   afterwards changes only future rows. The composer's textarea edits the TEMPLATE (as in
   the prototype) and offers „Prepísať texty vo fronte (n)“ which re-renders the group's
-  `queued` rows (never `released`/`sent` ones) — `POST /api/notifications/rerender`
+  `queued` rows (never `released`/`sent` ones; **→ WA-T8: also `failed` ones, status kept —
+  learnings 15 §WA-T8**) — `POST /api/notifications/rerender`
   `{ cycle_id, segment_key }`.
 
 **Acceptance criteria:** the seed matches the table byte-for-byte; `PUT` with
@@ -548,9 +549,9 @@ released` transition happens. New router `backend/src/routes/notifications.js`, 
 | `GET /api/notifications?cycle_id=&segment_key=` | — | the rows of one group: `{ id, recipient_kind, recipient_id, name, phone, phone_e164, channel, status, sent_via, body, error, released_at, sent_at }` — ⚠ never `order_token` in the payload beyond what is already inside `body` for guest rows (the body is the message; it is shown only to the admin) |
 | `POST /api/notifications/compose` | `{ cycle_id, segment_key }` | builds the computed segment and inserts rows per UC-WA-006's per-recipient rules; 404 unknown cycle/segment; **409 `template_disabled`**; 409 `cycle_not_open` for `not_ordered`/`waitlist` when the cycle is not `open`; idempotent via the partial index (already-queued recipients counted, not duplicated); returns the counts |
 | `POST /api/notifications/release` | `{ cycle_id, segment_key }` | **the one transition to `released`** — see Rules |
-| `POST /api/notifications/retry` | `{ cycle_id, segment_key }` | `failed → released` for the group (`released_at` refreshed, `error` kept until overwritten); 200 `{ released: n }`, 0 is fine |
-| `POST /api/notifications/rerender` | `{ cycle_id, segment_key }` | re-renders `queued` rows' `body` from the current template (UC-WA-004) |
-| `PATCH /api/notifications/:id/body` | `{ body }` | edits ONE `queued` row's body (≤ 1000 chars, string only); **409 `not_queued`** otherwise |
+| `POST /api/notifications/retry` | `{ cycle_id, segment_key }` | `failed → released` for the group (`released_at` refreshed, `error` kept until overwritten); 200 `{ released: n }`, 0 is fine — **→ WA-T8 review: the release's all-or-nothing gate too (409 `unresolved_placeholders` `{ ids }`, nothing written), since the rerender now rewrites failed rows** |
+| `POST /api/notifications/rerender` | `{ cycle_id, segment_key }` | re-renders `queued` rows' `body` from the current template (UC-WA-004) — **→ WA-T8: and `failed` rows, status KEPT (fresh `body`/`phone_e164`/`email`/`channel`), the repair door before `retry` for a row that failed on a bad contact (learnings 15 §WA-T8)** |
+| `PATCH /api/notifications/:id/body` | `{ body }` | edits ONE `queued` row's body (≤ 1000 chars, string only); **409 `not_queued`** otherwise — **→ WA-T8 review: also ONE `failed` row, status kept (the only way to fill a hand-filled `{tracking}` the repair re-render left in it)** |
 | `PATCH /api/notifications/:id/manual-sent` | `{ sent: true }` | the wa.me tick: `queued` or `released` ⇒ `sent`, `sent_at = now`, `sent_via = 'wa_me'`. On a `released` row it is allowed ONLY while the WA health is not `connected` (UC-WA-012 proxy, 2 s timeout, unreachable counts as not connected) — **409 `bot_active`** otherwise (a duplicate-send guard) — **except a `channel = 'email'` row, which the WA process never drains, so the guard does not apply to it (WA-T6 review, learnings 15 §WA-T6)**; `skipped`/`failed`/`sent` ⇒ 409 `not_pending` |
 | `DELETE /api/notifications/:id` | — | removes a `queued` or `skipped` row (the admin decides not to message someone); 409 `not_queued` for `released`/`sent`/`failed` |
 | `GET /api/notifications/templates`, `PUT /api/notifications/templates/:key` | UC-WA-004 | |
@@ -606,16 +607,20 @@ buttons, they deep-link here with `?cycle=&segment=`).
   `state ≠ connected` or `whatsapp_paused = 1`: „Bot je odpojený — správy zostanú vo fronte.
   Môžete ich poslať ručne v záložke wa.me.“
 - **Komu (left card):** one row per group from `GET /segments` — name + count badge
-  (`queued + released + failed`), status chips (`n odoslané`, `n chyby`, `n bez čísla`);
+  (`queued + released + failed`), status chips (`n odoslané`, `n chyby`, ~~`n bez čísla`~~
+  **`n preskočené`** — → WA-T8 review, learnings 15 §WA-T8: `skipped` also counts cancelled /
+  not-waiting rows);
   then the computed segments with „Pripraviť správy (n)“ (disabled + hint when
   `template_enabled = false`, or when `n = 0`). Help text: „Skupiny vznikajú samy: z
   odovzdania balíčkov (Distribúcia), z otvorenej objednávky a z čakajúcich hostí.“
 - **Šablóna (middle card):** „Šablóna · {name}“, the placeholder chips of the vocabulary
   (click inserts at the caret), a textarea bound to the TEMPLATE body (saves via `PUT
   /templates/:key` on blur with the 400 `unknown_placeholder` rendered inline), and the
-  „Prepísať texty vo fronte (n)“ button (`/rerender`) shown when the group has queued rows.
+  „Prepísať texty vo fronte (n)“ button (`/rerender`) shown when the group has queued rows
+  (**→ WA-T8: or failed ones; n = queued + failed**).
 - **Náhľad (right card):** „Náhľad · n príjemcov“; per recipient: name, phone (mono),
-  the rendered body (editable inline for `queued` rows → `PATCH /:id/body`), a status
+  the rendered body (editable inline for `queued` rows ~~→~~ **and `failed` ones (→ WA-T8
+  review, learnings 15 §WA-T8)** → `PATCH /:id/body`), a status
   badge — `Vo fronte` (queued), `Uvoľnené` (released), `Odoslané` (sent; `wa.me` /
   `e-mail` suffix per `sent_via`/`channel`), `Chyba` (failed, tooltip = `error`),
   `Bez platného čísla` (skipped/no_phone — these rows render greyed at the bottom); a

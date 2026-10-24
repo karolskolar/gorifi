@@ -484,8 +484,14 @@ test.describe('DP-T5 · 16 §UC-DP-010 — the distribution board shell', () => 
     await expect(labels).toBeDisabled()
     await expect(labels).toHaveAttribute('data-labels-route', /.+/)
 
-    // ⚠ NO „Správa skupine" anywhere — module 21 adds it (resolved conflict 3).
-    await expect(page.getByRole('button', { name: 'Správa skupine' })).toHaveCount(0)
+    // ~~⚠ NO „Správa skupine" anywhere — module 21 adds it (resolved conflict 3).~~
+    // → ADDED by WA-T8 (module 21, learnings 15 §WA-T8), exactly as this pin promised: one
+    //   per pickup point and one for Packeta (deep links into `/admin/whatsapp`), NONE for
+    //   the in-person group — 21 resolved conflict 4: nothing is ever queued there.
+    await expect(page.getByTestId(`messages-group-${locKey}`)).toHaveText('Správa skupine')
+    await expect(page.getByTestId('messages-group-packeta')).toHaveText('Správa skupine')
+    await expect(page.getByTestId('dist-group-in_person'), 'non-vacuity: the in-person group renders').toBeVisible()
+    await expect(page.getByTestId('messages-group-in_person')).toHaveCount(0)
   })
 
   test('„Odovzdať zabalené (n)": n is the PACKED parties, and 0 disables it', async ({ page }) => {

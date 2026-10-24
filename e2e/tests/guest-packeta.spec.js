@@ -3258,9 +3258,19 @@ test.describe('GP-T6 · 20 §UC-GP-010 — Distribution.vue renders the Packeta 
     await expect(btn).toHaveText('Odovzdať zabalené (1)')
     await btn.click()
     await expect(page.getByTestId('handover-subtitle')).toContainText('Packeta · 1 balíček')
-    const [req] = await Promise.all([page.waitForRequest(isBulkHandover), page.getByTestId('handover-confirm').click()])
+    const [req, res] = await Promise.all([
+      page.waitForRequest(isBulkHandover),
+      page.waitForResponse((r) => isBulkHandover(r.request())),
+      page.getByTestId('handover-confirm').click(),
+    ])
     expect(req.postDataJSON()).toEqual({ order_ids: [], guest_order_ids: [s.B.id] })
-    await expect(page.getByTestId('handover-toast')).toHaveText('1 balíček odovzdaný')
+    // ~~'1 balíček odovzdaný'~~ → WA-T8 (module 21, learnings 15 §WA-T8): the toast ends with
+    // the message half when the batch queued any (B has a phone ⇒ one `packeta` row).
+    const queued = (await res.json()).queued_notifications
+    expect([0, 1], 'one guest bag queues at most one message').toContain(queued)
+    await expect(page.getByTestId('handover-toast')).toHaveText(queued === 1
+      ? '1 balíček odovzdaný · 1 správa zaradená na odoslanie (WhatsApp)'
+      : '1 balíček odovzdaný')
     await expect(page.getByTestId(`bag-row-guest-${s.B.id}`)).toHaveAttribute('data-stage', 'handed')
     expect(guestRow(s.B.id).handed_over_at).toBeTruthy()
     expect(gp6OrderRow(s.hostOrder.id).handed_over_at).toBeNull()

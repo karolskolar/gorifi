@@ -12,7 +12,9 @@ import {
 import BalanceBadge from '@/components/BalanceBadge.vue'
 import PickupLocationPicker from '@/components/PickupLocationPicker.vue'
 import GuestDeliverySwitch from '@/components/GuestDeliverySwitch.vue'
-import { bagsLabel, packedAdjective, handedAdjective, guestsLabel, bagsMoveVerb } from '../lib/plural'
+import {
+  bagsLabel, packedAdjective, handedAdjective, guestsLabel, bagsMoveVerb, messagesLabel, queuedMessagesAdjective,
+} from '../lib/plural'
 import { planLineText, allPartiesHandedOver } from '../lib/distribution-plan'
 import { kgLabel } from '../lib/kg'
 
@@ -113,6 +115,10 @@ async function loadData() {
     if (focusedTarget.value && !plan.value.some((entry) => entry.target_key === focusedTarget.value)) {
       focusedTarget.value = null
     }
+    // Module 21 (WA-T8): the header's „Správy (n vo fronte)“ — every re-fetch after a
+    // hand-over (per bag or per group) passes here, so the count follows. Not awaited;
+    // its own seq guard; a failure only hides the number.
+    loadMessageCount()
     // After the cycle is known: the listing is filtered by cycle type. Non-blocking
     // and swallowed into its own inline message — the picking sheet must still render
     // (and stay printable) when only the pickup dropdown fails to load.
@@ -123,6 +129,45 @@ async function loadData() {
   } finally {
     if (seq === loadSeq) loading.value = false
   }
+}
+
+// ── Module 21 (WA-T8): the message buttons 16 left to 21 (resolved conflict 3) ──
+//
+// „Správy (n vo fronte)“ in the header (n = the cycle's QUEUED outbox rows, summed over
+// `GET /api/notifications/segments` groups — the composer's own list, so the two never
+// disagree) and per delivery group „Správa skupine“, both deep-linking the composer
+// `/admin/whatsapp?cycle=&segment=`. A board group is a delivery TARGET, a message group
+// is a target PER HAND-OVER DAY (`handed_over:pickup:<loc>:<date>`), so the board links
+// the date-less PREFIX and the composer opens that target's newest day. `in_person`
+// enqueues nothing (21 resolved conflict 4) and the stage/friend groupings mix targets ⇒
+// no per-group button there.
+const queuedMessages = ref(null)
+let messageSeq = 0
+
+async function loadMessageCount() {
+  const mine = ++messageSeq
+  try {
+    const res = await api.getNotificationSegments(cycleId)
+    if (mine !== messageSeq) return
+    queuedMessages.value = (Array.isArray(res.groups) ? res.groups : [])
+      .reduce((sum, g) => sum + (Number(g?.counts?.queued) || 0), 0)
+  } catch (e) {
+    if (mine !== messageSeq) return
+    queuedMessages.value = null
+  }
+}
+
+function openComposer(segment) {
+  const query = { cycle: String(cycleId) }
+  if (segment) query.segment = segment
+  router.push({ path: '/admin/whatsapp', query })
+}
+
+function groupMessageSegment(group) {
+  if (groupBy.value !== 'delivery') return null
+  if (group.key === 'packeta') return 'handed_over:packeta'
+  const loc = /^loc(\d+)$/.exec(String(group.key))
+  return loc ? `handed_over:pickup:${loc[1]}` : null
 }
 
 // ── Pickup-location correction (PO decision, 2026-09-02) ─────────────────────
@@ -435,8 +480,9 @@ function printDistribution() {
 //     nested guest row the group renders. DP-T4 recorded why: an explicitly
 //     listed guest with one unchecked item aborts the whole batch, while the same
 //     bag merely INHERITED from its host goes through.
-//   • „Správa skupine" — module 21's, by resolved conflict 3. Not a slot, not a
-//     disabled button: absent.
+//   • ~~„Správa skupine" — module 21's, by resolved conflict 3. Not a slot, not a
+//     disabled button: absent.~~ → ADDED by WA-T8 (module 21): `groupMessageSegment()`
+//     + `openComposer()` above, pickup points and Packeta only.
 const plan = ref([])
 const totals = ref({ count: 0, packed_count: 0, handed_count: 0 })
 const locations = ref([])
@@ -892,9 +938,11 @@ async function toggleHandover(friend, event) {
 // highlights the rows the SERVER named.
 //
 // ⚠ What is deliberately NOT here:
-//   • the modal's WhatsApp sentence and the „· n správ zaradených" half of the
+//   • ~~the modal's WhatsApp sentence and the „· n správ zaradených" half of the
 //     toast — module 21's (resolved conflict 3). `queued_notifications` IS read
-//     off the response (it has to be, it is in the body) and DROPPED.
+//     off the response (it has to be, it is in the body) and DROPPED.~~ → ADDED by
+//     WA-T8 (module 21, learnings 15 §WA-T8): `handoverMessageNote` below and the
+//     toast's second half, rendered from `queued_notifications`.
 //   • a bulk REVERSAL. Phase 2 by spec; the per-bag route is the only way back.
 
 /**
@@ -1086,6 +1134,21 @@ function closeHandoverDialog() {
   handoverDialog.value = null
 }
 
+// WA-T8 — the prototype's second sentence. The quoted name is the group's TEMPLATE name
+// (21 §UC-WA-006: a pickup point ⇒ `pickup`, Packeta ⇒ `packeta`); `in_person` enqueues
+// NOTHING (21 resolved conflict 4), so its modal promises nothing; a stage/friend group
+// mixes targets ⇒ the generic DRAFT sentence (learnings 15 §WA-T8 copy list).
+const handoverMessageNote = computed(() => {
+  const snapshot = handoverDialog.value
+  if (!snapshot) return ''
+  const key = String(snapshot.key)
+  if (key === 'in_person') return ''
+  const tail = 'Odošlete ju jedným tlačidlom v záložke Správy.'
+  if (key === 'packeta') return `Pre každý balíček sa pripraví WhatsApp správa („Odovzdané Packete“). ${tail}`
+  if (/^loc\d+$/.test(key)) return `Pre každý balíček sa pripraví WhatsApp správa („Doručené na odberné miesto“). ${tail}`
+  return `Pre balíčky na odberné miesto a do Packety sa pripraví WhatsApp správa. ${tail}`
+})
+
 const handoverSubtitle = computed(() => {
   const snapshot = handoverDialog.value
   if (!snapshot) return ''
@@ -1181,9 +1244,15 @@ async function confirmHandover() {
     // `plan[].count` and `totals.count` use, so a host and the guest bags inside
     // their parcel are ONE balíček. `handed_over` in the response counts ROWS
     // (a synthetic host's three sub-orders are three), which would read as three
-    // balíčky for one drop. ⚠ `result.queued_notifications` is read and dropped:
-    // module 21 owns the „· n správ zaradených" half of this sentence.
-    showHandoverToast(`${bagsLabel(snapshot.ready)} ${handedAdjective(snapshot.ready)}`)
+    // balíčky for one drop. ~~⚠ `result.queued_notifications` is read and dropped:
+    // module 21 owns the „· n správ zaradených" half of this sentence.~~ → WA-T8: the
+    // half is rendered — only when the batch really queued something (an `in_person`
+    // drop queues nothing, and „0 správ zaradených“ would read as a failure).
+    const queued = Number(result?.queued_notifications) || 0
+    const messages = queued > 0
+      ? ` · ${messagesLabel(queued)} ${queuedMessagesAdjective(queued)} na odoslanie (WhatsApp)`
+      : ''
+    showHandoverToast(`${bagsLabel(snapshot.ready)} ${handedAdjective(snapshot.ready)}${messages}`)
     await loadData()
   } catch (e) {
     handoverDialog.value = null
@@ -1240,6 +1309,14 @@ async function confirmHandover() {
           </Button>
           <Button variant="secondary" @click="printDistribution">
             Tlačiť
+          </Button>
+          <!-- WA-T8 (21 §UC-WA-009): the composer for this cycle. -->
+          <Button
+            variant="secondary"
+            data-testid="board-messages"
+            @click="openComposer(null)"
+          >
+            {{ queuedMessages === null ? 'Správy' : `Správy (${queuedMessages} vo fronte)` }}
           </Button>
           <!-- The SHARED header button (16 §UC-DP-014): same label, same gate, same
                single write as on the cycle page. -->
@@ -1435,6 +1512,16 @@ async function confirmHandover() {
                 :data-labels-route="LABELS_ROUTE"
               >
                 Štítky
+              </Button>
+              <!-- WA-T8: the composer on this target's newest hand-over day. -->
+              <Button
+                v-if="groupMessageSegment(group)"
+                variant="outline"
+                size="sm"
+                :data-testid="`messages-group-${group.key}`"
+                @click="openComposer(groupMessageSegment(group))"
+              >
+                Správa skupine
               </Button>
               <!-- DP-T7: the confirm modal and the bulk POST. Still refuses to be
                    clickable at zero, and now also while ITS OWN batch is in
@@ -2032,7 +2119,8 @@ async function confirmHandover() {
                hand-over writes no `transactions` row in either direction
                (§UC-DP-004/006, pinned from both sides in e2e). ⚠ The prototype's
                second sentence — the WhatsApp one — is module 21's by resolved
-               conflict 3 and is deliberately absent. -->
+               conflict 3 and is deliberately absent — ~~absent~~ → WA-T8 renders it
+               BELOW the banner, as its own element (`handover-message-note`). -->
           <div
             class="rounded-md border bg-muted/50 px-3 py-2 text-sm text-muted-foreground"
             data-testid="handover-ledger-note"
@@ -2040,6 +2128,12 @@ async function confirmHandover() {
             Hostia v balíku hostiteľa sa označia spolu s ním.
             Peniaze sa nemenia — účtovanie prebehlo pri zabalení.
           </div>
+          <!-- WA-T8: the prototype's second sentence (module 21's, resolved conflict 3). -->
+          <p
+            v-if="handoverMessageNote"
+            class="text-sm text-muted-foreground"
+            data-testid="handover-message-note"
+          >{{ handoverMessageNote }}</p>
 
           <DialogFooter>
             <Button

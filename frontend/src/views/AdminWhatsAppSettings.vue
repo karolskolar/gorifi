@@ -14,17 +14,26 @@
 // dropped on unmount. Only a `data:image/…` URL is ever rendered: a health body naming
 // any other URL is not fetched (the CSP's `img-src 'self' data:` would block it anyway).
 //
-// ⚠ Polling: health every 5 s while mounted, stopped on unmount. `healthSeq` is the
-// `loadSeq` guard (CLAUDE.md): only the LATEST request's answer is applied, and a pause
-// toggle bumps it so a poll issued before the write cannot repaint the old state.
+// ⚠ Polling: health every 5 s while mounted, stopped on unmount. ~~`healthSeq` is the
+// `loadSeq` guard~~ → WA-T8: the loader MOVED to `lib/use-wa-health.js` (the composer reads
+// the same answer — one home, not a fork); its `seq` is the `loadSeq` guard (CLAUDE.md):
+// only the LATEST request's answer is applied, and a pause toggle calls `invalidate()` so
+// a poll issued before the write cannot repaint the old state.
+//
+// WA-T8 (learnings 15 §WA-T8 decision 2): a `'test'` row stuck in `released` (bot down /
+// paused / `auth_failure`) 409s every later test click `test_pending`; the 409 names the
+// row, and the page now offers „Uzavrieť čakajúcu testovaciu správu“ — the product's own
+// door, `PATCH /api/notifications/:id/manual-sent` (allowed while the bot is NOT
+// connected, which is exactly when a test row gets stuck; 409 `bot_active` otherwise).
 //
 // ⚠ Every gated control has a JS guard as well as `disabled` — a dispatched click
 // ignores the attribute (CLAUDE.md). Per-template pending state is per KEY.
 //
 // D7: no „Odpojiť/Pripojiť“ in v1 — re-pairing is the runbook.
-import { ref, reactive, computed, onMounted, onUnmounted, watchEffect } from 'vue'
+import { ref, reactive, computed, onMounted, watchEffect } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
+import { useWaHealth } from '../lib/use-wa-health.js'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -38,7 +47,6 @@ const router = useRouter()
 // `helpers/template-render.js MAX_BODY_LENGTH` (1000).
 const MAX_TEST_PHONE = 32
 const MAX_TEMPLATE_BODY = 1000
-const POLL_MS = 5000
 // The documented defaults (21 §UC-WA-011 env table) when the process reports none.
 const DEFAULT_PACE = { min_ms: 3000, max_ms: 10000 }
 const DEFAULT_HOURLY_MAX = 30
@@ -54,31 +62,15 @@ const STATE_WORDS = {
 const error = ref('')
 
 // ── Health ──────────────────────────────────────────────────────────────────
-const health = ref(null)
-const healthError = ref('')
-let healthSeq = 0
-let pollTimer = null
-let unmounted = false
-
-async function loadHealth() {
-  const seq = ++healthSeq
-  try {
-    const h = await api.getWhatsappHealth()
-    if (unmounted || seq !== healthSeq) return
-    health.value = h
-    healthError.value = ''
+// `lib/use-wa-health.js` — polls every 5 s while mounted, `seq`-guarded, drops the answer
+// (and the QR) on unmount.
+const {
+  health, healthError, reachable, connected, load: loadHealth, invalidate: invalidateHealth,
+} = useWaHealth({
+  onHealth: (h) => {
     if (typeof h.paused === 'boolean' && !pausing.value) paused.value = h.paused
-  } catch (e) {
-    if (unmounted || seq !== healthSeq) return
-    // The API itself failed: the process state is UNKNOWN — drop the last answer (and
-    // with it any QR) rather than keep painting a stale one.
-    health.value = null
-    healthError.value = e.message || 'Stav sa nepodarilo načítať'
-  }
-}
-
-const reachable = computed(() => health.value?.reachable === true)
-const connected = computed(() => reachable.value && health.value.state === 'connected')
+  },
+})
 const stateWord = computed(() => {
   if (!health.value) return ''
   if (!reachable.value) return 'proces nebeží'
@@ -148,8 +140,7 @@ async function togglePause() {
     const res = await api.updateAdminSettings({ whatsappPaused: !paused.value })
     paused.value = res.whatsappPaused === true
     // A poll issued BEFORE the write must not repaint the old flag.
-    healthSeq++
-    loadHealth()
+    invalidateHealth()
   } catch (e) {
     error.value = e.message
   } finally {
@@ -164,6 +155,9 @@ const savingPhone = ref(false)
 const sendingTest = ref(false)
 const testError = ref('')
 const testOk = ref('')
+// WA-T8: the id of the `released` test row a `test_pending` 409 named — the door below.
+const pendingTestId = ref(null)
+const finalisingTest = ref(false)
 
 const phoneDirty = computed(() => testPhone.value !== savedTestPhone.value)
 // Disabled until a number is SAVED — and while the field differs from what is saved, the
@@ -191,14 +185,40 @@ async function sendTest() {
   sendingTest.value = true
   testError.value = ''
   testOk.value = ''
+  pendingTestId.value = null
   try {
     await api.sendWhatsappTest()
     testOk.value = 'Testovacia správa je vo fronte — bot ju odošle na uložené číslo.'
     loadHealth()
   } catch (e) {
     testError.value = e.message
+    if (e.reason === 'test_pending' && Number.isInteger(e.id)) pendingTestId.value = e.id
   } finally {
     sendingTest.value = false
+  }
+}
+
+// WA-T8: close the stuck test row through the hand tick (21 §UC-WA-008 manual-sent). The
+// row then reads `sent`/`wa_me` — the outbox has no other terminal state an admin may
+// write for a released row; recorded in learnings 15 §WA-T8 decision 2.
+async function finaliseTest() {
+  const id = pendingTestId.value
+  if (finalisingTest.value || !Number.isInteger(id)) return
+  finalisingTest.value = true
+  testError.value = ''
+  testOk.value = ''
+  try {
+    await api.markNotificationManualSent(id)
+    pendingTestId.value = null
+    testOk.value = 'Čakajúca testovacia správa je uzavretá — môžete poslať novú.'
+    loadHealth()
+  } catch (e) {
+    // `bot_active`: the bot is connected and will send it itself — keep the door shut.
+    // `not_pending`: it was sent meanwhile — nothing left to close.
+    if (e.reason === 'not_pending') pendingTestId.value = null
+    testError.value = e.message
+  } finally {
+    finalisingTest.value = false
   }
 }
 
@@ -307,16 +327,6 @@ async function loadSettings() {
 onMounted(() => {
   loadSettings()
   loadTemplates()
-  loadHealth()
-  pollTimer = setInterval(loadHealth, POLL_MS)
-})
-
-onUnmounted(() => {
-  unmounted = true
-  healthSeq++
-  if (pollTimer) clearInterval(pollTimer)
-  pollTimer = null
-  health.value = null
 })
 
 watchEffect(() => {
@@ -346,6 +356,13 @@ watchEffect(() => {
             <p class="text-xs text-primary-foreground/70">Nastavenia · WhatsApp bot</p>
           </div>
         </div>
+        <!-- WA-T8 (21 §UC-WA-012 „linked … from the composer“, and back). -->
+        <Button
+          variant="ghost"
+          data-testid="wa-composer-link"
+          @click="router.push('/admin/whatsapp')"
+          class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10"
+        >Správy skupinám →</Button>
       </div>
     </header>
 
@@ -431,7 +448,16 @@ watchEffect(() => {
                   :disabled="!canSendTest"
                   @click="sendTest"
                 >{{ sendingTest ? 'Odosielam...' : 'Poslať testovaciu správu' }}</Button>
+                <p v-if="health && !reachable" class="text-xs text-muted-foreground" data-testid="wa-test-offline-hint">Bot nebeží — testovacia správa počká vo fronte, kým sa nespustí.</p>
                 <p v-if="testError" class="text-sm text-destructive" data-testid="wa-test-error">{{ testError }}</p>
+                <Button
+                  v-if="pendingTestId !== null"
+                  variant="outline"
+                  size="sm"
+                  data-testid="wa-test-finalise"
+                  :disabled="finalisingTest"
+                  @click="finaliseTest"
+                >{{ finalisingTest ? 'Uzatváram...' : 'Uzavrieť čakajúcu testovaciu správu' }}</Button>
                 <p v-if="testOk" class="text-sm text-green-700" data-testid="wa-test-ok">{{ testOk }}</p>
               </div>
             </CardContent>

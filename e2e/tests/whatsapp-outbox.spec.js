@@ -780,6 +780,22 @@ test.describe('WA-T5 · §2 21 §UC-WA-008 through the real routes', () => {
     expect(of(await groupRows(fx.cycle.id, fx.pickupKey), 'friend', fx.R.id)[0], 'read back unchanged').toEqual(sent)
   })
 
+  // WA-T8 review: `editRowBody()` now admits TWO statuses (queued + failed); this pins the
+  // exclusion of every other one that a group can hold at this point.
+  test('PATCH /:id/body: a RELEASED and a SENT row ⇒ 409 `not_queued`, each read back unchanged (only queued + failed rows are editable — WA-T8)', async () => {
+    const rows = await groupRows(fx.cycle.id, fx.pickupKey)
+    const released = of(rows, 'friend', fx.Q.id)[0]
+    const sent = of(rows, 'friend', fx.P.id)[0]
+    expect(released.status, 'non-vacuity').toBe('released')
+    expect(sent.status, 'non-vacuity (ticked by the manual-sent test)').toBe('sent')
+    for (const row of [released, sent]) {
+      const res = await admin(`/api/notifications/${row.id}/body`, { method: 'patch', data: { body: `Iný text ${uniq}.` } })
+      expect(res.status(), `${row.status} ⇒ 409`).toBe(409)
+      expect((await res.json()).reason).toBe('not_queued')
+      expect(of(await groupRows(fx.cycle.id, fx.pickupKey), 'friend', row.recipient_id)[0], `${row.status} row unchanged`).toEqual(row)
+    }
+  })
+
   test('DELETE /:id: a released row ⇒ 409 `not_queued` (read back unchanged); a queued row and a `skipped` to-do ⇒ deleted; unknown ⇒ 404; a non-id ⇒ 400', async () => {
     const q = of(await groupRows(fx.cycle.id, fx.pickupKey), 'friend', fx.Q.id)[0]
     expect(q.status).toBe('released')
@@ -812,7 +828,7 @@ test.describe('WA-T5 · §2 21 §UC-WA-008 through the real routes', () => {
     expect((await admin('/api/notifications/abc', { method: 'delete' })).status()).toBe(400)
   })
 
-  test('rerender refreshes a QUEUED row\'s body, `unresolved`, phone snapshot and channel (e-mail fallback ⇒ WhatsApp once a number exists) from the CURRENT template; released/sent rows are never touched; a disabled template ⇒ 409', async () => {
+  test('rerender refreshes a QUEUED row\'s body, `unresolved`, phone snapshot and channel (e-mail fallback ⇒ WhatsApp once a number exists) from the CURRENT template; released/sent rows are never touched (WA-T8: FAILED rows are refreshed too, status kept); a disabled template ⇒ 409', async () => {
     fx.T = await makeFriend('Tomas', { email: `wa5.tomas.${uniq}@example.test` })
     const oT = await ownOrder(fx.T, fx.cycle.id, fx.line(), { pickup_location_id: fx.L.id })
     await packFriend(fx.cycle.id, fx.T, oT.id)
@@ -820,6 +836,10 @@ test.describe('WA-T5 · §2 21 §UC-WA-008 through the real routes', () => {
     const before = await groupRows(fx.cycle.id, fx.pickupKey)
     const t0 = of(before, 'friend', fx.T.id)[0]
     expect(t0).toMatchObject({ channel: 'email', status: 'queued', phone_e164: null })
+    // WA-T8 (learnings 15 §WA-T8 decision 1): E's e-mail row FAILED (`not_configured`, no
+    // Mailgun env on the gate) at the release above — the rerender now refreshes it too.
+    const failedBefore = before.filter((r) => r.status === 'failed')
+    expect(failedBefore.length, 'non-vacuity: E\'s failed e-mail row').toBeGreaterThan(0)
 
     expect((await admin(`/api/friends/${fx.T.id}`, { method: 'patch', data: { phone: '0905 501 009' } })).status()).toBe(200)
     const stamp = `Vďaka${uniq}!`
@@ -827,7 +847,8 @@ test.describe('WA-T5 · §2 21 §UC-WA-008 through the real routes', () => {
       const res = await post('rerender', { cycle_id: fx.cycle.id, segment_key: fx.pickupKey })
       expect(res.status()).toBe(200)
       const body = await res.json()
-      expect(body.rerendered).toBe(1)
+      // ~~`toBe(1)`~~ → WA-T8: T's queued row + the group's failed rows.
+      expect(body.rerendered).toBe(1 + failedBefore.length)
       expect(body.counts.queued).toBe(1)
     })
     const after = await groupRows(fx.cycle.id, fx.pickupKey)
@@ -835,7 +856,15 @@ test.describe('WA-T5 · §2 21 §UC-WA-008 through the real routes', () => {
     expect(t1).toMatchObject({ id: t0.id, channel: 'whatsapp', status: 'queued', phone_e164: '+421905501009', unresolved: [] })
     expect(t1.body.endsWith(stamp)).toBe(true)
     for (const r of after.filter((x) => x.id !== t0.id)) {
-      expect(r, 'released / sent rows untouched').toEqual(before.find((x) => x.id === r.id))
+      const was = before.find((x) => x.id === r.id)
+      if (was.status === 'failed') {
+        // ~~untouched~~ → WA-T8: re-rendered from the current template, status + error KEPT
+        // (the repair door before a retry).
+        expect(r).toMatchObject({ id: was.id, status: 'failed', error: was.error, channel: was.channel })
+        expect(r.body.endsWith(stamp), 'refreshed from the CURRENT template').toBe(true)
+        continue
+      }
+      expect(r, 'released / sent rows untouched').toEqual(was)
     }
 
     await withTemplate('pickup', { enabled: false }, async () => {

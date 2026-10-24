@@ -122,6 +122,13 @@ const routes = [
   },
   // 21 §UC-WA-012 (WA-T7): the WhatsApp bot settings — under `/admin`, so the guard
   // below covers it like every sibling.
+  // 21 §UC-WA-009 (WA-T8): the composer — `?cycle=<id>&segment=<key>` deep links from
+  // the distribution board („Správy (n vo fronte)“ / „Správa skupine“).
+  {
+    path: '/admin/whatsapp',
+    name: 'admin-whatsapp',
+    component: () => import('./views/AdminWhatsApp.vue')
+  },
   {
     path: '/admin/whatsapp/settings',
     name: 'admin-whatsapp-settings',

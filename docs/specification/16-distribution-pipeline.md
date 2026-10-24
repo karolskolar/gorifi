@@ -79,6 +79,11 @@
    „Vytlačiť štítky“ in the header, both wired to the labels feature's existing entry (OPEN
    below); nothing about labels is specified here. „Správa skupine“ / „Správy (n vo fronte)“
    are module 21's buttons and are **not rendered by this module** — 21 adds them.
+   **→ Added by WA-T8 (learnings 15 §WA-T8): header „Správy (n vo fronte)“ (`board-messages`,
+   n = the cycle's queued outbox rows) and per pickup-point / Packeta group „Správa skupine“
+   (`messages-group-<key>`, deep link `/admin/whatsapp?cycle=&segment=handed_over:pickup:<loc>`
+   | `handed_over:packeta` — a date-less PREFIX the composer resolves to the newest day); none
+   for `in_person` (nothing is queued there) nor under „Podľa stavu“ / „Podľa priateľa“.**
 4. **Prototype `togglePacked` cascade (un-packing a bag also clears `handed`) vs this module's
    rule.** REJECTED in favour of a refusal: un-packing a handed-over bag answers 409
    `handed_over`; the admin un-hands-over first (UC-DP-007). Reason: a silent cascade would
@@ -505,7 +510,8 @@ rows) / `guest_order_id` (guest rows), `created_at = CURRENT_TIMESTAMP`, ~~**`bo
   no `released` transition exists in this module.
 - Board copy that mentions the messages (confirm modal second sentence, toast half „· n správ
   zaradených na odoslanie (WhatsApp)“, header „Správy (n vo fronte)“) is **module 21's** — this
-  module does not render it (resolved conflict 3). Rows still accumulate from day one so the
+  module does not render it (resolved conflict 3). **→ WA-T8 renders all three on the board
+  (learnings 15 §WA-T8).** Rows still accumulate from day one so the
   trigger data exists when 21 lands (§16 F5 consequence).
 
 **Acceptance criteria:** hand-over of a `pickup` friend with two live guests inserts exactly
@@ -626,7 +632,8 @@ prototype as drawn.
 - **Group header:** title, sub, badge „{n} balíček/balíčky/balíčkov“, „{p} zabal. · {h}
   odovzd.“, actions „Štítky“ (F7 entry point, see header rule), „Odovzdať zabalené ({ready})“
   where `ready` = parties in the group with `stage = 'packed'`; disabled when `ready = 0`
-  (`data-testid="handover-group-<group_key>"`). No „Správa skupine“ — module 21 adds it.
+  (`data-testid="handover-group-<group_key>"`). No „Správa skupine“ — module 21 adds it
+  (**added by WA-T8**: `messages-group-<group_key>`, pickup points + Packeta only).
 - **State handling:** `loadSeq` guard on the load; group-by / filter / focus are local `ref`s
   and survive in-place row patches; the per-item pending map, `guestCollapse` fold map and the
   pickup-locations error Alert are kept as shipped.
@@ -726,7 +733,10 @@ selector retargets listed in UC-DP-015.
    `bagsLabel`), banner **„Hostia v balíku hostiteľa sa označia spolu s ním. Peniaze sa
    nemenia — účtovanie prebehlo pri zabalení.“**, buttons **„Zrušiť“** / **„Áno, odovzdané“**
    (`data-testid="handover-confirm"`). The prototype's second sentence about the WhatsApp
-   message is module 21's (resolved conflict 3) — not rendered here.
+   message is module 21's (resolved conflict 3) — not rendered here. **→ WA-T8 renders it
+   (`handover-message-note`): „Pre každý balíček sa pripraví WhatsApp správa („{template
+   name}“). Odošlete ju jedným tlačidlom v záložke Správy.“ for a pickup point / Packeta
+   group, none for `in_person`, a generic DRAFT for the stage/friend groupings.**
 2. Confirm → `POST /cycles/:id/distribution/hand-over` with `order_ids` = the group's
    `stage = 'packed'` parties that have an `order_id`, and `guest_order_ids` = the live
    sub-order ids of the group's `stage = 'packed'` synthetic hosts plus (module 20) the group's
@@ -735,7 +745,8 @@ selector retargets listed in UC-DP-015.
 3. **200** → patch rows from the payload (`handed_over`, `guests_inherited`), recompute plan
    cards from a re-fetch (loadSeq), toast **„{n} balíček odovzdaný“ / „{n} balíčky odovzdané“ /
    „{n} balíčkov odovzdaných“** for 3.5 s (`data-testid="handover-toast"`). The „· n správ
-   zaradených na odoslanie (WhatsApp)“ half is module 21's.
+   zaradených na odoslanie (WhatsApp)“ half is module 21's (**WA-T8: rendered, declined, from
+   the POST's `queued_notifications`, only when > 0**).
 4. **409 `not_packed`** → close the modal, re-fetch, show an inline Alert „Niektoré balíčky
    už nie sú zabalené — zoznam bol obnovený.“ and highlight the named rows.
 5. The group button is pending-disabled for the duration; other rows stay interactive.
