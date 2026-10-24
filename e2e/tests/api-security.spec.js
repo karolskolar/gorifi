@@ -233,6 +233,12 @@ const ADMIN_ENDPOINTS = [
   { method: 'patch', path: '/api/notifications/1/body', data: { body: 'x' } },
   { method: 'patch', path: '/api/notifications/1/manual-sent', data: { sent: true } },
   { method: 'delete', path: '/api/notifications/1' },
+  // 21 §UC-WA-012 (WA-T7): the settings page's two routes, on the `/api/admin` router
+  // (per-route `requireAdmin` — that mount is MIXED: login/setup/payment-settings are
+  // public). The `gorifi-wa` process's own `:3010/health` is loopback-only and is NOT an
+  // app route, so it never joins this list (§UC-WA-014 item 1).
+  { method: 'get', path: '/api/admin/whatsapp/health' },
+  { method: 'post', path: '/api/admin/whatsapp/test' },
 ]
 
 const PUBLIC_ENDPOINTS = [

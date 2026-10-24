@@ -15,7 +15,8 @@ import { renderEmail } from './email-templates.js';
 
 // ⚠ THE ONE AND ONLY WRITER OF `notifications` (DP-T3, 16 §UC-DP-008; module 21's
 // writers join HERE — WA-T4 §UC-WA-006, and WA-T5's compose / release / retry /
-// rerender / per-row edits at the bottom of this file. `db/schema.js`'s boot
+// rerender / per-row edits, and WA-T7's settings-page test row `insertTestMessage()`, at
+// the bottom of this file. `db/schema.js`'s boot
 // migrations — the WA-T4 re-key and the WA-T5 `unresolved` back-fill — are the only
 // other statements, and they run before any route exists).
 //
@@ -929,4 +930,57 @@ export function sweepInterruptedEmailRows() {
     console.error(`[outbox] boot sweep of interrupted e-mail rows failed: ${String(e?.message || e).slice(0, 200)}`);
     return 0;
   }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// WA-T7 — the settings page's TEST MESSAGE (21 §UC-WA-012). The one `recipient_kind =
+// 'admin'` row kind (the CHECK value WA-T1 widened for exactly this), written HERE
+// because this file is the only `notifications` writer.
+// ═════════════════════════════════════════════════════════════════════════════
+
+export const TEST_TEMPLATE_KEY = 'test';
+
+/**
+ * The test body: „Testovacia správa z Podpultovky · <d. m. yyyy HH:mm>“, the instant in
+ * Europe/Bratislava (24-hour clock, no leading zero on day/month), whatever the server TZ.
+ */
+export function testMessageBody(date = new Date()) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Bratislava', year: 'numeric', month: 'numeric', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(date).map((x) => [x.type, x.value]));
+  return `Testovacia správa z Podpultovky · ${Number(p.day)}. ${Number(p.month)}. ${p.year} ${p.hour}:${p.minute}`;
+}
+
+/**
+ * `POST /api/admin/whatsapp/test`'s write: ONE row, `status = 'released'` DIRECTLY (the
+ * button IS the admin's explicit release), `cycle_id`/`recipient_id` NULL, `segment_key =
+ * template_key = 'test'`, `unresolved = '[]'` (the body is fully composed here), the
+ * normalised number snapshotted into `phone_e164`. The caller has already normalised it
+ * (`toE164()`; NULL is the route's 400 and never reaches this function).
+ *
+ * ⚠ ONE pending test at a time: while a `'test'` row is still `released` (the WA process
+ * has not drained it — it is down, paused or pacing) a second is refused, inside the same
+ * transaction as the INSERT (synchronous — the `instances: 1` check-then-write rule).
+ * ⇒ `{ refused: 'test_pending', id }` or `{ id }`.
+ */
+// ⚠ `.immediate()` (review, WA-T7): a READ-then-WRITE transaction on the WAL file the
+// `gorifi-wa` process also writes (WA-T9) — a deferred one that upgrades to a write after
+// the other process committed fails with `SQLITE_BUSY_SNAPSHOT` (a 500); BEGIN IMMEDIATE
+// takes the write lock up front, where `busy_timeout` applies. The rest of this file
+// follows on WA-T9's row.
+export function insertTestMessage({ phoneE164, now = new Date() } = {}) {
+  return db.transaction(() => {
+    const pending = db.prepare(
+      "SELECT id FROM notifications WHERE template_key = ? AND status = 'released' ORDER BY id LIMIT 1"
+    ).get(TEST_TEMPLATE_KEY);
+    if (pending) return { refused: 'test_pending', id: pending.id };
+    const stamp = nowStamp();
+    const id = db.prepare(`
+      INSERT INTO notifications (channel, template_key, segment_key, recipient_kind, recipient_id,
+                                 phone_e164, body, status, cycle_id, released_at, unresolved)
+      VALUES ('whatsapp', ?, ?, 'admin', NULL, ?, ?, 'released', NULL, ?, '[]')
+    `).run(TEST_TEMPLATE_KEY, TEST_TEMPLATE_KEY, phoneE164, testMessageBody(now), stamp).lastInsertRowid;
+    return { id: Number(id) };
+  }).immediate();
 }

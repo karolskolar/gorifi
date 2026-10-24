@@ -1,8 +1,8 @@
 // 21 §UC-WA-008 / §UC-WA-012 (WA-T5) — the API's ONE reader of the `gorifi-wa` process's
 // health endpoint. WA-T5 uses it for the wa.me tick's duplicate-send guard (`PATCH
 // /api/notifications/:id/manual-sent` on a `released` row ⇒ 409 `bot_active` while the bot
-// is connected); WA-T8's `GET /api/admin/whatsapp/health` proxy is meant to reuse
-// `fetchWaHealth()` rather than grow a second fetch.
+// is connected); ~~WA-T8's~~ WA-T7's `GET /api/admin/whatsapp/health` proxy
+// (`routes/admin.js`) reuses `fetchWaHealth()` — no second fetch exists.
 //
 //   URL      `${WA_HEALTH_URL}/health`, `WA_HEALTH_URL` default `http://127.0.0.1:3010`
 //            (21 §UC-WA-012; staging sets `:3011`). Read at CALL time, so the e2e gate

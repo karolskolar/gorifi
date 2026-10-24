@@ -13,6 +13,12 @@ import {
   SETTING_REVOLUT,
   SETTING_CREDITOR_NAME,
 } from '../helpers/payment.js';
+// 21 §UC-WA-012 (WA-T7): the WhatsApp settings page's API — the health proxy reuses the
+// ONE reader of the `gorifi-wa` process (WA-T5), the test message the ONE E.164
+// normaliser and the ONE `notifications` writer.
+import { fetchWaHealth } from '../helpers/wa-health.js';
+import { toE164 } from '../helpers/phone.js';
+import { insertTestMessage } from '../helpers/outbox.js';
 
 const router = Router();
 
@@ -503,6 +509,74 @@ router.post('/logout', (req, res) => {
   res.json({ success: true });
 });
 
+// ── 21 §UC-WA-012 (WA-T7): the two WhatsApp settings ────────────────────────────────
+// Both rows are seeded at boot by `db/schema.js` (WA-T1): `whatsapp_paused` '0'|'1' —
+// re-read by the `gorifi-wa` process every poll (it READS settings, never writes them) —
+// and `whatsapp_test_phone`, where the test message goes, STORED AS ENTERED (normalised
+// only at use, by `toE164()` in `POST /whatsapp/test`). This file is their one writer.
+const SETTING_WA_PAUSED = 'whatsapp_paused';
+const SETTING_WA_TEST_PHONE = 'whatsapp_test_phone';
+const MAX_WA_TEST_PHONE_LENGTH = 32;
+
+function readSetting(key) {
+  return db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value;
+}
+
+// The two fields as `GET /settings` publishes them (and the PUT echoes, read back).
+// `paused` is fail-OPEN on a missing/odd row ('1' is the only „paused"), matching the
+// process, which treats anything but '1' as running.
+function whatsappSettings() {
+  return {
+    whatsappPaused: readSetting(SETTING_WA_PAUSED) === '1',
+    whatsappTestPhone: readSetting(SETTING_WA_TEST_PHONE) || '',
+  };
+}
+
+// STRICT boolean, the module-21 vocabulary (`true`/`false`/`1`/`0` — 21 §UC-WA-003,
+// `routes/notifications.js strictBool`). Anything else ⇒ `null` ⇒ the caller's 400.
+function strictBool(value) {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  return null;
+}
+
+// Validates the two WhatsApp fields of a `PUT /settings` body BEFORE any write in that
+// handler. ⇒ `{ error }` (a 400 body) or `{ paused?: '0'|'1', testPhone?: string }`.
+//
+// ⚠ STRICTER THAN FUP-T13's `bindValue` SKIP, deliberately: the older fields treat an
+// unbindable value as ABSENT (200, nothing written) because a silent write there could
+// blank a live credential. These two are new, have no legacy caller to keep happy, and a
+// silent 200 on `whatsappPaused: 'yes'` would tell the admin the bot was paused while it
+// keeps sending — so a PRESENT key that is not the right shape is a 400. `undefined`
+// (absent) still means „leave it alone"; `null` clears the test phone (the FUP-T13
+// meaning of an explicit null) but is NOT a boolean.
+function validateWhatsappSettings(body) {
+  const out = {};
+  if (body.whatsappPaused !== undefined) {
+    const v = strictBool(body.whatsappPaused);
+    if (v === null) {
+      return { error: { error: 'Neplatná hodnota pozastavenia odosielania', field: 'whatsappPaused', reason: 'invalid_value' } };
+    }
+    out.paused = v ? '1' : '0';
+  }
+  if (body.whatsappTestPhone !== undefined) {
+    const v = body.whatsappTestPhone;
+    if (v !== null && typeof v !== 'string') {
+      return { error: { error: 'Testovacie číslo musí byť text', field: 'whatsappTestPhone', reason: 'invalid_value' } };
+    }
+    if (typeof v === 'string' && v.length > MAX_WA_TEST_PHONE_LENGTH) {
+      return {
+        error: {
+          error: `Testovacie číslo môže mať najviac ${MAX_WA_TEST_PHONE_LENGTH} znakov`,
+          field: 'whatsappTestPhone', reason: 'too_long',
+        },
+      };
+    }
+    out.testPhone = v === null ? '' : v;
+  }
+  return out;
+}
+
 // Get admin settings (friends_password, etc.) — admin only (returns secrets)
 router.get('/settings', requireAdmin, (req, res) => {
   const friendsPassword = db.prepare("SELECT value FROM settings WHERE key = 'friends_password'").get();
@@ -515,7 +589,8 @@ router.get('/settings', requireAdmin, (req, res) => {
     paymentIban: payment.iban,
     paymentRevolutUsername: payment.revolut_username,
     paymentCreditorName: payment.creditor_name,
-    authMode: authMode?.value || 'legacy'
+    authMode: authMode?.value || 'legacy',
+    ...whatsappSettings()
   });
 });
 
@@ -577,6 +652,9 @@ router.put('/settings', requireAdmin, (req, res) => {
   ) {
     return res.status(400).json({ error: `Meno príjemcu môže mať najviac ${MAX_CREDITOR_NAME_LENGTH} znakov` });
   }
+  // WA-T7: the two WhatsApp fields, also validated before ANY write in this handler.
+  const wa = validateWhatsappSettings(req.body || {});
+  if (wa.error) return res.status(400).json(wa.error);
 
   if (friendsPassword !== undefined) {
     db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('friends_password', ?)").run(friendsPassword || '');
@@ -603,6 +681,12 @@ router.put('/settings', requireAdmin, (req, res) => {
       db.prepare('DELETE FROM friend_sessions').run();
     }
   }
+  if (wa.paused !== undefined) {
+    db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(SETTING_WA_PAUSED, wa.paused);
+  }
+  if (wa.testPhone !== undefined) {
+    db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(SETTING_WA_TEST_PHONE, wa.testPhone);
+  }
 
   const currentAuthMode = db.prepare("SELECT value FROM settings WHERE key = 'auth_mode'").get();
   res.json({
@@ -611,8 +695,88 @@ router.put('/settings', requireAdmin, (req, res) => {
     paymentIban: paymentIban || '',
     paymentRevolutUsername: paymentRevolutUsername || '',
     paymentCreditorName: paymentCreditorName || '',
-    authMode: currentAuthMode?.value || 'legacy'
+    authMode: currentAuthMode?.value || 'legacy',
+    // WA-T7: READ BACK (both are always present, written or not — the page re-seeds from it).
+    ...whatsappSettings()
   });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 21 §UC-WA-012 (WA-T7) — the WhatsApp settings page's two routes. Both `requireAdmin`
+// per route (this router is a MIXED mount) and both in `ADMIN_ENDPOINTS`
+// (e2e/tests/api-security.spec.js). The `gorifi-wa` process's own `/health` is
+// loopback-only and is not an app route.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// GET /api/admin/whatsapp/health — the PROXY of the process's health.
+//
+//   ⇒ 200 ALWAYS. `{ reachable: false, opt_in, paused }` when the process cannot be
+//     read (refused / 2 s timeout / non-200 / non-object JSON — `fetchWaHealth()` owns
+//     that list), else `{ ...health, reachable: true, opt_in, paused }`.
+//   • `opt_in` = 21 §UC-WA-003's count over ACTIVE friends, `paused` = the SETTING —
+//     both are the DATABASE's facts, so they are answered on BOTH branches (the page's
+//     Tempo card and pause button need them while the process is down — an ADDITION to
+//     the spec's bare `{ reachable: false }`, learnings 15 §WA-T7) and they are spread
+//     LAST, so a process that echoes `reachable`/`opt_in`/`paused` can never override
+//     the API's own answer.
+//   • ⚠ The body carries the pairing QR while `state = 'qr'` — a CREDENTIAL. Nothing
+//     here logs it (no console call at all on this path; `fetchWaHealth()` never logs)
+//     and `Cache-Control: no-store` keeps it out of every cache.
+//   • ⚠ ASYNC: the `await` sits BEFORE the two reads and nothing here writes, so there
+//     is no check-then-write to break (GA-T8).
+router.get('/whatsapp/health', requireAdmin, async (req, res) => {
+  const health = await fetchWaHealth();
+  let local;
+  try {
+    const counts = db.prepare(
+      'SELECT COALESCE(SUM(whatsapp_opt_in = 1), 0) AS on_count, COUNT(*) AS total FROM friends WHERE active = 1'
+    ).get();
+    local = {
+      opt_in: { on: Number(counts.on_count) || 0, total: Number(counts.total) || 0 },
+      paused: whatsappSettings().whatsappPaused,
+    };
+  } catch (e) {
+    // Never throws into the handler (§UC-WA-012): an unreadable count is a zero.
+    local = { opt_in: { on: 0, total: 0 }, paused: false };
+  }
+  res.set('Cache-Control', 'no-store');
+  if (health.reachable !== true) {
+    return res.json({ reachable: false, ...local });
+  }
+  res.json({ ...health, reachable: true, ...local });
+});
+
+// POST /api/admin/whatsapp/test — ONE `released` WhatsApp row to the SAVED test phone.
+//
+//   • No body: the number is the stored `whatsapp_test_phone` (the page's button is
+//     disabled until one is SAVED), normalised here by `toE164()`; NULL (blank, garbage,
+//     too short) ⇒ 400 `invalid_test_phone`.
+//   • A `'test'` row still `released` ⇒ 409 `test_pending` + its `id` (the admin is one
+//     person; the WA process drains it — or, while the bot is not connected, the
+//     composer's hand tick `PATCH /api/notifications/:id/manual-sent` finalises it).
+//   • ⇒ 201 with the row read back. Synchronous (the pending check and the INSERT are
+//     one transaction in `helpers/outbox.js insertTestMessage()`).
+router.post('/whatsapp/test', requireAdmin, (req, res) => {
+  const phoneE164 = toE164(readSetting(SETTING_WA_TEST_PHONE));
+  if (!phoneE164) {
+    return res.status(400).json({
+      error: 'Testovacie číslo nie je platné telefónne číslo — uložte ho v tvare 0905 123 456 alebo +421 905 123 456',
+      field: 'whatsappTestPhone', reason: 'invalid_test_phone',
+    });
+  }
+  const result = insertTestMessage({ phoneE164 });
+  if (result.refused) {
+    return res.status(409).json({
+      error: 'Predchádzajúca testovacia správa ešte nebola odoslaná',
+      reason: result.refused, id: result.id,
+    });
+  }
+  const row = db.prepare(`
+    SELECT id, channel, template_key, segment_key, recipient_kind, recipient_id, phone_e164, body, status,
+           cycle_id, order_id, guest_order_id, created_at, released_at, sent_at, sent_via, error
+      FROM notifications WHERE id = ?
+  `).get(result.id);
+  res.status(201).json(row);
 });
 
 // Change password (requires valid admin session AND current password)

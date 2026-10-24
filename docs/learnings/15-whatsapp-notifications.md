@@ -649,3 +649,104 @@ longer stays `released` on the gate, so it is also `failed` — and re-released 
 - Mutation-checked (each reds exactly one test): success UPDATE without `AND status='released'` (race test), the
   SELECT without `channel='email'` or without `status='released'` (§1 probe), no `error = NULL` (retry test), no
   already-final log line (race test).
+
+## WA-T7 — the WhatsApp settings page (`AdminWhatsAppSettings.vue`, 2026-10-24)
+
+Spec: 21 §UC-WA-012 (+ §UC-WA-011's health shape, §UC-WA-004's template routes, D7). Tests: NEW
+`e2e/tests/whatsapp-settings.spec.js` (20: §1 7 HTTP, §2 6 `WA_HEALTH_URL`-gated — one also `SERVER_LOG` — §3 7 UI,
+one `WA_HEALTH_URL`-gated) + two `ADMIN_ENDPOINTS` rows. No retargets.
+
+### What shipped
+
+- **`routes/admin.js`** (per-route `requireAdmin`; the `/api/admin` mount is mixed):
+  - `GET /whatsapp/health` — `fetchWaHealth()` (WA-T5's ONE reader, 2 s, never throws/logs), then the two DB facts:
+    `opt_in = { on, total }` = §UC-WA-003's `SUM(whatsapp_opt_in = 1), COUNT(*) … WHERE active = 1` (COALESCEd), and
+    `paused` = the SETTING. Always 200, `Cache-Control: no-store`. Unreachable ⇒ `{ reachable:false, opt_in, paused }`;
+    reachable ⇒ `{ ...health, reachable:true, opt_in, paused }` — the API's three keys spread LAST.
+  - `GET/PUT /settings` grow `whatsappPaused` (boolean) and `whatsappTestPhone` (string); the PUT echoes both READ BACK.
+  - `POST /whatsapp/test` — no body; `toE164(<stored whatsapp_test_phone>)`; NULL ⇒ 400 `invalid_test_phone`
+    (`field: 'whatsappTestPhone'`); else `outbox.js insertTestMessage()` ⇒ 201 + the row; 409 `test_pending` + `id`.
+- **`helpers/outbox.js`** (still the one `notifications` writer): `TEST_TEMPLATE_KEY`, `testMessageBody(date)`
+  (`Testovacia správa z Podpultovky · d. m. yyyy HH:mm`, Europe/Bratislava via `Intl` `hourCycle:'h23'`) and
+  `insertTestMessage({ phoneE164 })` — pending check + INSERT in ONE transaction (sync): `channel='whatsapp'`,
+  `template_key = segment_key = 'test'`, `recipient_kind='admin'`, `recipient_id`/`cycle_id` NULL,
+  `status='released'`, `released_at = CURRENT_TIMESTAMP`, `unresolved='[]'`.
+- **Frontend**: `views/AdminWhatsAppSettings.vue` at `/admin/whatsapp/settings` (`admin-whatsapp-settings`, under the
+  `/admin` guard); „WhatsApp bot →“ in `AdminSettings.vue`'s header (`admin-whatsapp-link`); `api.js`
+  `getWhatsappHealth`, `sendWhatsappTest`, `getNotificationTemplates`, `updateNotificationTemplate`, and `request()`
+  now carries a 400's `token` onto the thrown error (`err.token`, the `unknown_placeholder` token).
+- **The page** — testids: `wa-status-badge` (`Pripojené`/`Odpojené`), `wa-state-word` (`spúšťa sa` · `čaká na
+  spárovanie` · `odpojené` · `chyba prihlásenia` · `pozastavené` · `proces nebeží`; an unknown state renders raw;
+  absent while connected), rows only while reachable (`wa-number` `+421 000 000 000`, `wa-last-sent`, `wa-queue`
+  `released / sent_today / failed`, `wa-last-error`), `wa-pause-toggle`, `wa-test-phone` (`maxlength=32`) +
+  `wa-test-phone-save` + `wa-test-send` + `wa-test-error`/`wa-test-ok`; `wa-qr-card` (only `state='qr'`) with
+  `wa-qr-img`; `wa-pace-card` (`wa-pace-gap`, `wa-pace-hourly`, `wa-opt-in`); `wa-templates-card`
+  (`wa-templates-summary`, rows `wa-template-<key>` + `data-template-key`, inside: `wa-template-toggle`,
+  `wa-template-body`, `wa-template-edit`, `wa-template-textarea` `maxlength=1000`, `wa-template-save`,
+  `wa-template-cancel`, `wa-template-error`); `wa-runbook` (`<details>`); `wa-back`.
+  Health polled on mount + every 5 s (`setInterval`), `healthSeq` = the `loadSeq` guard, bumped on unmount and after a
+  pause write; unmount clears the interval AND drops `health` (the QR). Per-key `pending`/`rowErrors`.
+
+### Decisions (orchestrator: confirm or overturn)
+
+1. **The unreachable answer carries `opt_in` + `paused`** — beyond the spec's bare `{ reachable:false }`. Both are DB
+   facts the page needs while the process is DOWN (Tempo card, pause button — pausing a stopped bot before starting it
+   is a real flow). Process fields (`state`, `qr`, …) never appear on that branch (pinned).
+2. **(ORCHESTRATOR-ACCEPTED, WA-T7 review) The two new settings 400 on a malformed PRESENT key** (`field` + `reason: 'invalid_value' | 'too_long'`) —
+   stricter than FUP-T13's `bindValue` skip-on-unbindable, on purpose: a silent 200 on `whatsappPaused: 'yes'` would
+   tell the admin the bot is paused while it keeps sending. Strict boolean = `true/false/1/0` (module 21's vocabulary,
+   `routes/notifications.js strictBool`); `null` CLEARS the test phone (FUP-T13's explicit-null meaning) and is NOT a
+   boolean. Validated with the creditor-name bound BEFORE any write — a refusal writes no sibling field (pinned).
+   `whatsappTestPhone` is stored verbatim (no trim), ≤ 32 chars, non-strings 400.
+3. **`POST /whatsapp/test` answers 201** and the 409 names the pending row's `id`. It tests the SAVED number (no body).
+4. **The test button is disabled while the field differs from the saved number**, not only while none is saved — the
+   message goes to the saved one, so a dirty field would mislead. JS guard in `sendTest()` (pinned by a dispatched
+   click: no request).
+5. **A stuck test row has a door**: the composer's hand tick `PATCH /api/notifications/:id/manual-sent` finalises a
+   `released` row while the bot is not connected (exactly when a test row gets stuck — process down/paused). The spec
+   uses that door for cleanup. While the bot IS connected it drains the row itself. No dedicated UI door (the
+   composer is per cycle; a cycle-less `'test'` group is not listable there) — flag for WA-T8 if the PO wants one.
+6. **Health contract for WA-T9 (the Tempo card)**: the page reads `pace: { min_ms, max_ms }` and `hourly_max`
+   (integer) when the process reports them, else 3–10 s / 30. §UC-WA-011's `/health` field list carries NEITHER — WA-T9
+   should publish them from its env (`WA_PACE_MIN_MS`/`MAX`, `WA_HOURLY_MAX`), or the card always shows the defaults.
+   Seconds render with a decimal comma (`2,5–7 s`).
+7. **QR**: rendered only when `typeof qr === 'string' && qr.startsWith('data:image/')` — a health body naming any other
+   URL is not fetched (pinned with `https://evil.example/qr.png`); never stored (pinned: not in local/sessionStorage).
+8. **Sub-header** „{on} na štart · {off} pripravená/pripravené/pripravených · 1 vlastná“: `on`/`off` over the five
+   non-`custom` keys, `custom` is always the one „vlastná“ (rendered only if the key is listed). The singular/plural
+   forms are mine (the spec gives only the seed state).
+9. **Copy drafts (admin vy-form, mine — PO may reword)**: the 400 „Testovacie číslo nie je platné telefónne číslo —
+   uložte ho v tvare 0905 123 456 alebo +421 905 123 456“, the 409 „Predchádzajúca testovacia správa ešte nebola
+   odoslaná“, success „Testovacia správa je vo fronte — bot ju odošle na uložené číslo.“, label „Testovacie číslo“,
+   „Zisťujem stav…“, „neznámy stav“, „(bez textu)“ for the empty `custom`, „Povolené: {meno} …“ (from the GET's
+   `placeholders`), the inline 400 „Neznámy zástupný symbol {menoo} — šablóna sa neuložila.“, and the runbook's two
+   procedures (paths `/var/www/gorifi/wa-session`, `/var/www/gorifi/ecosystem.config.cjs`, `deploy.sh production wa`
+   — staging uses `gorifi-wa-staging`; the fold names production only).
+10. **The link sits in `AdminSettings.vue`'s header** (right side), so it shows while the page loads and on a load error.
+
+### Acceptance clauses NOT closed here (§UC-WA-012)
+
+- WA-T9 (the stub sender + `e2e/wa-harness.js`): „with the stub running the card shows `Pripojené`, number `+421 000
+  000 000`, and the counts MOVE after a release“ (pinned here only against a fake health server — no drain);
+  „toggling pause … and the stub STOPS DRAINING“; „the test button … inserts one released admin row the stub FLIPS to
+  `sent`“. §UC-WA-014 item 4's „settings page: `Pripojené` with stub“ is the same harness.
+- WA-T8: „with no process … the composer's OFFLINE BANNER appears“; the settings page linked FROM the composer.
+
+### Traps found
+
+- `Badge.vue` renders a `<div>` — a clickable „Zapnuté/Neskôr“ badge is a `<button>` with the badge classes
+  (`aria-pressed`), not the component.
+- Mutation-checked: proxy spread order `{ ...local, ...health }` (the stub's hostile `opt_in:'evil'`/`paused` echoes
+  win) reds §2's connected test; deleting `sendTest()`'s JS guard reds the dispatched-click UI test.
+
+### Review round (2026-10-24, APPROVE + three minors)
+
+- **Editor race**: `saveEdit()` closes the editor only if `editingKey` is still ITS key, and `startEdit()` refuses
+  (JS guard + `:disabled`) while ANY template write is pending (`anyPending`) — one editor at a time, so a slow save of
+  A can never close or discard B's editor. Pinned: A's PUT held by `page.route`, B's „Upraviť" disabled and a
+  dispatched click opens nothing, A closes on release, then B opens.
+- **`insertTestMessage()` is `.immediate()`** now (read-then-write on the WAL file the WA process will write); added to
+  the WA-T9/WA-T11 PROGRESS `.immediate()` list as already done.
+- The template `<textarea>` has an accessible name (`aria-label="Text šablóny {name}"`, pinned).
+- WA-T8 PROGRESS row: a `'test'` row stuck `released` (bot down / paused / `auth_failure`) 409s every later test click
+  with no UI door — the composer/settings need one; consider disabling/hinting the button while `reachable` is false.

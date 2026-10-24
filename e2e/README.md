@@ -580,6 +580,9 @@ DB_PATH="$RUN_DB" PORT=3997 CORS_ORIGIN=http://localhost:3997 \
 #   connected". `whatsapp-outbox.spec.js` §4 serves a `connected` stub on that SAME port
 #   for one test (the `bot_active` 409) and needs the SAME value in step 6's env; without
 #   it §4 self-skips (the reader's connected branch is still pinned in §1's probe).
+#   `whatsapp-settings.spec.js` (WA-T7) §2 + its stub UI test serve on the SAME port
+#   (connected / qr / 500 / slow answers through `GET /api/admin/whatsapp/health`), and
+#   its QR-never-logged test also needs SERVER_LOG; without WA_HEALTH_URL they self-skip.
 # ⚠ /api/health, NOT /api/cycles — `cycles` is requireAdmin and answers 401, so
 #   `curl -sf` there NEVER succeeds and the wait degrades into a silent 15 s sleep.
 #   The trailing re-check is what makes a dead backend loud instead of a confusing

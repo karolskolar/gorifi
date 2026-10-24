@@ -98,6 +98,9 @@ async function request(endpoint, options = {}) {
     // throw. ⚠ Carried under their wire names' camelCase, like `catalogId` above;
     // additive, and nothing else reads these fields today.
     if (error.reason) err.reason = error.reason
+    // 21 §UC-WA-004 (WA-T7): the template PUT's `unknown_placeholder` 400 names the
+    // offending `{token}` — the settings page shows it inline.
+    if (typeof error.token === 'string') err.token = error.token
     if (Array.isArray(error.order_ids)) err.orderIds = error.order_ids
     if (Array.isArray(error.guest_order_ids)) err.guestOrderIds = error.guest_order_ids
     if (Array.isArray(error.cancelled_guest_order_ids)) {
@@ -323,6 +326,15 @@ export const api = {
   getAdminSettings: () => request('/admin/settings'),
   updateAdminSettings: (data) => request('/admin/settings', { method: 'PUT', body: data }),
   getPaymentSettings: () => request('/admin/payment-settings'),
+  // 21 §UC-WA-012 (WA-T7): the WhatsApp settings page. The health PROXY always answers
+  // 200 (`reachable:false` when the `gorifi-wa` process is down); the test message goes
+  // to the SAVED `whatsappTestPhone` (no body).
+  getWhatsappHealth: () => request('/admin/whatsapp/health'),
+  sendWhatsappTest: () => request('/admin/whatsapp/test', { method: 'POST' }),
+  // 21 §UC-WA-004 (WA-T2's routes): the six templates; PUT `{ body?, enabled? }`.
+  getNotificationTemplates: () => request('/notifications/templates'),
+  updateNotificationTemplate: (key, data) =>
+    request(`/notifications/templates/${encodeURIComponent(key)}`, { method: 'PUT', body: data }),
 
   // Products
   getProducts: (cycleId) => request(`/products/cycle/${cycleId}`),
