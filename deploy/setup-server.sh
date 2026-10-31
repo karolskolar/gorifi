@@ -15,12 +15,17 @@ fi
 echo "Step 1: Updating system..."
 apt update && apt upgrade -y
 
-echo "Step 2: Installing Node.js 20 (LTS)..."
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+echo "Step 2: Installing Node.js 22 (LTS, maintained until 2027-04-30)..."
+# Node 20 reached end-of-life on 2026-04-30. Keep this major in sync with the
+# Dockerfile base image (node:22-bookworm-slim) so both runtimes share one ABI (127).
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt install -y nodejs
+node --version | grep -q '^v22\.' || { echo "Expected Node 22, got $(node --version)"; exit 1; }
 
 echo "Step 2b: Installing build toolchain (better-sqlite3 native module) and backup tools..."
-# build-essential + python3: compile better-sqlite3 if no prebuilt binary is available.
+# build-essential + python3: compile better-sqlite3 only if no prebuilt binary is
+# available. better-sqlite3 11.10.0 ships node-v127-linux-x64 (Node 22) prebuilds, so
+# on this runtime the toolchain is a fallback, not a requirement.
 # sqlite3 + age + rclone: WAL-safe encrypted backups to Google Drive (deploy/backup-db.sh).
 apt install -y build-essential python3 sqlite3 age rclone
 

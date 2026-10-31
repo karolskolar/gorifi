@@ -91,11 +91,27 @@ The app ports 3000/3001 must **not** be reachable directly — only via NPM on :
 apt-get update && apt-get install -y unattended-upgrades
 dpkg-reconfigure -plow unattended-upgrades      # enable
 
-# Runtime: setup-server.sh pins Node 18 (EOL). Move to Node 20 LTS (SEC-D3):
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+# Runtime: Node 20 reached end-of-life on 2026-04-30 (no more security patches).
+# setup-server.sh and the Dockerfile now pin Node 22 LTS (maintained until 2027-04-30).
+# On an EXISTING container, upgrade in place:
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y nodejs
-node --version   # expect v20.x
+node --version   # expect v22.x
+npm install -g pm2                                 # rebuild the global pm2 against the new node
+sudo -u gorifi pm2 update                          # restart the pm2 daemon on the new runtime
+sudo -u gorifi pm2 startup                         # re-run the printed command: the systemd unit embeds the node path
+# Re-install native deps for the new ABI (127). better-sqlite3 11.10.0 has a Node 22
+# prebuilt, so this downloads a binary rather than compiling:
+cd /var/www/gorifi/backend && sudo -u gorifi npm ci --omit=dev
+sudo -u gorifi pm2 restart all && sudo -u gorifi pm2 save
+curl -fsS http://127.0.0.1:3000/api/health         # must be 200 before leaving
 ```
+
+⚠ `deploy/deploy.sh` rsyncs with `--exclude node_modules`; a `node_modules` built
+under Node 20 (ABI 115) is NOT reused by Node 22 (ABI 127) — `better-sqlite3` throws
+`NODE_MODULE_VERSION 115 ... requires 127` on first start. The `npm ci` above is the
+fix (a regular `./deploy/deploy.sh <env>` run performs the same `npm ci --omit=dev`, so
+deploying right after the runtime upgrade also heals it).
 
 ## 6. Verify
 
