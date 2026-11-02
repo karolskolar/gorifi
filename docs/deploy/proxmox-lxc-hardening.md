@@ -93,18 +93,25 @@ dpkg-reconfigure -plow unattended-upgrades      # enable
 
 # Runtime: Node 20 reached end-of-life on 2026-04-30 (no more security patches).
 # setup-server.sh and the Dockerfile now pin Node 22 LTS (maintained until 2027-04-30).
-# On an EXISTING container, upgrade in place:
+# On an EXISTING container, upgrade in place. ⚠ Production AND staging share this
+# container and ONE pm2 daemon, so this is a production change too (a few seconds of
+# restart). ⚠ The CT has no `sudo` — use `runuser`, as deploy.sh does. Verified
+# end-to-end on 2026-10-31 (Node 20.20.2 → 22.23.4, both apps 200 afterwards):
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y nodejs
 node --version   # expect v22.x
-npm install -g pm2                                 # rebuild the global pm2 against the new node
-sudo -u gorifi pm2 update                          # restart the pm2 daemon on the new runtime
-sudo -u gorifi pm2 startup                         # re-run the printed command: the systemd unit embeds the node path
-# Re-install native deps for the new ABI (127). better-sqlite3 11.10.0 has a Node 22
-# prebuilt, so this downloads a binary rather than compiling:
-cd /var/www/gorifi/backend && sudo -u gorifi npm ci --omit=dev
-sudo -u gorifi pm2 restart all && sudo -u gorifi pm2 save
-curl -fsS http://127.0.0.1:3000/api/health         # must be 200 before leaving
+npm install -g pm2@6                               # rebuild the global pm2 against the new node (same major)
+# Re-install native deps for the new ABI (127) for BOTH apps BEFORE any restart.
+# better-sqlite3 11.10.0 has a Node 22 prebuilt, so this downloads a binary rather than compiling:
+for d in gorifi gorifi-staging; do runuser -u gorifi -- bash -lc "cd /var/www/$d/backend && npm ci --omit=dev"; done
+runuser -u gorifi -- bash -lc "pm2 save"
+pm2 startup systemd -u gorifi --hp /home/gorifi    # regenerate the unit: it embeds the node path
+systemctl daemon-reload
+runuser -u gorifi -- bash -lc "pm2 kill"           # then resurrect UNDER systemd on the new node
+systemctl restart pm2-gorifi.service
+runuser -u gorifi -- bash -lc "pm2 ls && pm2 save"
+curl -fsS http://127.0.0.1:3000/api/health         # both must be 200 before leaving
+curl -fsS http://127.0.0.1:3001/api/health
 ```
 
 ⚠ `deploy/deploy.sh` rsyncs with `--exclude node_modules`; a `node_modules` built
