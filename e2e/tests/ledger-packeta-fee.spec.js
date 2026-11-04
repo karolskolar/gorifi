@@ -11,6 +11,7 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { DatabaseSync } from 'node:sqlite'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 const TIMEOUT = 20_000
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
@@ -19,9 +20,12 @@ const PRICE = 19.08 // × 2 = 38.16 goods
 
 let ctx = null
 let adminToken = ''
-const adminReq = (path, opts = {}) => ctx[opts.method || 'get'](path, {
-  headers: { 'X-Admin-Token': adminToken },
-  ...(opts.data ? { data: opts.data } : {}),
+// FUP-T27 / WA-T12: the ONE admin request path (`helpers/admin.js makeAdmin`) — re-authenticates once on a 401
+// and publishes the fresh token back into `adminToken` (was a private `adminReq` copy, §5 of admin-token-retry).
+const adminReq = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
   timeout: TIMEOUT,
 })
 

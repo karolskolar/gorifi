@@ -45,13 +45,27 @@ import { makeAdmin } from '../helpers/admin.js'
 //     sides (the friend's own `/detail` rows + balance, ungated, and a `MAX(id)`
 //     watermark filtered to these friends when `DB_PATH` is exported).
 //
-//  5. ⚠ **THE QUEUED COUNT IS READ AND NOT RENDERED.** `queued_notifications`
-//     is module 21's half; the toast here must not mention messages at all.
+//  5. ~~⚠ **THE QUEUED COUNT IS READ AND NOT RENDERED.** `queued_notifications`
+//     is module 21's half; the toast here must not mention messages at all.~~
+//     → **SUPERSEDED BY WA-T8 (module 21, learnings 15 §WA-T8)**: the toast now
+//     ends „· n správ zaradených na odoslanie (WhatsApp)“ (declined, from the POST's
+//     `queued_notifications`, only when > 0) and the modal carries the prototype's
+//     second sentence (`handover-message-note`).
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000'
 const DB_PATH = process.env.DB_PATH || ''
 const TIMEOUT = 20_000
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
+
+// WA-T8 — an INDEPENDENT copy of the toast's message half (1 správa zaradená /
+// 2-4 správy zaradené / 5+ správ zaradených).
+function queuedHalf(n) {
+  if (n === 1) return ' · 1 správa zaradená na odoslanie (WhatsApp)'
+  if (n >= 2 && n <= 4) return ` · ${n} správy zaradené na odoslanie (WhatsApp)`
+  return ` · ${n} správ zaradených na odoslanie (WhatsApp)`
+}
+const handoverAnswer = (page) => page.waitForResponse((res) =>
+  res.request().method() === 'POST' && /\/distribution\/hand-over$/.test(res.url()))
 
 let ctx = null
 let adminToken = ''
@@ -387,8 +401,10 @@ test.describe('DP-T7 · 16 §UC-DP-012 — the group hand-over', () => {
     await expect(banner).toContainText('Hostia v balíku hostiteľa sa označia spolu s ním.')
     await expect(banner).toContainText('Peniaze sa nemenia — účtovanie prebehlo pri zabalení.')
 
-    // ⚠ The WhatsApp sentence is module 21's (resolved conflict 3) — not here.
-    await expect(dialog).not.toContainText(/WhatsApp|správ/i)
+    // ~~⚠ The WhatsApp sentence is module 21's (resolved conflict 3) — not here.~~
+    // → WA-T8 renders it: a pickup point's group quotes the `pickup` template's name.
+    await expect(page.getByTestId('handover-message-note')).toHaveText(
+      'Pre každý balíček sa pripraví WhatsApp správa („Doručené na odberné miesto“). Odošlete ju jedným tlačidlom v záložke Správy.')
 
     // Two actions, and only two.
     await expect(page.getByTestId('handover-confirm')).toHaveText('Áno, odovzdané')
@@ -534,8 +550,10 @@ test.describe('DP-T7 · 16 §UC-DP-012 — the group hand-over', () => {
     await page.getByTestId(`handover-group-${groupKey}`).click()
     const posted = page.waitForRequest((req) =>
       req.method() === 'POST' && /\/distribution\/hand-over$/.test(req.url()))
+    const answered = handoverAnswer(page)
     await page.getByTestId('handover-confirm').click()
     const sent = (await posted).postDataJSON()
+    const queued = (await (await answered).json()).queued_notifications
 
     // ⚠⚠ THE DECISION, ON THE WIRE. Party identifiers: one `order_id` per friend
     // party, and NOT the nested guest — DP-T4's asymmetry means an explicitly
@@ -547,12 +565,13 @@ test.describe('DP-T7 · 16 §UC-DP-012 — the group hand-over', () => {
     // C is to_pack and was never offered, so it is never sent.
     expect(sent.order_ids).not.toContain(fx.cOrder.id)
 
-    // The toast — `bagsLabel` + `handedAdjective`, and NOTHING about messages
-    // (`queued_notifications` is read and dropped; module 21 renders it).
+    // The toast — `bagsLabel` + `handedAdjective`, ~~and NOTHING about messages
+    // (`queued_notifications` is read and dropped; module 21 renders it)~~ → WA-T8: plus
+    // the message half from the POST's own `queued_notifications`.
     const toast = page.getByTestId('handover-toast')
     await expect(toast).toBeVisible()
-    await expect(toast).toHaveText('2 balíčky odovzdané')
-    await expect(toast).not.toContainText(/správ|WhatsApp/i)
+    expect(queued, 'non-vacuity: the fixture friends have phones ⇒ messages were queued').toBeGreaterThan(0)
+    await expect(toast).toHaveText(`2 balíčky odovzdané${queuedHalf(queued)}`)
     const shownAt = Date.now()
 
     // ── inside the held window: the PATCH, on its own ─────────────────────────
@@ -617,6 +636,7 @@ test.describe('DP-T7 · 16 §UC-DP-012 — the group hand-over', () => {
     await button.click()
 
     const confirm = page.getByTestId('handover-confirm')
+    const answered = handoverAnswer(page)
     await confirm.click()
     // The dialog stays up while the batch is in flight, and the confirm is
     // disabled — the first line of defence.
@@ -627,7 +647,9 @@ test.describe('DP-T7 · 16 §UC-DP-012 — the group hand-over', () => {
     await confirm.dispatchEvent('click')
     await confirm.dispatchEvent('click')
 
-    await expect(page.getByTestId('handover-toast')).toHaveText('2 balíčky odovzdané')
+    // ~~'2 balíčky odovzdané'~~ → WA-T8: + the message half (the POST's own count).
+    const queued = (await (await answered).json()).queued_notifications
+    await expect(page.getByTestId('handover-toast')).toHaveText(`2 balíčky odovzdané${queuedHalf(queued)}`)
     expect(posts, 'one click, one batch').toHaveLength(1)
 
     // ⚠ THE SYNTHETIC HOST's IDENTIFIERS: their bag IS their sub-orders (there is

@@ -121,6 +121,7 @@ import { STANDING_GUEST_LINK, PROFILE_AUTO_OPEN } from '@/lib/features'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
 import NeoModal from '@/components/neo/NeoModal.vue'
 import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
+import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 import NeoDrawer from '@/components/neo/NeoDrawer.vue'
 
 const router = useRouter()
@@ -276,6 +277,12 @@ const profileEmailOriginal = ref('')
 // Seeded per OPEN like every other original, so it carries no state across
 // friends (the session-boundary rule).
 const profilePacketaOriginal = ref('')
+// 21 §UC-WA-003 (WA-T1) — the WhatsApp consent checkbox in the MODULE 21 SLOT. Same
+// per-OPEN seeding + delta rule as the contact fields: it rides the PATCH only when the
+// friend actually flipped it, so a save from a modal opened BEFORE the profile GET
+// landed (the box then renders unticked) can never withdraw a consent nobody touched.
+const profileWhatsapp = ref(false)
+const profileWhatsappOriginal = ref(false)
 const profileSaving = ref(false)
 const profileError = ref('')
 
@@ -2053,6 +2060,11 @@ function openProfileModal() {
   profilePhoneOriginal.value = profilePhone.value
   profileEmailOriginal.value = profileEmail.value
   profilePacketaOriginal.value = profilePacketaAddress.value
+  // WA-T1: the column is an INTEGER 0/1 (`SELECT *` on the profile GET); a merged
+  // PATCH answer carries the same. Anything else — including „not hydrated yet" —
+  // reads as unticked, and the delta rule above keeps that guess off the wire.
+  profileWhatsapp.value = props.friend?.whatsapp_opt_in === 1 || props.friend?.whatsapp_opt_in === true
+  profileWhatsappOriginal.value = profileWhatsapp.value
   // §UC-GA-007: the CONFIRM is per-open UI state — an unlink the friend backed out of
   // (or closed the modal on) must not be half-armed when they come back. The link
   // state itself is NOT reset here: it belongs to the session, not to the modal.
@@ -2061,6 +2073,14 @@ function openProfileModal() {
   // Fire-and-forget: the GIS script load must not delay the modal, and its own failure
   // path is silent by design.
   mountGoogleProfileButton()
+}
+
+// WA-T1 — the TEXT half of the opt-in row (the box toggles itself). `NeoCheckbox`
+// guards its own clicks while disabled; this is the same guard for the label text,
+// because a dispatched click reaches a handler whatever the visuals say.
+function toggleProfileWhatsapp() {
+  if (profileSaving.value) return
+  profileWhatsapp.value = !profileWhatsapp.value
 }
 
 async function saveProfile() {
@@ -2096,6 +2116,10 @@ async function saveProfile() {
     }
     if (profileEmail.value.trim() !== profileEmailOriginal.value.trim()) {
       payload.email = profileEmail.value.trim() || null
+    }
+    // WA-T1: a strict boolean on the wire (the route 400s anything but true/false/0/1).
+    if (profileWhatsapp.value !== profileWhatsappOriginal.value) {
+      payload.whatsapp_opt_in = profileWhatsapp.value
     }
     const updated = await api.updateFriendProfile(props.friendId, payload)
     // The parent owns `currentFriend`, the login-list row and the stored display
@@ -3264,6 +3288,29 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
          strings, not this module's. PI-T10 renders NOTHING for it on purpose: an empty
          marker is what keeps the field ORDER above stable when the checkbox lands.
          Do not move this comment when adding fields. -->
+    <!-- ⚠ LANDED BY WA-T1 (21 §UC-WA-003). The two strings are module 21's, verbatim
+         (label + the ONE GDPR privacy sentence, R5.5) — vy-form, reproduce, never
+         improve. The row is the remember-me pattern from `FriendPortal.vue`: a
+         `<label>` does not forward clicks to a `span[role=checkbox]`, so the box, the
+         text and the gap each toggle exactly once (box → NeoCheckbox, text → the span,
+         gap → `@click.self`). Not an overlay, so the profile-modal term walk is
+         untouched; the help line is a `.field-help`, so the modal's help SEQUENCE pin
+         grows by one, between Mobil and E-mail. -->
+    <div data-testid="profile-whatsapp-row">
+      <label
+        style="display:flex;align-items:center;gap:10px;font-size:14px;line-height:normal;cursor:pointer"
+        @click.self="toggleProfileWhatsapp()"
+      >
+        <NeoCheckbox
+          v-model="profileWhatsapp"
+          :disabled="profileSaving"
+          aria-label="Chcem dostávať správy o objednávke cez WhatsApp"
+          data-testid="profile-whatsapp"
+        />
+        <span @click="toggleProfileWhatsapp()">Chcem dostávať správy o objednávke cez WhatsApp</span>
+      </label>
+      <div class="field-help" data-testid="profile-whatsapp-help">Vaše číslo používame len na správy o vašej objednávke a jej odovzdaní. Súhlas môžete kedykoľvek zrušiť tu v profile.</div>
+    </div>
 
     <div>
       <!-- ⚠ „E-mail", with the hyphen (§UC-PI-015 row 4). It used to be „Email"; the

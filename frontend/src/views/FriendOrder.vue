@@ -37,6 +37,7 @@ import CatScrollArrow from '@/components/CatScrollArrow.vue'
 // label/text off it; it types neither.
 import { roasterFor } from '@/lib/roasters'
 import PaymentModal from '@/components/PaymentModal.vue'
+import DryOrderCard from '@/components/DryOrderCard.vue'
 // 15 §UC-PL-004/D6 — THE PAYLOAD AND THE LINK HAVE ONE HOME, shared with
 // `PaymentModal.vue`. This screen has TWO payment surfaces for the same order (the
 // success modal below and the cart bar's „Zaplatiť“), and they were two hand-written
@@ -291,6 +292,29 @@ const paymentCreditorName = ref('')
 const showPaymentModal = ref(false)
 const successQrDataUrl = ref(null)
 const hasPaymentSettings = computed(() => !!(paymentIban.value || paymentRevolutUsername.value))
+
+// „Som na suchu!" (PO 2026-10-09) — the friend's urgent-delivery wish, offered in the
+// „Hotovo!" modal. The SERVER's `orders.urgent_at` is the state (so a re-opened modal
+// after „Aktualizovať" shows what is stored); a click PATCHes and adopts the answer.
+// No optimistic flip: a refused request must not leave a card that says „beriem na
+// vedomie" over a wish that was never recorded.
+const isUrgent = computed(() => !!order.value?.urgent_at)
+const urgentPending = ref(false)
+const urgentError = ref('')
+
+async function setUrgent(urgent) {
+  if (urgentPending.value || !order.value) return
+  urgentPending.value = true
+  urgentError.value = ''
+  try {
+    const result = await api.setOrderUrgent(activeCycleId.value, friend.value.id, urgent)
+    order.value = { ...order.value, urgent_at: result.order?.urgent_at ?? null }
+  } catch (e) {
+    urgentError.value = e.message || 'Nepodarilo sa uložiť. Skúste to znova.'
+  } finally {
+    urgentPending.value = false
+  }
+}
 
 // 15 §UC-PL-003 item 3 — THE SERVER'S variable symbol, quoted from the last
 // GET/PUT/submit response and never derived here. The scheme (a friend order's VS IS
@@ -1278,6 +1302,7 @@ async function doSubmitOrder() {
     applyOrderPayment(result)
     // Store snapshot of submitted cart for change detection
     lastSubmittedCart.value = { ...cart.value }
+    urgentError.value = ''
     showSuccessModal.value = true
     generateSuccessQr()
   } catch (e) {
@@ -2475,6 +2500,19 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
             >({{ cartTotal.toFixed(2) }} EUR + {{ order.delivery_fee.toFixed(2) }} EUR doručenie)</span>
           </span>
         </div>
+      </template>
+
+      <!-- „Som na suchu!" (PO 2026-10-09) — right under the sum, as in the design's
+           `DryCard`; OUTSIDE the payment gate, because the wish has nothing to do with
+           whether payment settings exist. -->
+      <DryOrderCard
+        :on="isUrgent"
+        :pending="urgentPending"
+        :error="urgentError"
+        @change="setUrgent"
+      />
+
+      <template v-if="hasPaymentSettings">
 
         <!-- Prototype `RevolutBtn` on the shipped link behaviour: an <a>, because it
              navigates off-site, wearing `.btn.block`. `fill:currentColor` + the

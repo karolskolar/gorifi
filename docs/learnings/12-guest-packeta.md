@@ -371,7 +371,7 @@ measured a corrupted tree (M11 was then added because that accident proved it re
 
 - GP-T4: mount `GuestDeliveryChoice` in edit mode (seed from `order.packeta_address`), import
   `EMAIL_SHAPE` from `lib/email-shape.js`, build the ALWAYS-sent delivery block yourself.
-- WA-T1: the D6 sentence „Na toto číslo vám pošleme správu…" goes into this checkout modal.
+- WA-T1: the D6 sentence „Na toto číslo ~~vám~~ ti pošleme správu…" (TY-form, PO 2026-10-22) goes into this checkout modal.
 
 ---
 

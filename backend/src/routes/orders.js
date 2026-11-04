@@ -9,7 +9,7 @@ import { cycleSubOrdersByHost, loadSubOrder } from '../helpers/guest-orders.js';
 import {
   readHandedOverFlag, partyDelivery, inheritingGuests, orderStage, guestOrderStage,
 } from '../helpers/handover.js';
-import { enqueueForHandOver, cancelForUnHandOver } from '../helpers/outbox.js';
+import { enqueueForHandOver, cancelForUnHandOver, queuedCount } from '../helpers/outbox.js';
 import { markCycleReady } from '../helpers/cycle-stage.js';
 import { friendOrderVariableSymbol, guestOrderVariableSymbol } from '../helpers/payment.js';
 import { bindValue } from '../helpers/bind-value.js';
@@ -488,6 +488,57 @@ router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
   });
 });
 
+// „Som na suchu!" (PO 2026-10-09) — the friend flags THEIR submitted order as urgent
+// (they are running out of coffee) from the „Hotovo!" modal, or takes the flag back.
+//
+// The same auth pair as the submit (password/Bearer + SEC-A3 ownership): a friend
+// flags only their own order. `urgent` is a STRICT boolean — `{}`, `true`, `[1]`,
+// `'abc'`, `{urgent: 1}` all 400 (CLAUDE.md: unbindable shapes never reach a write).
+// ⚠ A WISH, NOT MONEY AND NOT A STAGE: it writes `orders.urgent_at` and nothing else —
+// no `transactions` row, no `status`, no `order_cycles` write. Re-flagging keeps the
+// FIRST timestamp (`COALESCE`), un-flagging clears it.
+// Open AND locked rounds accept it (the admin is still packing a locked one); a
+// completed round is history (409). Only a SUBMITTED order can be urgent — a draft is
+// not an order yet (409).
+router.patch('/cycle/:cycleId/friend/:friendId/urgent', (req, res) => {
+  const { cycleId, friendId } = req.params;
+
+  const validation = validateCyclePassword(req, cycleId);
+  if (validation.error) {
+    return res.status(validation.status).json({ error: validation.error });
+  }
+  const ownership = enforceOrderOwnership(req, friendId);
+  if (ownership.error) {
+    return res.status(ownership.status).json({ error: ownership.error });
+  }
+
+  const body = req.body;
+  const urgent = body && typeof body === 'object' && !Array.isArray(body) ? body.urgent : undefined;
+  if (typeof urgent !== 'boolean') {
+    return res.status(400).json({ error: 'Neplatná hodnota' });
+  }
+
+  const cycle = validation.cycle;
+  if (cycle.status !== 'open' && cycle.status !== 'locked') {
+    return res.status(409).json({ error: 'Táto objednávka je už ukončená', reason: 'cycle_closed' });
+  }
+
+  const order = db.prepare('SELECT id, status FROM orders WHERE friend_id = ? AND cycle_id = ?')
+    .get(friendId, cycleId);
+  if (!order || order.status !== 'submitted') {
+    return res.status(409).json({ error: 'Objednávka ešte nebola odoslaná', reason: 'not_submitted' });
+  }
+
+  db.prepare(`
+    UPDATE orders
+    SET urgent_at = CASE WHEN ? = 1 THEN COALESCE(urgent_at, CURRENT_TIMESTAMP) ELSE NULL END
+    WHERE id = ?
+  `).run(urgent ? 1 : 0, order.id);
+
+  const updated = db.prepare('SELECT * FROM orders WHERE id = ?').get(order.id);
+  res.json({ order: updated });
+});
+
 // Admin: Mark order as paid/unpaid (creates payment transaction)
 router.patch('/:id/paid', requireAdmin, (req, res) => {
   const { paid } = req.body;
@@ -743,25 +794,11 @@ router.patch('/:id/handed-over', requireAdmin, (req, res) => {
     if (!current) return { conflict: 'gone' };
 
     // The party's delivery, resolved through `helpers/pickup.js` (which row stores
-    // the pickup) + `helpers/delivery.js` (what it is). It decides the friend's
-    // template key AND which guest bags travel inside this one.
+    // the pickup) + `helpers/delivery.js` (what it is). It decides which guest bags
+    // travel inside this one. (~~and the friend's template key~~ → WA-T4: the outbox
+    // derives the template and the group from the stamped rows themselves.)
     const delivery = partyDelivery(order.cycle_id, order.friend_id);
     const guests = inheritingGuests(order.friend_id, order.cycle_id, delivery);
-
-    const friendBag = {
-      kind: 'friend',
-      cycleId: order.cycle_id,
-      orderId: order.id,
-      friendId: order.friend_id,
-      delivery,
-    };
-    const guestBags = guests.map((guest) => ({
-      kind: 'guest',
-      cycleId: order.cycle_id,
-      guestOrderId: guest.id,
-      hostFriendId: order.friend_id,
-      delivery: guest.delivery,
-    }));
 
     if (!handedOver) {
       // ⚠ Literal columns, one statement each — the request body is never spread
@@ -783,10 +820,14 @@ router.patch('/:id/handed-over', requireAdmin, (req, res) => {
         const clear = db.prepare('UPDATE guest_orders SET handed_over_at = NULL WHERE id = ?');
         for (const guest of guests) clear.run(guest.id);
       }
+      // WA-T4 (21 §UC-WA-006): ids, after the UPDATEs above, inside this transaction.
       return {
         guestIds: reverted ? guests.map((guest) => guest.id) : [],
         queued: 0,
-        dequeued: cancelForUnHandOver(reverted ? [friendBag, ...guestBags] : [friendBag]),
+        dequeued: cancelForUnHandOver({
+          orderIds: [order.id],
+          guestOrderIds: reverted ? guests.map((guest) => guest.id) : [],
+        }).deleted,
         cycleStage: null,
       };
     }
@@ -813,10 +854,9 @@ router.patch('/:id/handed-over', requireAdmin, (req, res) => {
     const stampGuest = db.prepare(
       'UPDATE guest_orders SET handed_over_at = ? WHERE id = ? AND handed_over_at IS NULL'
     );
-    const stampedBags = [];
-    if (orderStamped) stampedBags.push(friendBag);
-    for (let i = 0; i < guests.length; i += 1) {
-      if (stampGuest.run(stamp, guests[i].id).changes > 0) stampedBags.push(guestBags[i]);
+    const stampedGuestIds = [];
+    for (const guest of guests) {
+      if (stampGuest.run(stamp, guest.id).changes > 0) stampedGuestIds.push(guest.id);
     }
 
     // ⚠ ENQUEUE ONLY FOR THE BAGS THIS CALL ACTUALLY STAMPED — not for every bag
@@ -828,15 +868,28 @@ router.patch('/:id/handed-over', requireAdmin, (req, res) => {
     // changed no state at all. A no-op hand-over is not an event, so it queues
     // nothing. The case that matters is preserved by construction: a guest whose
     // sub-order arrived AFTER the host was handed over is stamped by this call, so
-    // it IS in `stampedBags` and does get its message.
+    // it IS in `stampedGuestIds` and does get its message.
     //
     // ⚠ RECORDED, not a defect: `segment_key` freezes at enqueue time. Correcting a
     // party's pickup point after the hand-over leaves the queued row pointing at the
     // old target, and a delivery-type change plus a genuine re-hand-over can leave
-    // two rows under different templates. Only module 21's GROUPING is affected — it
-    // renders every body from the live row at release time — so this is 21's call to
-    // refine (WA-T5), not a reason to rewrite history here.
-    const queued = enqueueForHandOver(stampedBags);
+    // two rows under different templates. ~~Only module 21's GROUPING is affected — it
+    // renders every body from the live row at release time~~ → WA-T4: the BODY is
+    // rendered at enqueue too (21 §UC-WA-006), so a correction after the hand-over
+    // leaves both the group and the text stale until WA-T5's rerender — 21's call to
+    // refine, not a reason to rewrite history here.
+    // WA-T4: module 21's seam (§UC-WA-006) — ids of what THIS call stamped; recipients,
+    // template, key and body are resolved inside `helpers/outbox.js` from the rows just
+    // stamped. `queued_notifications` = the rows minted in status `queued` (WhatsApp +
+    // e-mail), so a hand → un-hand pair balances against `dequeued_notifications`; a
+    // `skipped`/`no_phone` to-do is not a queued message.
+    const enqueued = enqueueForHandOver({
+      cycleId: order.cycle_id,
+      orderIds: orderStamped ? [order.id] : [],
+      guestOrderIds: stampedGuestIds,
+      handedOverAt: stamp,
+    });
+    const queued = queuedCount(enqueued);
 
     // §UC-DP-009 — the module-17 seam, called INSIDE the transaction, once per
     // request. LIVE since CS-T1: the first hand-over on a LOCKED cycle promotes it
@@ -852,7 +905,7 @@ router.patch('/:id/handed-over', requireAdmin, (req, res) => {
     return { guestIds: guests.map((guest) => guest.id), queued, dequeued: 0, cycleStage };
   });
 
-  const applied = apply();
+  const applied = apply.immediate(); // WA-T9: BEGIN IMMEDIATE — the outbox shares the WAL file with gorifi-wa
   if (applied.conflict === 'gone') {
     return res.status(404).json({ error: 'Objednávka neexistuje' });
   }

@@ -68,11 +68,17 @@ const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
 // The 01-architecture §Roadmap column list, in order. The CREATE is required to be
 // this list VERBATIM — module 21 grows it with ALTERs of its own.
-const NOTIFICATION_COLUMNS = [
+// ⚠ SUPERSEDED BY WA-T1 (module 21, 2026-10-22), exactly as the line above promised:
+// DP-T1's sixteen are kept VERBATIM AND IN ORDER, and module 21 APPENDS `sent_via` and
+// `email` (by ALTER on a deployed table, in the CREATE on a fresh one — same order
+// both ways). `whatsapp-schema.spec.js` §1 owns the full module-21 shape.
+const DP_T1_NOTIFICATION_COLUMNS = [
   'id', 'channel', 'template_key', 'segment_key', 'recipient_kind', 'recipient_id',
   'phone_e164', 'body', 'status', 'cycle_id', 'order_id', 'guest_order_id',
   'created_at', 'released_at', 'sent_at', 'error',
 ]
+// ~~+ `sent_via`, `email`~~ → WA-T5 appends `unresolved` (learnings 15 §WA-T5).
+const NOTIFICATION_COLUMNS = [...DP_T1_NOTIFICATION_COLUMNS, 'sent_via', 'email', 'unresolved']
 
 // ─── child-process plumbing ──────────────────────────────────────────────────
 
@@ -221,7 +227,11 @@ test.describe('DP-T1 · 16 §UC-DP-002 schema', () => {
     }
   })
 
-  test('the notifications CREATE carries the three CHECK lists and no index', async () => {
+  // ⚠ RETARGETED BY WA-T1 (21 §UC-WA-001): ~~„and no index"~~ — module 21 adds the
+  // three indexes DP-T1 left to it, and widens `recipient_kind` by `'admin'`. The
+  // properties THIS row protected survive and are still pinned: the three CHECK lists
+  // (the recipient list now as module 21's superset), `body` / `phone_e164` nullable.
+  test('the notifications CREATE carries the three CHECK lists (indexes: module 21\'s)', async () => {
     const dbPath = tmpDbPath('notif')
     try {
       await bootSchema(dbPath)
@@ -229,7 +239,8 @@ test.describe('DP-T1 · 16 §UC-DP-002 schema', () => {
       expect(shape.notificationColumns).toEqual(NOTIFICATION_COLUMNS)
       const sql = shape.notificationsSql.replace(/\s+/g, ' ')
       expect(sql, 'channel CHECK').toContain("channel IN ('whatsapp','email')")
-      expect(sql, 'recipient_kind CHECK').toContain("recipient_kind IN ('friend','guest','waitlist')")
+      // ~~`('friend','guest','waitlist')`~~ — WA-T1 appends 'admin' (the test message).
+      expect(sql, 'recipient_kind CHECK').toContain("recipient_kind IN ('friend','guest','waitlist','admin')")
       expect(sql, 'status CHECK').toContain("status IN ('queued','released','sent','failed','skipped')")
       // `body` / `phone_e164` are NULLABLE — UC-DP-008 writes them as NULL.
       const db = new DatabaseSync(dbPath)
@@ -256,7 +267,10 @@ test.describe('DP-T1 · 16 §UC-DP-002 schema', () => {
         db.close()
       }
       // §UC-DP-002: "No index is required by this module; module 21 may add one."
-      expect(shape.notificationIndexes, 'no index ships with DP-T1').toEqual([])
+      // ~~`toEqual([])`~~ — module 21 did (WA-T1): exactly its three, nothing of 16's.
+      expect(shape.notificationIndexes.sort(), 'only module 21\'s indexes').toEqual(
+        ['idx_notifications_group', 'idx_notifications_queued_once', 'idx_notifications_status']
+      )
     } finally {
       removeDb(dbPath)
     }
@@ -628,7 +642,10 @@ test.describe('DP-T1 · handed_over_at is published, notifications stays empty',
 
     // host friend with a login (the share link is a host-authenticated route)
     const name = `DPT1 Host ${uniq}`
-    const created = await admin('post', '/api/friends', { name })
+    // WA-T4: a PHONE, so the host's hand-over row is a `queued` WhatsApp message (21
+    // §UC-WA-006 rule 3) — without one it is a `skipped`/`no_phone` to-do, which the
+    // reversal (queued only) never deletes, and the counts below are about queued rows.
+    const created = await admin('post', '/api/friends', { name, phone: '0903 456 789' })
     expect(created.status(), 'friend create').toBe(201)
     const friend = await created.json()
     const username = `dpt1_${uniq}`.slice(0, 30)
@@ -797,14 +814,16 @@ test.describe('DP-T1 · handed_over_at is published, notifications stays empty',
     expect(rows.length, 'one per (recipient, bag) — and not one more').toBe(3)
 
     for (const row of rows) {
-      // ⚠ The fixed columns of §UC-DP-008. `body` and `phone_e164` are NULL ON
+      // ⚠ The fixed columns of §UC-DP-008. ~~`body` and `phone_e164` are NULL ON
       // PURPOSE: module 21 renders the text and resolves the number at RELEASE
-      // time, because the template is editable in its composer first — rendering
-      // here would freeze stale wording into rows.
+      // time …~~ → WA-T4 (21 §UC-WA-001/006): the body is RENDERED and the number
+      // SNAPSHOT at enqueue — the admin reviews the text in the composer, and WA-T5's
+      // rerender is the door for a template edited afterwards. (Column-level detail
+      // of the new rows: whatsapp-handover-enqueue.spec.js.)
       expect(row.channel).toBe('whatsapp')
       expect(row.status, 'no `released` transition exists in module 16').toBe('queued')
-      expect(row.body, 'facts, not text').toBe(null)
-      expect(row.phone_e164, 'resolved by module 21 at release').toBe(null)
+      expect(typeof row.body === 'string' && row.body.length > 0, 'a rendered body').toBe(true)
+      expect(row.phone_e164, 'the recipient\'s E.164 snapshot').toMatch(/^\+421\d{9}$/)
       expect(row.released_at).toBe(null)
       expect(row.sent_at).toBe(null)
       expect(row.error).toBe(null)
@@ -815,7 +834,8 @@ test.describe('DP-T1 · handed_over_at is published, notifications stays empty',
     expect(friendRows.length, 'one for the friend whose bag it is').toBe(1)
     expect(friendRows[0]).toMatchObject({
       template_key: 'pickup',
-      segment_key: `loc${fixture.location.id}`,
+      // ~~`loc${fixture.location.id}`~~ → WA-T4: 21's grammar, dated (Bratislava day).
+      segment_key: expect.stringMatching(new RegExp(`^handed_over:pickup:${fixture.location.id}:\\d{4}-\\d{2}-\\d{2}$`)),
       recipient_id: fixture.friend.id,
       order_id: fixture.order.id,
       guest_order_id: null,
@@ -828,8 +848,9 @@ test.describe('DP-T1 · handed_over_at is published, notifications stays empty',
     )
     for (const row of guestRows) {
       expect(row.template_key, 'a guest travelling with their host hears about the HOST').toBe('host')
+      // ~~`host:${fixture.friend.id}`~~ → WA-T4: `host_guests:<host>:<date>` (21 grammar).
       expect(row.segment_key, 'grouped by host, not by where the host collects')
-        .toBe(`host:${fixture.friend.id}`)
+        .toMatch(new RegExp(`^host_guests:${fixture.friend.id}:\\d{4}-\\d{2}-\\d{2}$`))
       expect(row.recipient_id, 'a guest recipient IS the sub-order').toBe(row.guest_order_id)
       expect(row.order_id).toBe(null)
     }

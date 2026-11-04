@@ -8,6 +8,7 @@
 // The browser half below simulates the Safari wipe by clearing localStorage.
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 import { expectLanding, expectNoLanding, logout } from '../helpers/portal.js'
 
 const TIMEOUT = 20_000
@@ -15,8 +16,13 @@ const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 let seq = 0
 let ctx
 let adminToken = ''
-const adminReq = (path, opts = {}) => ctx[opts.method || 'get'](path, {
-  headers: { 'X-Admin-Token': adminToken }, ...(opts.data ? { data: opts.data } : {}), timeout: TIMEOUT,
+// FUP-T27 / WA-T12: the ONE admin request path (`helpers/admin.js makeAdmin`) — re-authenticates once on a 401
+// and publishes the fresh token back into `adminToken` (was a private `adminReq` copy, §5 of admin-token-retry).
+const adminReq = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+  timeout: TIMEOUT,
 })
 
 test.beforeAll(async () => {

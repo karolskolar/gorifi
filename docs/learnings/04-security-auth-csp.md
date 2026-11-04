@@ -396,7 +396,8 @@ screen — hence the optional `username`.
 username = ? WHERE id = ?` and never touches `password_hash`, so an admin can hand a
 password-less friend a username. It is the ONLY counterexample — every `UPDATE friends
 SET` and `INSERT INTO friends` in `backend/src` was walked to confirm it, and the admin
-PATCH's allow-list is name/display_name/active/phone/email only. The code was always
+PATCH's allow-list is name/display_name/active/phone/email only (WA-T1 later added whatsapp_opt_in + the
+derived phone_e164 — still no username). The code was always
 right (the branch is `if (username == null)`) and `first-password.spec.js` builds
 exactly that row through `giveUsername()`, i.e. through that admin route — **the test
 was already proving the sentence wrong.** ⚠ Why it mattered enough to chase into six

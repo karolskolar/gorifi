@@ -13,9 +13,8 @@ import {
   softCancelGuestOrder,
 } from '../helpers/guest-orders.js';
 import { guestOrderVariableSymbol } from '../helpers/payment.js';
-import { deliveryOf } from '../helpers/delivery.js';
-import { readHandedOverFlag, partyDelivery, guestOrderStage } from '../helpers/handover.js';
-import { enqueueForHandOver, cancelForUnHandOver } from '../helpers/outbox.js';
+import { readHandedOverFlag, guestOrderStage } from '../helpers/handover.js';
+import { enqueueForHandOver, cancelForUnHandOver, queuedCount } from '../helpers/outbox.js';
 import { markCycleReady } from '../helpers/cycle-stage.js';
 import { applyGuestDelivery } from '../helpers/pickup.js';
 import { hostOwnOrder } from '../helpers/packing.js';
@@ -229,7 +228,7 @@ router.delete('/:id', (req, res) => {
     return { changed: softCancelGuestOrder(row.id) };
   });
 
-  const applied = apply();
+  const applied = apply.immediate(); // WA-T9: soft cancel ⇒ cancelForUnHandOver (outbox write)
   if (applied.conflict === 'gone') {
     return res.status(404).json({ error: 'Objednávka kolegu nebola nájdená' });
   }
@@ -376,16 +375,19 @@ router.patch('/:id/handed-over', requireAdmin, (req, res) => {
   // `cancelled` is terminal (GSO-T4) — the same shape and reason the host's
   // `delivered` tick answers, because it is the same impossibility: there is no bag.
   //
-  // ⚠ UNOWNED SEAM, RECORDED (DP-T3 review, 2026-09-20 — see the DP-T4 and WA-T5
+  // ~~⚠ UNOWNED SEAM, RECORDED (DP-T3 review, 2026-09-20 — see the DP-T4 and WA-T5
   // rows of PROGRESS.md). A sub-order cancelled AFTER it was handed over is
   // unreachable in BOTH directions: this 409 refuses the reversal, and the host's
   // reversal skips cancelled bags by predicate — while `softCancelGuestOrder()`
-  // clears neither `handed_over_at` nor the queued notification. The bag stays
-  // stamped and a „odovzdané priateľovi" message stays queued for something nobody
-  // will receive. Both predicates are literally what §UC-DP-004/005 specify, so the
-  // fix does not belong here: the cheapest one is at the ADMIN cancel below (reverse
-  // the hand-over for that bag, or refuse with 409 when it is already handed over),
-  // with a release-time guard in WA-T5 as the alternative.
+  // clears neither `handed_over_at` nor the queued notification. …the cheapest fix is
+  // at the ADMIN cancel below… with a release-time guard in WA-T5 as the alternative.~~
+  // → CLOSED BY WA-T5 (learnings 15 §WA-T5), at BOTH candidate homes and not at the
+  // admin cancel alone (all three cancel doors are reachable after a hand-over):
+  // `softCancelGuestOrder()` now deletes the sub-order's QUEUED hand-over rows (its
+  // `handed_over_at` stays — module 14/16 policy: a cancel records that it was called
+  // off, it does not rewrite what happened), and the outbox RELEASE moves any row
+  // about a cancelled sub-order to `skipped`/`cancelled`. This 409 stays: there is
+  // still no bag to hand over.
   if (guestOrderStatus(row) === 'cancelled') {
     return res.status(409).json({
       error: 'Táto objednávka bola zrušená, nie je čo odovzdať.',
@@ -406,22 +408,15 @@ router.patch('/:id/handed-over', requireAdmin, (req, res) => {
   }
 
   const apply = db.transaction(() => {
-    // The guest's own delivery, classified with the HOST's — the DP-T1 call-site
-    // contract (§UC-DP-003). Without it a guest would be classified as a standalone
-    // bag and enqueued against the wrong segment.
-    const hostDelivery = partyDelivery(row.cycle_id, row.host_friend_id);
-    const delivery = deliveryOf(current, { host: hostDelivery });
-    const bag = {
-      kind: 'guest',
-      cycleId: row.cycle_id,
-      guestOrderId: row.id,
-      hostFriendId: row.host_friend_id,
-      delivery,
-    };
+    // ~~The guest's own delivery, classified with the HOST's … enqueued against the
+    // wrong segment.~~ → WA-T4: the outbox takes IDS (21 §UC-WA-006) and classifies the
+    // stamped row itself through `helpers/segments.js` — `delivery.js` decides
+    // `packeta` (own address) vs `via_host` before any host inheritance, so the host's
+    // delivery is not needed for the template or the group (`host_guests:<host>:<date>`).
 
     if (!handedOver) {
       db.prepare('UPDATE guest_orders SET handed_over_at = NULL WHERE id = ?').run(row.id);
-      return { queued: 0, dequeued: cancelForUnHandOver([bag]), cycleStage: null };
+      return { queued: 0, dequeued: cancelForUnHandOver({ guestOrderIds: [row.id] }).deleted, cycleStage: null };
     }
 
     // Re-read inside the transaction, so "was it already handed over?" is answered
@@ -458,7 +453,9 @@ router.patch('/:id/handed-over', requireAdmin, (req, res) => {
       // holds only until module 21 moves one to `released`/`sent` (WA-T5). After
       // that, a repeat `handed_over: true` on an already-handed bag would mint a
       // second „odovzdané priateľovi" message for a request that changed nothing.
-      queued: stamped ? enqueueForHandOver([bag]) : 0,
+      // WA-T4: `queued` = rows minted in status `queued` (WhatsApp + e-mail), the friend
+      // route's meaning; a `skipped`/`no_phone` to-do is not a queued message.
+      queued: stamped ? queuedCount(enqueueForHandOver({ cycleId: row.cycle_id, guestOrderIds: [row.id] })) : 0,
       dequeued: 0,
       // §UC-DP-009, inside the transaction, once per request. LIVE since CS-T1: a
       // Packeta guest is their own bag and counts as a first bag, so this promotes a
@@ -468,7 +465,7 @@ router.patch('/:id/handed-over', requireAdmin, (req, res) => {
     };
   });
 
-  const applied = apply();
+  const applied = apply.immediate(); // WA-T9: BEGIN IMMEDIATE — the outbox shares the WAL file with gorifi-wa
   if (applied.conflict === 'gone') {
     return res.status(404).json({ error: 'Objednávka kolegu nebola nájdená' });
   }
@@ -582,7 +579,7 @@ router.post('/:id/cancel', requireAdmin, (req, res) => {
     return { changed: softCancelGuestOrder(row.id) };
   });
 
-  const applied = apply();
+  const applied = apply.immediate(); // WA-T9: soft cancel ⇒ cancelForUnHandOver (outbox write)
   if (applied.conflict === 'gone') {
     return res.status(404).json({ error: 'Objednávka kolegu nebola nájdená' });
   }

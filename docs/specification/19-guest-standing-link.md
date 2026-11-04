@@ -652,15 +652,20 @@ nothing else. This module never writes a cycle column.
 - **Segment `waitlist`** (`helpers/segments.js`, module 21's home — the SQL is stated here for the seam):
   `SELECT w.id, w.host_friend_id, w.name, w.phone_e164, f.name AS host_name, f.guest_link_token FROM
   guest_waitlist w JOIN friends f ON f.id = w.host_friend_id WHERE w.notified_at IS NULL AND
-  w.whatsapp_opt_in = 1 AND w.phone_e164 IS NOT NULL AND f.active = 1`. Rows with `phone_e164 IS NULL` or
+  w.whatsapp_opt_in = 1 AND ~~w.phone_e164 IS NOT NULL AND~~ f.active = 1`. ~~Rows with `phone_e164 IS NULL` or
   `whatsapp_opt_in = 0` are listed by the composer as „bez platného čísla“ / „bez súhlasu“ (R5.4/R5.5) —
-  never sent.
+  never sent.~~ **→ WA-T3, 21 §UC-WA-005/007 (learnings 15 §WA-T3): a `phone_e164 IS NULL` row is RETURNED
+  (counted as `no_phone`) so the enqueue makes it its `skipped/no_phone` row; a `whatsapp_opt_in = 0` row is
+  counted in `excluded_opt_out` and never composed.**
 - **Recipient kind** `waitlist`, `recipient_id = guest_waitlist.id` in the outbox (01-architecture's
   `notifications` shape already names it).
 - **Template key `waitlist`**: **„{host} vám otvoril objednávku kávy: {odkaz}“** (R9.3; the participle
-  refers to the host, a third party). `{odkaz}` = `` `${PUBLIC_BASE_URL}${standingUrlPath(
+  refers to the host, a third party). ~~`{odkaz}` = `` `${PUBLIC_BASE_URL}${standingUrlPath(
   ensureStandingToken(host_friend_id))}` `` — the STANDING link, minted lazily if the host never opened
-  the dialog (UC-GL-001 helper), never a per-cycle token.
+  the dialog (UC-GL-001 helper), never a per-cycle token.~~ **→ WA-T3, 21 §UC-WA-005/007 (learnings 15
+  §WA-T3): `{odkaz}` = `<base>` + `standingUrlPath(guest_link_token AS STORED)` — a segment read never mints;
+  an un-minted host yields an empty `{odkaz}`, the body keeps the literal and release refuses it until the
+  link is created. Still the STANDING link, never a per-cycle token.**
 - **`notified_at`** is written by 21 when a row's message reaches `sent`; 19 resets it to NULL on
   re-signup (UC-GL-004 rule 4). Nothing in 19 sends.
 - **Trigger moment:** the segment is meaningful when a cycle turns `open`; 21 decides whether opening

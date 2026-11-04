@@ -227,6 +227,10 @@ function getStatusText(status) {
           <Button variant="ghost" @click="router.push('/admin/invitations')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
             Pozvánky
           </Button>
+          <!-- 21 §UC-WA-009 (WA-T8): the composer is linked from the dashboard. -->
+          <Button variant="ghost" data-testid="admin-whatsapp-composer-link" @click="router.push('/admin/whatsapp')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
+            Správy
+          </Button>
           <Button variant="ghost" @click="router.push('/admin/settings')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
             Nastavenia
           </Button>
@@ -251,6 +255,7 @@ function getStatusText(status) {
         <button @click="router.push('/admin/vouchers'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Vouchery</button>
         <button @click="router.push('/admin/friend-groups'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Skupiny</button>
         <button @click="router.push('/admin/invitations'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Pozvánky</button>
+        <button @click="router.push('/admin/whatsapp'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Správy</button>
         <button @click="router.push('/admin/settings'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Nastavenia</button>
         <button @click="logout(); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Odhlásiť sa</button>
       </div>

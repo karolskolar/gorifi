@@ -21,7 +21,7 @@
 > the `gorifi-wa` process — a SEPARATE PM2 app with its own `package.json` running
 > **whatsapp-web.js** (`LocalAuth` on disk, headless Chromium), polling `released` rows
 > with pacing (random 3–10 s gap, ≤ 30 per rolling hour), stopping on an auth error,
-> writing ONLY `status/sent_at/error`, exposing `GET :3010/health` which the API proxies to
+> writing ONLY ~~`status/sent_at/error`~~ `status/sent_at/sent_via/error` (D12, §UC-WA-011 step 6), exposing `GET :3010/health` which the API proxies to
 > the settings page (`a-wa-settings`: state, number, QR pairing, pacing, opt-in count, test
 > message), with a `WA_SENDER=stub` mode for the e2e suite; (h) deploy changes (ecosystem
 > entries, `deploy.sh wa` component, `.env` keys, server sizing 8 GB / 4 vCPU / +2 GB disk /
@@ -147,6 +147,7 @@ All via the `try/catch ALTER` pattern; new tables via `CREATE TABLE IF NOT EXIST
 | `released_at` | DATETIME NULL | set by the release endpoint |
 | `sent_at` | DATETIME NULL | set by the sender / the manual tick / the mailer callback |
 | `error` | TEXT NULL | fixed vocabulary + bounded detail (≤ 300 chars), never a token |
+| `unresolved` | TEXT NULL | **WA-T5 addition** — the release gate's stored answer: JSON array of the literal placeholder tokens left in `body` (`'[]'` = resolved; NULL = never computed ⇒ release refuses). Written at every render from template + vars (learnings 15 §WA-T5) |
 
 Indexes: `idx_notifications_status (status)`; `idx_notifications_group (cycle_id,
 segment_key)`; **partial unique** `idx_notifications_queued_once ON notifications
@@ -281,8 +282,9 @@ performs exactly two writes inside its transaction.
   WHERE active = 1` → „41 z 43 priateľov“ (UC-WA-012).
 - Guests (`guest_orders`) have NO opt-in column — Decision D6: a guest is messaged only
   about their OWN sub-order (`host`/`packeta` templates) — operational, legitimate
-  interest; the guest checkout gains the sentence **„Na toto číslo vám pošleme správu,
-  keď bude objednávka pripravená.“** under the phone field (module 06/20 surface — one
+  interest; the guest checkout gains the sentence ~~**„Na toto číslo vám pošleme správu,
+  keď bude objednávka pripravená.“**~~ → **„Na toto číslo ti pošleme správu, keď bude
+  objednávka pripravená.“** (PO 2026-10-22: TY-form, the guest surface's register) under the phone field (module 06/20 surface — one
   string, seam noted for the orchestrator). Waitlist rows carry their own explicit
   `whatsapp_opt_in` from module 19's checkbox („Súhlasím so správou cez WhatsApp“).
 
@@ -331,7 +333,7 @@ place the prototype's dative („Legovi“) is dropped.
 | `{meno}` | recipient's first name: first whitespace-token of `friends.name` / `guest_name` / `guest_waitlist.name`, trimmed |
 | `{objednávka}` | `order_cycles.name` of the row's cycle (replaces R5.3's `{kolo}`) |
 | `{miesto}` | pickup: `pickup_locations.name` + (`address` ? ` (address)` : ``); packeta: the party's `packeta_address`; else unresolved |
-| `{suma}` | the party's amount to pay: friend `orders.total + orders.delivery_fee`, guest `guest_orders.total + delivery_fee` (module 20), formatted `31,10 €`; when the party is `paid = 1` ⇒ literal `už uhradené` (Decision D4) |
+| `{suma}` | ~~the party's amount to pay: friend `orders.total + orders.delivery_fee`, guest `guest_orders.total + delivery_fee` (module 20), formatted `31,10 €`; when the party is `paid = 1` ⇒ literal `už uhradené` (Decision D4)~~ **→ PO 2026-09-19 (last section): friend = the LEDGER balance owed, guest = `total + delivery_fee` while unpaid, formatted `31,10 €`; when nothing is owed the renderer DROPS the whole `{suma}` sentence (`helpers/template-render.js NOTHING_OWED`, WA-T2)** |
 | `{odkaz}` | friend: `resolveLoginUrl()` root (production `https://podpultovka.biz`); guest: `${base}/g/o/${order_token}`; waitlist: the host's standing link `${base}/g/${guest_link_token}` (module 19) |
 | `{host}` | the host friend's first name |
 | `{datum}` | `order_cycles.closes_at` formatted `v piatok 12. 9.` (Slovak weekday + day. month.) — unresolved when NULL (module 17) |
@@ -357,12 +359,15 @@ place the prototype's dative („Legovi“) is dropped.
 - Body text is stored per ROW at enqueue (`notifications.body`); editing a template
   afterwards changes only future rows. The composer's textarea edits the TEMPLATE (as in
   the prototype) and offers „Prepísať texty vo fronte (n)“ which re-renders the group's
-  `queued` rows (never `released`/`sent` ones) — `POST /api/notifications/rerender`
+  `queued` rows (never `released`/`sent` ones; **→ WA-T8: also `failed` ones, status kept —
+  learnings 15 §WA-T8**) — `POST /api/notifications/rerender`
   `{ cycle_id, segment_key }`.
 
 **Acceptance criteria:** the seed matches the table byte-for-byte; `PUT` with
 `{ body: 'Ahoj {menoo}' }` ⇒ 400 `unknown_placeholder: {menoo}`; `renderTemplate` on
-the `pickup` seed with a paid friend yields `Suma na úhradu: už uhradené.`; with
+the `pickup` seed with ~~a paid friend yields `Suma na úhradu: už uhradené.`~~ **nothing
+owed drops the `Suma na úhradu: {suma}.` sentence (PO 2026-09-19 + orchestrator
+clarification; pinned on all three enabled seeds by `whatsapp-templates.spec.js`, WA-T2)**; with
 `closes_at = NULL` the `closing` body keeps the literal `{datum}`; a disabled `closing`
 makes `POST /compose` for `not_ordered:<cycle>` answer 409.
 
@@ -502,12 +507,12 @@ page get „{host} vám otvoril objednávku kávy…“ with the host's standing
 
 **Business rules:**
 
-- **No automatic enqueue on cycle open.** Opening a cycle (module 17/admin) does NOT
+- ~~**No automatic enqueue on cycle open.** Opening a cycle (module 17/admin) does NOT
   insert rows (resolved conflict 7 — no timer, no implicit action). The composer shows the
   computed segment `waitlist:<cycle_id>` with its count whenever a cycle is `open`; the
   admin presses „Pripraviť správy (n)“ (compose, UC-WA-008) → rows `queued` → reviews →
   „Poslať skupine (n)“. `OPEN:` PO may prefer auto-compose (not auto-release) on open so
-  the group is pre-built; default: manual compose.
+  the group is pre-built; default: manual compose.~~ **→ PO 2026-09-19 (last section) + WA-T5: the cycle's transition into `open` (the admin PATCH, and a cycle CREATED `open`) AUTO-COMPOSES `waitlist:<cycle_id>` through the same code path as `POST /compose` — silent while the `waitlist` template is disabled or nobody waits, NEVER auto-released (learnings 15 §WA-T5).**
 - The template `waitlist` is seeded `enabled = 0` (three-to-start decision); enabling it
   is one toggle on the settings page. While disabled, the segment is visible but greyed.
 - **`{odkaz}`** = the host's standing link (`friends.guest_link_token`, module 19). A host
@@ -544,10 +549,10 @@ released` transition happens. New router `backend/src/routes/notifications.js`, 
 | `GET /api/notifications?cycle_id=&segment_key=` | — | the rows of one group: `{ id, recipient_kind, recipient_id, name, phone, phone_e164, channel, status, sent_via, body, error, released_at, sent_at }` — ⚠ never `order_token` in the payload beyond what is already inside `body` for guest rows (the body is the message; it is shown only to the admin) |
 | `POST /api/notifications/compose` | `{ cycle_id, segment_key }` | builds the computed segment and inserts rows per UC-WA-006's per-recipient rules; 404 unknown cycle/segment; **409 `template_disabled`**; 409 `cycle_not_open` for `not_ordered`/`waitlist` when the cycle is not `open`; idempotent via the partial index (already-queued recipients counted, not duplicated); returns the counts |
 | `POST /api/notifications/release` | `{ cycle_id, segment_key }` | **the one transition to `released`** — see Rules |
-| `POST /api/notifications/retry` | `{ cycle_id, segment_key }` | `failed → released` for the group (`released_at` refreshed, `error` kept until overwritten); 200 `{ released: n }`, 0 is fine |
-| `POST /api/notifications/rerender` | `{ cycle_id, segment_key }` | re-renders `queued` rows' `body` from the current template (UC-WA-004) |
-| `PATCH /api/notifications/:id/body` | `{ body }` | edits ONE `queued` row's body (≤ 1000 chars, string only); **409 `not_queued`** otherwise |
-| `PATCH /api/notifications/:id/manual-sent` | `{ sent: true }` | the wa.me tick: `queued` or `released` ⇒ `sent`, `sent_at = now`, `sent_via = 'wa_me'`. On a `released` row it is allowed ONLY while the WA health is not `connected` (UC-WA-012 proxy, 2 s timeout, unreachable counts as not connected) — **409 `bot_active`** otherwise (a duplicate-send guard); `skipped`/`failed`/`sent` ⇒ 409 `not_pending` |
+| `POST /api/notifications/retry` | `{ cycle_id, segment_key }` | `failed → released` for the group (`released_at` refreshed, `error` kept until overwritten); 200 `{ released: n }`, 0 is fine — **→ WA-T8 review: the release's all-or-nothing gate too (409 `unresolved_placeholders` `{ ids }`, nothing written), since the rerender now rewrites failed rows** |
+| `POST /api/notifications/rerender` | `{ cycle_id, segment_key }` | re-renders `queued` rows' `body` from the current template (UC-WA-004) — **→ WA-T8: and `failed` rows, status KEPT (fresh `body`/`phone_e164`/`email`/`channel`), the repair door before `retry` for a row that failed on a bad contact (learnings 15 §WA-T8)** |
+| `PATCH /api/notifications/:id/body` | `{ body }` | edits ONE `queued` row's body (≤ 1000 chars, string only); **409 `not_queued`** otherwise — **→ WA-T8 review: also ONE `failed` row, status kept (the only way to fill a hand-filled `{tracking}` the repair re-render left in it)** |
+| `PATCH /api/notifications/:id/manual-sent` | `{ sent: true }` | the wa.me tick: `queued` or `released` ⇒ `sent`, `sent_at = now`, `sent_via = 'wa_me'`. On a `released` row it is allowed ONLY while the WA health is not `connected` (UC-WA-012 proxy, 2 s timeout, unreachable counts as not connected) — **409 `bot_active`** otherwise (a duplicate-send guard) — **except a `channel = 'email'` row, which the WA process never drains, so the guard does not apply to it (WA-T6 review, learnings 15 §WA-T6)**; `skipped`/`failed`/`sent` ⇒ 409 `not_pending` |
 | `DELETE /api/notifications/:id` | — | removes a `queued` or `skipped` row (the admin decides not to message someone); 409 `not_queued` for `released`/`sent`/`failed` |
 | `GET /api/notifications/templates`, `PUT /api/notifications/templates/:key` | UC-WA-004 | |
 
@@ -556,7 +561,7 @@ released` transition happens. New router `backend/src/routes/notifications.js`, 
 - Selects `status = 'queued'` rows of `(cycle_id, segment_key)` (for `all_active`,
   `cycle_id IS NULL`). **None ⇒ 200 `{ released: 0 }`** — idempotent, a double-click is
   harmless (the „one Poslať per group“ of Q5.d).
-- **All-or-nothing:** if ANY selected row's body still matches `/\{[^{}\s]{1,40}\}/`
+- **All-or-nothing:** ~~if ANY selected row's body still matches `/\{[^{}\s]{1,40}\}/`~~ **→ WA-T5: if ANY selected row is not releasable — a NULL/blank `body`, or `notifications.unresolved` NULL or non-empty (the answer stored at render time from template + vars; the regex is used only for an admin-edited body and the boot back-fill, learnings 15 §WA-T5)**
   ⇒ **409 `unresolved_placeholders`** with `{ ids: [...] }` and nothing is released — the
   composer highlights those rows („Doplňte {datum}“). This is what makes a literal
   `{tracking}`/`{datum}` unsendable.
@@ -602,16 +607,20 @@ buttons, they deep-link here with `?cycle=&segment=`).
   `state ≠ connected` or `whatsapp_paused = 1`: „Bot je odpojený — správy zostanú vo fronte.
   Môžete ich poslať ručne v záložke wa.me.“
 - **Komu (left card):** one row per group from `GET /segments` — name + count badge
-  (`queued + released + failed`), status chips (`n odoslané`, `n chyby`, `n bez čísla`);
+  (`queued + released + failed`), status chips (`n odoslané`, `n chyby`, ~~`n bez čísla`~~
+  **`n preskočené`** — → WA-T8 review, learnings 15 §WA-T8: `skipped` also counts cancelled /
+  not-waiting rows);
   then the computed segments with „Pripraviť správy (n)“ (disabled + hint when
   `template_enabled = false`, or when `n = 0`). Help text: „Skupiny vznikajú samy: z
   odovzdania balíčkov (Distribúcia), z otvorenej objednávky a z čakajúcich hostí.“
 - **Šablóna (middle card):** „Šablóna · {name}“, the placeholder chips of the vocabulary
   (click inserts at the caret), a textarea bound to the TEMPLATE body (saves via `PUT
   /templates/:key` on blur with the 400 `unknown_placeholder` rendered inline), and the
-  „Prepísať texty vo fronte (n)“ button (`/rerender`) shown when the group has queued rows.
+  „Prepísať texty vo fronte (n)“ button (`/rerender`) shown when the group has queued rows
+  (**→ WA-T8: or failed ones; n = queued + failed**).
 - **Náhľad (right card):** „Náhľad · n príjemcov“; per recipient: name, phone (mono),
-  the rendered body (editable inline for `queued` rows → `PATCH /:id/body`), a status
+  the rendered body (editable inline for `queued` rows ~~→~~ **and `failed` ones (→ WA-T8
+  review, learnings 15 §WA-T8)** → `PATCH /:id/body`), a status
   badge — `Vo fronte` (queued), `Uvoľnené` (released), `Odoslané` (sent; `wa.me` /
   `e-mail` suffix per `sent_via`/`channel`), `Chyba` (failed, tooltip = `error`),
   `Bez platného čísla` (skipped/no_phone — these rows render greyed at the bottom); a
@@ -740,7 +749,7 @@ writes it). Puppeteer args `--no-sandbox --disable-dev-shm-usage`. The client em
 `{ state, sender, number, qr (data:image/png;base64 — ONLY while state = 'qr'; the
 `qrcode` package renders it; refreshed on every `qr` event ≈ 20 s), queue: { released,
 sent_today, failed }, hourly_sent, next_send_at, last_sent_at, last_error, db_path,
-uptime_s, version }`. Anything else ⇒ 404. No `POST` routes in v1 (Decision D7).
+uptime_s, version }` **→ WA-T9: plus `pace: { min_ms, max_ms }` and `hourly_max` (WA-T7's Tempo card, learnings 15 §WA-T9)**. Anything else ⇒ 404. No `POST` routes in v1 (Decision D7).
 
 **Log lines (`[wa]` prefix, PII-free — ids, never bodies or numbers beyond the bot's
 own):** `[wa] boot sender=whatsapp db=/var/www/gorifi/backend/src/db/database.sqlite
@@ -960,7 +969,7 @@ procedure is the acceptance for whatsapp-web.js itself.
   `waitlist` seeded off; `custom` on but empty.
 - **D3** A sixth template key `custom` („Vlastná správa“) exists so the `all_active`
   segment (R5.2 „newsletter / new features“) has a body to send.
-- **D4** `{suma}` = the party's own `total + delivery_fee`; `už uhradené` when paid.
+- **D4** ~~`{suma}` = the party's own `total + delivery_fee`; `už uhradené` when paid.~~ **→ superseded by the PO 2026-09-19 section below (ledger balance for friends; the `{suma}` sentence is dropped when nothing is owed).**
   `OPEN:` PO may prefer the friend's outstanding LEDGER balance instead — one
   substitution in `segments.js`.
 - **D5** Opted-out friends get an e-mail row for the three operational templates when
@@ -1043,3 +1052,34 @@ procedure is the acceptance for whatsapp-web.js itself.
 - **Waitlist on round open** = auto-COMPOSE the `waitlist:<cycle>` group (never auto-release).
 - **Tasks for the PO (not decisions):** buy/activate the bot number before UC-WA-013's production step; write the bot's WhatsApp profile text („Na správy odpovedá Karol na čísle …“).
 - **Orchestrator clarification 2026-09-19 (`{suma}` when nothing is owed):** a literal placeholder blocks release (D10), so „omitted“ means the renderer DROPS the whole sentence containing `{suma}` (from the preceding sentence boundary to the next `.`) when the friend's ledger balance is ≥ 0 or the guest sub-order is paid. D4's `už uhradené` substitution is retired in favour of this rule; the seed bodies keep `Suma na úhradu: {suma}.` as their own sentence so the drop is clean.
+
+## Module status at the closeout (WA-T12, 2026-10-24)
+
+> Recorded by the module-21 closeout row. Full write-up, the §UC-WA-014 obligation → test
+> map and the ONE list of PO-pending items: `docs/learnings/15-whatsapp-notifications.md`
+> §WA-T12.
+
+- **Shipped (WA-T1..T9):** UC-WA-001..012 except the whatsapp-web.js branch of UC-WA-011 —
+  schema + E.164 + opt-in, templates, segments, the hand-over enqueue, the outbox write API,
+  the e-mail fallback, the settings page, the composer, and the `gorifi-wa` process with the
+  STUB sender (the default `whatsapp` sender is a marked shell that reports `disconnected`).
+  §UC-WA-014 items 1–5 are each mapped to a passing test; item 1 is now also walked FROM
+  SOURCE (`api-security.spec.js`, WA-T12), so a route added later without its row reds. ⚠ Item 5's
+  „every module 02–20 spec untouched" did NOT hold literally: `distribution-foundation`,
+  `distribution-board`, `distribution-group-handover`, `first-password`, `google-auth`,
+  `guest-packeta`, `guest-waitlist` and `portal-profile-modal` carry sanctioned, strike-noted
+  retargets (WA-T1/T3/T4/T5/T8 — list in learnings 15 §WA-T12); `guest-payment-modal`,
+  `self-hosted-fonts` and the CSP copies are untouched.
+- **Open manual acceptance (UC-WA-013) — WA-T10 and WA-T11 stay `[!]`:** the real
+  whatsapp-web.js sender (QR pairing, `LocalAuth`, reconnect/backoff, `not_on_whatsapp`)
+  and the deploy (PM2 `gorifi-wa{,-staging}`, `deploy.sh … wa`, both `.env`s, the LXC
+  checklist). Blocked on the PO's bot number + profile text and the operator's server
+  resize — item 6 above: the suite never exercises the real sender.
+- **Phase 2 — recorded, NOT built (do not build silently):** the `in_person` hand-over
+  template; an „Odpojiť“ / logout control (D7); per-location opening `hours` in the pickup
+  message; a guest opt-in flag on `guest_orders` (D6); the WhatsApp Business Cloud API (or
+  any second sender behind the interface).
+- **The friend-surface PARKED flags** (`lib/features.js STANDING_GUEST_LINK` /
+  `GUEST_WAITLIST`, PO 2026-09-29 „until module 21's WhatsApp ships“) are untouched by this
+  module: un-parking them is a PO decision, now answerable but not taken.
+

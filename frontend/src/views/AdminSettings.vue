@@ -410,6 +410,12 @@ async function savePaymentSettings() {
           </Button>
           <h1 class="text-xl font-bold">Nastavenia</h1>
         </div>
+        <!-- 21 §UC-WA-012 (WA-T7): the WhatsApp bot settings page. -->
+        <router-link
+          to="/admin/whatsapp/settings"
+          data-testid="admin-whatsapp-link"
+          class="text-sm font-medium text-primary-foreground/80 hover:text-primary-foreground underline-offset-4 hover:underline"
+        >WhatsApp bot →</router-link>
       </div>
     </header>
 

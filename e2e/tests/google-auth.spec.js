@@ -3908,9 +3908,11 @@ test.describe('§UC-GA-009 — approving a Google-attached invitation', () => {
       // to drop. Everything that is not identity (id, uid, tokens, timestamps, the
       // invite code, the bcrypt salt) is excluded by name; every other column —
       // including ones this file never mentions — must match.
+      // ⚠ WA-T1: `phone_e164` joins `phone` — it is that column's DERIVED twin
+      // (`toE164(phone)`, 21 §UC-WA-002), so it differs exactly when `phone` does.
       const volatile = new Set([
         'id', 'uid', 'access_token', 'invite_code', 'password_hash', 'created_at', 'updated_at',
-        'name', 'phone', 'email', 'username',
+        'name', 'phone', 'phone_e164', 'email', 'username',
       ])
       const shape = (row) => Object.fromEntries(Object.entries(row).filter(([k]) => !volatile.has(k)))
       expect(shape(rowB), 'the flag changed nothing on a link-less invitation').toEqual(shape(rowA))

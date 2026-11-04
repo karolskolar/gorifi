@@ -1,5 +1,8 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { DatabaseSync } from 'node:sqlite'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 // FUP-T19: the one destructive logout case runs on a THROWAWAY backend, so the gate's
 // single app-wide admin token can never be left deleted for the next spec file.
@@ -214,6 +217,31 @@ const ADMIN_ENDPOINTS = [
   { method: 'post', path: '/api/pickup-locations', data: { name: 'evil' } },
   { method: 'patch', path: '/api/pickup-locations/1', data: { name: 'evil' } },
   { method: 'delete', path: '/api/pickup-locations/1' },
+  // 21 §UC-WA-004 (WA-T2): the WhatsApp templates. `/api/notifications` is a WHOLLY
+  // admin mount (`requireAdmin` on the mount in index.js); later module-21 rows add
+  // their routes to the same router and each one joins this list.
+  { method: 'get', path: '/api/notifications/templates' },
+  { method: 'put', path: '/api/notifications/templates/pickup', data: { body: 'evil', enabled: false } },
+  // 21 §UC-WA-008 (WA-T3): the two READ routes — the segments overview (+ preview) and
+  // the rows of one group. Same wholly-admin mount.
+  { method: 'get', path: '/api/notifications/segments?cycle_id=1' },
+  { method: 'get', path: '/api/notifications/segments?cycle_id=1&segment_key=all_active' },
+  { method: 'get', path: '/api/notifications?cycle_id=1&segment_key=all_active' },
+  // 21 §UC-WA-008 (WA-T5): the outbox WRITE routes — same wholly-admin mount. A friend
+  // Bearer is 401 on each too (whatsapp-outbox.spec.js §2).
+  { method: 'post', path: '/api/notifications/compose', data: { cycle_id: 1, segment_key: 'not_ordered:1' } },
+  { method: 'post', path: '/api/notifications/release', data: { cycle_id: 1, segment_key: 'not_ordered:1' } },
+  { method: 'post', path: '/api/notifications/retry', data: { cycle_id: 1, segment_key: 'not_ordered:1' } },
+  { method: 'post', path: '/api/notifications/rerender', data: { cycle_id: 1, segment_key: 'not_ordered:1' } },
+  { method: 'patch', path: '/api/notifications/1/body', data: { body: 'x' } },
+  { method: 'patch', path: '/api/notifications/1/manual-sent', data: { sent: true } },
+  { method: 'delete', path: '/api/notifications/1' },
+  // 21 §UC-WA-012 (WA-T7): the settings page's two routes, on the `/api/admin` router
+  // (per-route `requireAdmin` — that mount is MIXED: login/setup/payment-settings are
+  // public). The `gorifi-wa` process's own `:3010/health` is loopback-only and is NOT an
+  // app route, so it never joins this list (§UC-WA-014 item 1).
+  { method: 'get', path: '/api/admin/whatsapp/health' },
+  { method: 'post', path: '/api/admin/whatsapp/test' },
 ]
 
 const PUBLIC_ENDPOINTS = [
@@ -253,6 +281,76 @@ test.describe('API security — admin authorization', () => {
   test('a wrong admin token is rejected (401)', async ({ request }) => {
     const res = await request.get('/api/friends', { headers: { 'X-Admin-Token': 'not-a-real-token' } })
     expect(res.status()).toBe(401)
+  })
+})
+
+// WA-T12 (21 §UC-WA-014 item 1 — „grep the routers, don't trust the list"). The rows
+// above are a HAND-KEPT list; this walks module 21's two route sources and requires
+// EVERY declared `/api/notifications/*` and `/api/admin/whatsapp/*` route to have a row
+// with its method whose path the route pattern matches — so a module-21 route added
+// later without its 401 row reds here instead of shipping unswept. It also pins the
+// guard itself: `/api/notifications` is mounted WHOLLY behind `requireAdmin`, and each
+// `/whatsapp/*` route on the MIXED `/api/admin` router carries its own `requireAdmin`.
+// Source-only (no request): the repo is always beside the suite, whatever BASE_URL is.
+test.describe('API security — module 21 routes are all in ADMIN_ENDPOINTS (WA-T12)', () => {
+  const ROUTES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'backend', 'src')
+  const VERB = '(get|post|put|patch|delete)'
+
+  test('every declared /api/notifications/* and /api/admin/whatsapp/* route has an anonymous-401 row', () => {
+    const notifications = readFileSync(join(ROUTES, 'routes', 'notifications.js'), 'utf8')
+    const adminRoutes = readFileSync(join(ROUTES, 'routes', 'admin.js'), 'utf8')
+    const index = readFileSync(join(ROUTES, 'index.js'), 'utf8')
+
+    expect(index, '/api/notifications is a WHOLLY admin mount')
+      .toMatch(/^app\.use\('\/api\/notifications', requireAdmin, notificationsRouter\)/m)
+
+    const declared = []
+    for (const m of notifications.matchAll(new RegExp(`^router\\.${VERB}\\('([^']+)'`, 'gm'))) {
+      declared.push({ method: m[1], path: `/api/notifications${m[2] === '/' ? '' : m[2]}`, guarded: true })
+    }
+    for (const m of adminRoutes.matchAll(new RegExp(`^router\\.${VERB}\\('(/whatsapp/[^']*)'(, requireAdmin)?`, 'gm'))) {
+      declared.push({ method: m[1], path: `/api/admin${m[2]}`, guarded: Boolean(m[3]) })
+    }
+
+    // Non-vacuity: the 11 notifications routes (WA-T2 templates ×2, WA-T3 reads ×2,
+    // WA-T5 writes ×7) + WA-T7's two settings-page routes, as shipped by WA-T9.
+    expect(declared.length, 'the walk found module 21 routes').toBeGreaterThanOrEqual(13)
+    expect(declared.filter((r) => r.path.startsWith('/api/admin/')).length, 'and the /whatsapp/* half').toBeGreaterThanOrEqual(2)
+
+    const toRegex = (pattern) => new RegExp(
+      `^${pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/:\w+/g, '[^/?]+')}(\\?.*)?$`)
+    // ⚠ EXPRESS MATCHING ORDER (review): a row proves the 401 of the route Express would
+    // DISPATCH it to — the FIRST declared route, same method, declaration order, whose
+    // pattern matches — never of every route its path happens to fit. Otherwise a later
+    // `GET /:id` would count as „covered" by the `/templates` row, which never reaches it.
+    const uncovered = (routes, rows) => {
+      const covered = new Set()
+      for (const ep of rows) {
+        const hit = routes.findIndex((r) => r.method === ep.method && toRegex(r.path).test(ep.path))
+        if (hit >= 0) covered.add(hit)
+      }
+      return routes.filter((_, i) => !covered.has(i)).map((r) => `${r.method.toUpperCase()} ${r.path}`)
+    }
+    expect(uncovered(declared, ADMIN_ENDPOINTS), 'every module 21 route needs its ADMIN_ENDPOINTS row').toEqual([])
+    expect(declared.filter((r) => !r.guarded).map((r) => r.path), 'each /whatsapp/* route carries requireAdmin').toEqual([])
+
+    // The matcher is not vacuous, in both directions:
+    // (a) a route nobody listed is reported;
+    expect(uncovered([{ method: 'post', path: '/api/notifications/:id/resend' }], ADMIN_ENDPOINTS))
+      .toEqual(['POST /api/notifications/:id/resend'])
+    // (b) a hypothetical `GET /:id` declared AFTER `/templates` is NOT covered by the
+    //     `/templates` row (Express dispatches that path to `/templates`), while the
+    //     same pair matched any-route-wise would have passed;
+    const synthetic = [
+      { method: 'get', path: '/api/notifications/templates' },
+      { method: 'get', path: '/api/notifications/:id' },
+    ]
+    const templatesOnly = [{ method: 'get', path: '/api/notifications/templates' }]
+    expect(synthetic.every((r) => templatesOnly.some((ep) => toRegex(r.path).test(ep.path))),
+      'non-vacuity: the naive any-route match WOULD call both covered').toBe(true)
+    expect(uncovered(synthetic, templatesOnly)).toEqual(['GET /api/notifications/:id'])
+    // (c) and a row of its own covers it.
+    expect(uncovered(synthetic, [...templatesOnly, { method: 'get', path: '/api/notifications/1' }])).toEqual([])
   })
 })
 

@@ -16,7 +16,8 @@ import {
   partyDelivery,
   inheritingGuests,
 } from '../helpers/handover.js';
-import { enqueueForHandOver } from '../helpers/outbox.js';
+import { composeWaitlistOnOpen, enqueueForHandOver, queuedCount } from '../helpers/outbox.js';
+import { resolveLoginUrl } from '../helpers/credentials-message.js';
 import { markCycleReady, CYCLE_STAGES, LOCKED_STAGE_DEFAULT } from '../helpers/cycle-stage.js';
 import { purgeWaitlistAfterTwoCompletions } from '../helpers/guest-waitlist.js';
 
@@ -379,6 +380,11 @@ router.post('/', requireAdmin, (req, res) => {
 
   const result = db.prepare('INSERT INTO order_cycles (name, status, total_friends, expected_date, type, plan_note, opens_at, closes_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(name, cycleStatus, totalFriends, expected_date || null, cycleType, plan_note || null, opens_at || null, closes_at || null);
   const cycleId = result.lastInsertRowid;
+  // WA-T5: a round CREATED `open` is a round opening too — the same silent waitlist
+  // auto-compose as the PATCH's transition into `open` (PO 2026-09-19; learnings 15
+  // §WA-T5 — the backlog row named the PATCH only, and a direct-open creation would
+  // otherwise skip the waitlist). No-op while the `waitlist` template is disabled.
+  if (cycleStatus === 'open') composeWaitlistOnOpen(Number(cycleId), { baseUrl: resolveLoginUrl(req) });
 
   // For bakery cycles, snapshot selected bakery products into the products table
   if (cycleType === 'bakery' && Array.isArray(bakery_product_ids) && bakery_product_ids.length > 0) {
@@ -638,12 +644,20 @@ router.patch('/:id', requireAdmin, (req, res) => {
   // offered two openings and ordered in neither. Once per transition, never on a
   // `completed → completed` re-save, and in the SAME transaction as the status write.
   const completing = status === 'completed' && cycle.status !== 'completed';
+  // 21 §UC-WA-007 + PO 2026-09-19 („Waitlist on round open = auto-COMPOSE, never
+  // auto-release"): the TRANSITION into `open` pre-builds the `waitlist:<id>` group, in
+  // the SAME transaction, through the SAME code path as `POST /api/notifications/compose`.
+  // Silent: a disabled `waitlist` template (its seed state) or nobody waiting is a
+  // no-op, and a failure is logged inside its own savepoint, never rolling back this
+  // status write. Never on an `open → open` re-save.
+  const opening = status === 'open' && cycle.status !== 'open';
 
   if (updates.length > 0) {
     values.push(req.params.id);
     db.transaction(() => {
       db.prepare(`UPDATE order_cycles SET ${updates.join(', ')} WHERE id = ?`).run(...values);
       if (completing) purgeWaitlistAfterTwoCompletions();
+      if (opening) composeWaitlistOnOpen(cycle.id, { baseUrl: resolveLoginUrl(req) });
     })();
   }
 
@@ -797,6 +811,8 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
            o.handed_over_at,
            o.pickup_location_id, o.pickup_location_note, pl.name as pickup_location_name,
            o.delivery_fee, o.packeta_address,
+           -- „Som na suchu!" (PO 2026-10-09): the friend's urgent-delivery wish, read-only here.
+           o.urgent_at,
            COALESCE((SELECT SUM(amount) FROM transactions WHERE friend_id = f.id), 0) as balance
     FROM orders o
     JOIN friends f ON f.id = o.friend_id
@@ -919,6 +935,8 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
       ...readPickup(req.params.id, hostFriendId),
       delivery_fee: 0,
       packeta_address: null,
+      // No own order ⇒ nothing the friend could have flagged „Som na suchu!".
+      urgent_at: null,
       balance: balance ? balance.balance : 0,
       items: [],
       guest_orders: subOrders
@@ -1319,7 +1337,9 @@ router.post('/:id/distribution/hand-over', requireAdmin, (req, res) => {
          AND EXISTS (SELECT 1 FROM guest_order_items WHERE guest_order_id = ?)
     `);
 
-    const stampedBags = [];
+    // WA-T4: the outbox takes IDS (21 §UC-WA-006) — the bags THIS call stamped.
+    const stampedOrderIds = [];
+    const stampedGuestIds = [];
     const inheritedGuestIds = new Set();
     let handedOver = 0;
     let alreadyHanded = 0;
@@ -1377,11 +1397,7 @@ router.post('/:id/distribution/hand-over', requireAdmin, (req, res) => {
       // gate on inheritance, exactly as per bag — the colleague's bag travels inside
       // the host's, so it left when the host's did.
       const delivery = partyDelivery(cycleId, row.friend_id);
-      if (!row.handed_over_at) {
-        stampedBags.push({
-          kind: 'friend', cycleId, orderId: id, friendId: row.friend_id, delivery,
-        });
-      }
+      if (!row.handed_over_at) stampedOrderIds.push(id);
 
       for (const guest of inheritingGuests(row.friend_id, cycleId, delivery)) {
         // An already-handed guest keeps its own first record — the predicate says so
@@ -1390,10 +1406,7 @@ router.post('/:id/distribution/hand-over', requireAdmin, (req, res) => {
         if (stampInheritedGuest.run(bagStamp, guest.id).changes === 0) continue;
         guestsInherited += 1;
         inheritedGuestIds.add(guest.id);
-        stampedBags.push({
-          kind: 'guest', cycleId, guestOrderId: guest.id,
-          hostFriendId: row.friend_id, delivery: guest.delivery,
-        });
+        stampedGuestIds.push(guest.id);
       }
     }
 
@@ -1419,19 +1432,19 @@ router.post('/:id/distribution/hand-over', requireAdmin, (req, res) => {
       handedOver += 1;
       usedBatchStamp = true;
 
-      // A guest bag is classified WITH ITS HOST's delivery (the DP-T1 call-site
-      // contract): the row itself carries no pickup, and a host with no own order
-      // keeps theirs on the link.
-      const hostDelivery = partyDelivery(cycleId, row.host_friend_id);
-      stampedBags.push({
-        kind: 'guest', cycleId, guestOrderId: id, hostFriendId: row.host_friend_id,
-        delivery: deliveryOf(loadSubOrder(id), { host: hostDelivery }),
-      });
+      // ~~A guest bag is classified WITH ITS HOST's delivery (the DP-T1 call-site
+      // contract) …~~ → WA-T4: the outbox takes the id and classifies the stamped row
+      // itself (`helpers/segments.js`); `packeta` vs `via_host` needs no host delivery.
+      stampedGuestIds.push(id);
     }
 
     // ⚠ ONLY THE BAGS THIS CALL ACTUALLY STAMPED (the DP-T3 rule). A skipped
     // already-handed bag is not an event and mints nothing.
-    const queued = enqueueForHandOver(stampedBags);
+    // `queued_notifications` = rows minted in status `queued` (WhatsApp + e-mail) — the
+    // per-bag routes' meaning (`helpers/outbox.js queuedCount()`).
+    const queued = queuedCount(enqueueForHandOver({
+      cycleId, orderIds: stampedOrderIds, guestOrderIds: stampedGuestIds, handedOverAt: stamp,
+    }));
 
     // §UC-DP-009 — the module-17 seam, inside the transaction, once per request
     // (never once per row). LIVE since CS-T1: a batch hand-over on a LOCKED cycle
@@ -1451,7 +1464,7 @@ router.post('/:id/distribution/hand-over', requireAdmin, (req, res) => {
 
   let applied;
   try {
-    applied = apply();
+    applied = apply.immediate(); // WA-T9: BEGIN IMMEDIATE — the outbox shares the WAL file with gorifi-wa
   } catch (err) {
     if (err instanceof BatchRefusal) return res.status(err.status).json(err.body);
     throw err;
@@ -1467,6 +1480,9 @@ router.post('/:id/distribution/hand-over', requireAdmin, (req, res) => {
   // guest's own empty cart are allowed. All THREE cancel doors are reachable after a
   // hand-over, so the fix belongs either at `softCancelGuestOrder()` (the one home
   // all three share) or at module 21's release, never at the admin cancel alone.
+  // → CLOSED BY WA-T5 at BOTH (learnings 15 §WA-T5): the soft cancel deletes the
+  // sub-order's QUEUED rows (the stamp stays), and the release skips a row about a
+  // cancelled sub-order (`skipped`/`cancelled`).
   res.json({
     handed_over: applied.handedOver,
     already_handed: applied.alreadyHanded,

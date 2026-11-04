@@ -164,3 +164,42 @@ export function waitingLabel(count) {
   if (n >= 2 && n <= 4) return `${n} ľudia čakajú na váš odkaz`
   return `${n} ľudí čaká na váš odkaz`
 }
+
+// ── Module 21 (WA-T8): the composer's and the board's message counts ─────────────
+//
+// 1 správa / 2-4 správy / 5+ správ — the count noun of every „n správ …" phrase the
+// composer (21 §UC-WA-009 „n správ uvoľnených") and the distribution board's hand-over
+// toast (16 §UC-DP-012 „· n správ zaradených na odoslanie (WhatsApp)") print. The specs
+// write the 5+ form for every n; declining it is the `bagsLabel` rule (broken Slovak on
+// an admin screen is not allowed — recorded for the PO in learnings 15 §WA-T8).
+export function messagesLabel(count) {
+  const n = Number(count) || 0
+  if (n === 1) return '1 správa'
+  if (n >= 2 && n <= 4) return `${n} správy`
+  return `${n} správ`
+}
+
+// The participles that agree with `messagesLabel` (feminine „správa"), as the bare
+// word — the `handedAdjective` shape: „zaradená/zaradené/zaradených",
+// „uvoľnená/uvoľnené/uvoľnených".
+export function queuedMessagesAdjective(count) {
+  const n = Number(count) || 0
+  if (n === 1) return 'zaradená'
+  if (n >= 2 && n <= 4) return 'zaradené'
+  return 'zaradených'
+}
+
+export function releasedMessagesAdjective(count) {
+  const n = Number(count) || 0
+  if (n === 1) return 'uvoľnená'
+  if (n >= 2 && n <= 4) return 'uvoľnené'
+  return 'uvoľnených'
+}
+
+// 1 príjemca / 2-4 príjemcovia / 5+ príjemcov — the composer's „Náhľad · n príjemcov".
+export function recipientsLabel(count) {
+  const n = Number(count) || 0
+  if (n === 1) return '1 príjemca'
+  if (n >= 2 && n <= 4) return `${n} príjemcovia`
+  return `${n} príjemcov`
+}

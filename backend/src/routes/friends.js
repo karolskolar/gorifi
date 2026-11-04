@@ -8,6 +8,9 @@ import { getPlaceholderCycleId } from '../helpers/friend-create.js';
 import { bindValue } from '../helpers/bind-value.js';
 import { roundMoney } from '../helpers/pricing.js';
 import { balancePaymentBlock } from '../helpers/payment.js';
+// WA-T1 (21 §UC-WA-002): `phone_e164` is DERIVED at every phone writer in this file
+// (admin POST /, admin PATCH /:id, friend PATCH /:id/profile) — never computed here.
+import { toE164 } from '../helpers/phone.js';
 // 19 §UC-GL-001 + PO 2026-09-19 — the admin half of the STANDING guest link. The same
 // payload composers the host routes in guest-links.js use: one helper, two guards.
 import { standingPayload, regeneratedPayload, sendStanding } from '../helpers/standing-link.js';
@@ -136,6 +139,25 @@ function validateAdminFriendFields(body, only = null) {
     return { error: 'Neplatný email', field: 'email' };
   }
   return { values };
+}
+
+// ── 21 §UC-WA-003 (WA-T1): `whatsapp_opt_in`, a STRICT boolean on the two PATCHes ──
+// `true`/`false`/`1`/`0` and NOTHING else — not `'1'`, not `'yes'`, not `null`, not
+// `[1]` (the unbindable-body rule: a shape that is not one of the four is a 400 with a
+// `field` marker, never a coercion and never a 500). Absent key ⇒ `undefined` ⇒ the
+// column is untouched. Returns `{ error, field }` or `{ value: 0 | 1 | undefined }`.
+// Shared by the friend `PATCH /:id/profile` and the admin `PATCH /:id` so the two
+// cannot disagree on what a consent value is. (`POST /` takes no body value: the PO
+// fixed it at 1, and approve/onboarding write 0 — see schema.js.)
+const WHATSAPP_OPT_IN_ERROR = { error: 'Neplatný formát údajov (súhlas so správami cez WhatsApp)', field: 'whatsapp_opt_in' };
+function parseWhatsappOptIn(body) {
+  if (!body || typeof body !== 'object' || !Object.prototype.hasOwnProperty.call(body, 'whatsapp_opt_in')) {
+    return { value: undefined };
+  }
+  const raw = body.whatsapp_opt_in;
+  if (raw === true || raw === 1) return { value: 1 };
+  if (raw === false || raw === 0) return { value: 0 };
+  return { ...WHATSAPP_OPT_IN_ERROR };
 }
 
 // GET /friends/auth-mode - Public endpoint to get current auth mode
@@ -768,7 +790,8 @@ router.put('/:id/change-password', (req, res) => {
 // username = ? WHERE id = ?` and never touches `password_hash`, so an admin can hand a
 // password-less friend a username — and it is the ONLY such writer (verified by
 // walking every `UPDATE friends SET` / `INSERT INTO friends` in `backend/src`; the
-// admin PATCH's allow-list is name/display_name/active/phone/email only). So the
+// admin PATCH's allow-list is name/display_name/active/phone/email only — WA-T1 adds
+// whatsapp_opt_in + the derived phone_e164, still no username). So the
 // supplied `username` is honoured ONLY while `friends.username IS NULL` and is NEVER a
 // rename — FUP-T20's product decision keeps the username read-only in the portal, and
 // the admin renames. ⚠ Do not "simplify" this branch away as dead: deleting it turns a
@@ -1250,10 +1273,17 @@ router.post('/', requireAdmin, (req, res) => {
   // Values are trimmed by validateAdminFriendFields; optional fields fall to NULL.
   // Still sets NO credentials — approval (07) and the per-row actions are the only
   // credential mints (11 §UC-FC-004: a rule, not an omission).
+  //
+  // WA-T1 (21 §UC-WA-002/003): `phone_e164` derived by `toE164()` (NULL when the phone
+  // does not normalise — never a refusal), and `whatsapp_opt_in = 1` EXPLICITLY — PO
+  // 2026-09-19 overturned UC-WA-003's `0` default for this one path: the admin creates
+  // friends he already messages. (Approve + onboarding write 0.)
   const result = db.prepare(`
-    INSERT INTO friends (cycle_id, name, display_name, uid, access_token, invite_code, active, phone, email)
-    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
-  `).run(cycleId, name, display_name || null, uid, access_token, invite_code, phone || null, email || null);
+    INSERT INTO friends (cycle_id, name, display_name, uid, access_token, invite_code, active, phone, email,
+                         phone_e164, whatsapp_opt_in)
+    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 1)
+  `).run(cycleId, name, display_name || null, uid, access_token, invite_code, phone || null, email || null,
+    toE164(phone || null));
 
   const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(sanitizeFriend(friend));
@@ -1270,6 +1300,12 @@ router.patch('/:id', requireAdmin, (req, res) => {
     return res.status(400).json({ error: check.error, field: check.field });
   }
   const { name, display_name, phone, email } = check.values;
+  // WA-T1 (21 §UC-WA-003): the admin may switch the consent off on the friend's
+  // request (or back on). Strict boolean, validated with the rest of the body shape.
+  const optIn = parseWhatsappOptIn(body);
+  if (optIn.error) {
+    return res.status(400).json({ error: optIn.error, field: optIn.field });
+  }
   // `active` keeps its existing truthy coercion (11 §UC-FC-004) — 0/false/1/true
   // are all in live use by shipped specs.
   const { active } = body;
@@ -1318,10 +1354,17 @@ router.patch('/:id', requireAdmin, (req, res) => {
   if (phone !== undefined) {
     updates.push('phone = ?');
     values.push(phone || null);
+    // WA-T1: the derived twin travels with every phone write (a cleared phone ⇒ NULL).
+    updates.push('phone_e164 = ?');
+    values.push(toE164(phone || null));
   }
   if (email !== undefined) {
     updates.push('email = ?');
     values.push(email || null);
+  }
+  if (optIn.value !== undefined) {
+    updates.push('whatsapp_opt_in = ?');
+    values.push(optIn.value);
   }
 
   if (updates.length > 0) {
@@ -1378,7 +1421,13 @@ router.patch('/:id/profile', (req, res) => {
   // middleware/friend-auth.js), so every friend who logged in through the portal
   // has a resolved identity. Same 401 message requireFriendOwner uses for the
   // no-identity case, so the client sees one consistent instruction.
-  const touchesContact = req.body.phone !== undefined || req.body.email !== undefined;
+  //
+  // ⚠ WA-T1: `whatsapp_opt_in` joins the gate. It is CONSENT, which only the person
+  // can give or withdraw — under bare shared-password auth anyone could otherwise opt a
+  // colleague IN to WhatsApp messages (or out of them). A portal save always carries
+  // the friend's own Bearer session, so this costs a real user nothing either.
+  const touchesContact = req.body.phone !== undefined || req.body.email !== undefined
+    || req.body.whatsapp_opt_in !== undefined;
   if (touchesContact && owner.friendId == null) {
     return res.status(401).json({ error: 'Prihláste sa svojím menom a heslom' });
   }
@@ -1445,6 +1494,13 @@ router.patch('/:id/profile', (req, res) => {
     return res.status(400).json({ error: 'Zadajte mobilné číslo', field: 'phone' });
   }
 
+  // 21 §UC-WA-003 (WA-T1) — the WhatsApp consent, strict boolean, checked BEFORE any
+  // write like every other rule on this route (a refused value leaves the row as it was).
+  const optIn = parseWhatsappOptIn(req.body);
+  if (optIn.error) {
+    return res.status(400).json({ error: optIn.error, field: optIn.field });
+  }
+
   // ⚠ 18 §UC-PI-015 + PO 2026-09-19 („Packeta address server bound = add 160") —
   // the FIRST length rule this column has ever had, and it is deliberately NOT in
   // `ADMIN_FRIEND_FIELDS`. `friends.packeta_address` has exactly ONE writer in
@@ -1486,14 +1542,24 @@ router.patch('/:id/profile', (req, res) => {
   }
 
   if (phone !== undefined) {
-    db.prepare('UPDATE friends SET phone = ? WHERE id = ?').run(phone || null, friendId);
+    // WA-T1 (21 §UC-WA-002): ONE statement, both columns — the derived twin can never
+    // lag the phone it is derived from.
+    db.prepare('UPDATE friends SET phone = ?, phone_e164 = ? WHERE id = ?')
+      .run(phone || null, toE164(phone || null), friendId);
   }
 
   if (email !== undefined) {
     db.prepare('UPDATE friends SET email = ? WHERE id = ?').run(email || null, friendId);
   }
 
-  const updated = db.prepare('SELECT id, name, uid, packeta_address, phone, email FROM friends WHERE id = ?').get(friendId);
+  if (optIn.value !== undefined) {
+    db.prepare('UPDATE friends SET whatsapp_opt_in = ? WHERE id = ?').run(optIn.value, friendId);
+  }
+
+  // WA-T1: `whatsapp_opt_in` + `phone_e164` join the answer — the portal MERGES this
+  // object into its `currentFriend` (`FriendPortal.vue onProfileSaved`), so a key
+  // missing here would leave the next modal open seeded from the stale value.
+  const updated = db.prepare('SELECT id, name, uid, packeta_address, phone, email, phone_e164, whatsapp_opt_in FROM friends WHERE id = ?').get(friendId);
   res.json(updated);
 });
 

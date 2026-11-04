@@ -3,7 +3,7 @@ import db, { generateGuestToken } from '../db/schema.js';
 import { guestReadLimiter, guestWriteLimiter } from '../middleware/rate-limit.js';
 import { gramsByProductFromItems, stockViolations, cycleAvailability } from '../helpers/stock.js';
 import { basePriceForVariant, applyMarkup, VARIANT_PRICE_COLUMNS, roundMoney } from '../helpers/pricing.js';
-import { guestOrderStatus, softCancelGuestOrder } from '../helpers/guest-orders.js';
+import { guestOrderStatus, guestStatusUrlPath, softCancelGuestOrder } from '../helpers/guest-orders.js';
 import { bindValue } from '../helpers/bind-value.js';
 import { guestPaymentBlock } from '../helpers/payment.js';
 // 14 §UC-GR-011 — the guest order-confirmation mail. Module 08's seam, consumed
@@ -16,6 +16,8 @@ import { resolveLoginUrl } from '../helpers/credentials-message.js';
 import { uniqueGuestToken, currentOpenCycle } from '../helpers/standing-link.js';
 // 19 §UC-GL-004/005: the waitlist's one writer home (signup + the on-order purge).
 import { joinWaitlist, purgeWaitlistOnOrder } from '../helpers/guest-waitlist.js';
+// WA-T1 (21 §UC-WA-002): the checkout INSERT derives `guest_orders.phone_e164`.
+import { toE164 } from '../helpers/phone.js';
 
 const router = Router();
 
@@ -1073,7 +1075,7 @@ function deliverOrderConfirmation(req, { order, items, payment }) {
     // must never mint its domain and the URL is never taken from the request body.
     // 08 §UC-EM-004's `PUBLIC_BASE_URL` pin therefore covers it automatically.
     // ⚠ The CANONICAL form ONLY — the pair form is never newly emitted (UC-GR-003).
-    const url = `${resolveLoginUrl(req)}/g/o/${order.order_token}`;
+    const url = `${resolveLoginUrl(req)}${guestStatusUrlPath(order.order_token)}`;
 
     // One ordered line, split so that `qty` + ' ' + `rest` is the plain-text line AND
     // the html kv row states the same thing in the same words. The quantity is the kv
@@ -1280,11 +1282,16 @@ router.post('/:token/orders', guestWriteLimiter, (req, res) => {
     // Literal columns (never a spread body). Packeta: the fee + the trimmed point;
     // otherwise 0 / NULL. `total` is written exactly as before — product-only.
     const deliveryFee = delivery.packeta ? roundMoney(Number(current.parcel_fee) || 0) : 0;
+    // WA-T1 (21 §UC-WA-002): `phone_e164` = THE normaliser's answer, NULL when the
+    // phone does not normalise. ⚠ It never refuses the submit: `validateIdentity` (the
+    // length rule above) is still the only phone validation, so `0000000000` orders.
+    // This is the ONE writer of `guest_phone` — identity is frozen at submit.
     const result = db.prepare(`
       INSERT INTO guest_orders (link_id, order_token, guest_name, guest_phone, guest_email, status, total,
-                                delivery_fee, packeta_address)
-      VALUES (?, ?, ?, ?, ?, 'submitted', 0, ?, ?)
-    `).run(link.id, uniqueOrderToken(), guestName, guestPhone, guestEmail, deliveryFee, delivery.address);
+                                delivery_fee, packeta_address, phone_e164)
+      VALUES (?, ?, ?, ?, ?, 'submitted', 0, ?, ?, ?)
+    `).run(link.id, uniqueOrderToken(), guestName, guestPhone, guestEmail, deliveryFee, delivery.address,
+      toE164(guestPhone));
     const guestOrderId = result.lastInsertRowid;
 
     const total = replaceItems(guestOrderId, lines);
@@ -1326,7 +1333,7 @@ router.post('/:token/orders', guestWriteLimiter, (req, res) => {
     // `GuestOrder.vue` consumes this path verbatim (copy row, localStorage
     // `status_url`, the "Zobraziť stav objednávky" push), so the whole confirmation
     // screen follows this line and composes no URL of its own.
-    status_path: `/g/o/${order.order_token}`,
+    status_path: guestStatusUrlPath(order.order_token),
   });
 
   // 14 §UC-GR-011 — the confirmation mail. ⚠ FIRED HERE AND ONLY HERE: after the
@@ -1600,7 +1607,7 @@ function handleStatusEdit(req, res, { link, cycle, order }) {
     return {};
   });
 
-  const applied = apply();
+  const applied = apply.immediate(); // WA-T9: an empty cart soft-cancels ⇒ cancelForUnHandOver (outbox write)
   if (applied.conflict === 'gone') {
     return res.status(404).json({ error: 'Táto objednávka neexistuje' });
   }

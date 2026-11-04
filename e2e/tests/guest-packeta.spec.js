@@ -1180,8 +1180,11 @@ test.describe('GP-T1 · source pins', () => {
       /db\.transaction\(\(\) => \{[\s\S]*?SELECT status, parcel_fee FROM order_cycles[\s\S]*?INSERT INTO guest_orders/
     )
     // …and THAT const is what is bound: the INSERT's `.run(...)` names `deliveryFee`.
+    // ⚠ GROWN BY WA-T1 (21 §UC-WA-002): the same INSERT now also binds
+    // `toE164(guestPhone)` LAST (~~`delivery.address)`~~ → `delivery.address,
+    // toE164(guestPhone))`). The protected property — `deliveryFee` in its slot — is untouched.
     expect(guest).toMatch(
-      /\.run\(link\.id, uniqueOrderToken\(\), guestName, guestPhone, guestEmail, deliveryFee, delivery\.address\)/)
+      /\.run\(link\.id, uniqueOrderToken\(\), guestName, guestPhone, guestEmail, deliveryFee, delivery\.address,\s*toE164\(guestPhone\)\)/)
     // …and the CHARGED fee is that in-tx read (`current`), never the resolver's `cycle`
     // row — over HTTP the two always agree (sync handlers), so only this pin can see it.
     expect(guest).toMatch(/const deliveryFee = delivery\.packeta \? roundMoney\(Number\(current\.parcel_fee\) \|\| 0\) : 0;/)
@@ -1338,7 +1341,11 @@ test.describe('GP-T3 · 20 §UC-GP-003 — a parcel-OFF round renders today\'s p
     await expect(dialog.getByTestId('guest-packeta-address')).toHaveCount(0)
     await expect(dialog.getByText(GP3_GROUP_LBL)).toHaveCount(0)
     // PO 2026-09-29: the optional e-mail carries ONE help line — what it buys.
-    await expect(dialog.locator('.field-help')).toHaveCount(1)
+    // ⚠ GROWN BY WA-T1 (21 Decision D6): ~~1~~ → 2 — Mobil now carries the guest consent
+    // sentence (`guest-phone-help`, inside the phone wrapper, so the body SHAPE above is
+    // unchanged). The e-mail's own line is still exactly one, pinned by its test id below.
+    await expect(dialog.locator('.field-help')).toHaveCount(2)
+    await expect(dialog.getByTestId('guest-phone-help')).toHaveCount(1)
     await expect(dialog.getByTestId('guest-email-confirm-help')).toHaveText(GP3_EMAIL_CONFIRM_HELP)
     await expect(dialog.locator('label.field-lbl[for="guest-email"]')).toHaveText(GP3_EMAIL_OPT)
     await expect(dialog.locator('.m-head .sub')).toHaveText(GP3_SUB_HOST('24.90 EUR', s.first))
@@ -3021,7 +3028,8 @@ test.describe('GP-T6 · 20 §UC-GP-010 — hand-over inheritance stamps via_host
     expect(own.status()).toBe(200)
     expect(guestRow(s.B.id).handed_over_at).toBeTruthy()
     expect(gp6Notifications(s.B.id)).toEqual([
-      { template_key: 'packeta', segment_key: 'packeta', recipient_kind: 'guest', recipient_id: s.B.id, status: 'queued' },
+      // ~~segment_key: 'packeta'~~ → WA-T4: 21's grammar, `handed_over:packeta:<Bratislava day>`.
+      { template_key: 'packeta', segment_key: expect.stringMatching(/^handed_over:packeta:\d{4}-\d{2}-\d{2}$/), recipient_kind: 'guest', recipient_id: s.B.id, status: 'queued' },
     ])
     const party = gp6Guest(await gp6Dist(s.cycle.id), s.B.id)
     expect(party.stage).toBe('handed')
@@ -3234,7 +3242,12 @@ test.describe('GP-T6 · 20 §UC-GP-010 — Distribution.vue renders the Packeta 
     const [req] = await Promise.all([page.waitForRequest(isGuestHandover), page.keyboard.press('Space')])
     expect(req.postDataJSON()).toEqual({ handed_over: true })
     await expect(toggle).toBeChecked()
-    expect(guestRow(s.B.id).handed_over_at, 'the keyboard Space genuinely fired the hand-over').toBeTruthy()
+    // ~~expect(guestRow(…)).toBeTruthy()~~ → WA-T12 (2026-10-24): a NATIVE checkbox is
+    // checked by the Space itself, before the PATCH answers, so the sync DB read raced the
+    // commit (red once in a full run, green 2/2 alone). Poll the row instead — the same
+    // claim, made after the server had its chance (the sibling test above waits on
+    // `data-stage="handed"`, which only the re-fetch can paint, for the same reason).
+    await expect.poll(() => guestRow(s.B.id).handed_over_at, { message: 'the keyboard Space genuinely fired the hand-over' }).toBeTruthy()
   })
 
   test('the Packeta group\'s „Odovzdať zabalené (1)" sends exactly `guest_order_ids:[B]` and nothing for the host', async ({ page }) => {
@@ -3250,9 +3263,19 @@ test.describe('GP-T6 · 20 §UC-GP-010 — Distribution.vue renders the Packeta 
     await expect(btn).toHaveText('Odovzdať zabalené (1)')
     await btn.click()
     await expect(page.getByTestId('handover-subtitle')).toContainText('Packeta · 1 balíček')
-    const [req] = await Promise.all([page.waitForRequest(isBulkHandover), page.getByTestId('handover-confirm').click()])
+    const [req, res] = await Promise.all([
+      page.waitForRequest(isBulkHandover),
+      page.waitForResponse((r) => isBulkHandover(r.request())),
+      page.getByTestId('handover-confirm').click(),
+    ])
     expect(req.postDataJSON()).toEqual({ order_ids: [], guest_order_ids: [s.B.id] })
-    await expect(page.getByTestId('handover-toast')).toHaveText('1 balíček odovzdaný')
+    // ~~'1 balíček odovzdaný'~~ → WA-T8 (module 21, learnings 15 §WA-T8): the toast ends with
+    // the message half when the batch queued any (B has a phone ⇒ one `packeta` row).
+    const queued = (await res.json()).queued_notifications
+    expect([0, 1], 'one guest bag queues at most one message').toContain(queued)
+    await expect(page.getByTestId('handover-toast')).toHaveText(queued === 1
+      ? '1 balíček odovzdaný · 1 správa zaradená na odoslanie (WhatsApp)'
+      : '1 balíček odovzdaný')
     await expect(page.getByTestId(`bag-row-guest-${s.B.id}`)).toHaveAttribute('data-stage', 'handed')
     expect(guestRow(s.B.id).handed_over_at).toBeTruthy()
     expect(gp6OrderRow(s.hostOrder.id).handed_over_at).toBeNull()

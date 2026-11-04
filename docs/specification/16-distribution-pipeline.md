@@ -79,6 +79,11 @@
    „Vytlačiť štítky“ in the header, both wired to the labels feature's existing entry (OPEN
    below); nothing about labels is specified here. „Správa skupine“ / „Správy (n vo fronte)“
    are module 21's buttons and are **not rendered by this module** — 21 adds them.
+   **→ Added by WA-T8 (learnings 15 §WA-T8): header „Správy (n vo fronte)“ (`board-messages`,
+   n = the cycle's queued outbox rows) and per pickup-point / Packeta group „Správa skupine“
+   (`messages-group-<key>`, deep link `/admin/whatsapp?cycle=&segment=handed_over:pickup:<loc>`
+   | `handed_over:packeta` — a date-less PREFIX the composer resolves to the newest day); none
+   for `in_person` (nothing is queued there) nor under „Podľa stavu“ / „Podľa priateľa“.**
 4. **Prototype `togglePacked` cascade (un-packing a bag also clears `handed`) vs this module's
    rule.** REJECTED in favour of a refusal: un-packing a handed-over bag answers 409
    `handed_over`; the admin un-hands-over first (UC-DP-007). Reason: a silent cascade would
@@ -170,7 +175,7 @@ writes into — exactly the shapes 01-architecture §Roadmap October 2026 additi
   `CREATE TABLE IF NOT EXISTS` is a no-op.
 - `notifications` — `CREATE TABLE IF NOT EXISTS` with the 01-architecture column list
   VERBATIM: `id, channel CHECK IN ('whatsapp','email'), template_key, segment_key,
-  recipient_kind CHECK IN ('friend','guest','waitlist'), recipient_id, phone_e164, body,
+  recipient_kind CHECK IN ('friend','guest','waitlist'~~)~~ **,'admin')** — → 21 D12, widened by WA-T1's guarded recreate), recipient_id, phone_e164, body,
   status CHECK IN ('queued','released','sent','failed','skipped'), cycle_id, order_id NULL,
   guest_order_id NULL, created_at, released_at, sent_at, error`. `body` and `phone_e164` are
   NULLABLE (this module writes them as `NULL`, UC-DP-008). Module 21 owns every later column
@@ -445,28 +450,42 @@ passes unmodified on non-handed bags).
 **Goal:** the stage-3 moment is when people want to hear „your coffee is at X“ (roadmap §11
 Notifications table, Q5.d default: queued on hand-over, released by the admin). This module
 writes the ROWS and defines their contract; module 21 renders, releases and sends. **The API
-never sends** (01-architecture).
+never sends** ~~(01-architecture)~~ **a WhatsApp message** (→ 21 §UC-WA-010 / WA-T6: it hands `channel='email'` rows
+to the mailer after the release commits, `helpers/outbox.js handOffEmailRows()`; 01-architecture).
 
 **Contract — one row per (recipient, bag) at hand-over, written INSIDE the hand-over
 transaction (UC-DP-004/005/006):**
 
+> ⚠ **SUPERSEDED IN PART by module 21 (WA-T4, 21 §UC-WA-006 — learnings 15 §WA-T4).** The
+> `segment_key` column below is struck: keys are 21's grammar
+> (`handed_over:pickup:<loc>:<date>` / `handed_over:packeta:<date>` /
+> `host_guests:<host>:<date>`, Europe/Bratislava day of the row's `handed_over_at`), and
+> DP-T3's rows were re-keyed at boot. The rows now carry a RENDERED `body` and
+> `phone_e164`/`email` snapshots, follow 21's per-recipient rules (disabled template / opted
+> out / no phone ⇒ none, `email` or `skipped`/`no_phone`), deduplicate on the index's own
+> tuple (template, recipient, CYCLE), and a deactivated friend gets no row. The template
+> mapping and the „no row for `in_person`" rule are unchanged.
+
 | bag handed over | recipient_kind / recipient_id | template_key | segment_key |
 |---|---|---|---|
-| friend order, `delivery.type = 'pickup'` | `friend` / `orders.friend_id` | `pickup` | `loc<id>` |
-| friend order, `packeta` | `friend` / `orders.friend_id` | `packeta` | `packeta` |
+| friend order, `delivery.type = 'pickup'` | `friend` / `orders.friend_id` | `pickup` | ~~`loc<id>`~~ → `handed_over:pickup:<loc>:<date>` |
+| friend order, `packeta` | `friend` / `orders.friend_id` | `packeta` | ~~`packeta`~~ → `handed_over:packeta:<date>` |
 | friend order, `in_person` | — **no row** (module 21 UC-WA-004 defines no template for in-person hand-over; the admin arranges it directly) | — | `in_person` (segment only, for the board's „Správa skupine“ with template `custom`) |
-| each guest **inherited** from a host (via_host) | `guest` / `guest_orders.id` | `host` | `host:<host_friend_id>` |
-| guest handed over on its own, `via_host` (UC-DP-005 cases b/c) | `guest` / `guest_orders.id` | `host` | `host:<host_friend_id>` |
-| guest handed over on its own, `packeta` (module 20) | `guest` / `guest_orders.id` | `packeta` | `packeta` |
+| each guest **inherited** from a host (via_host) | `guest` / `guest_orders.id` | `host` | ~~`host:<host_friend_id>`~~ → `host_guests:<host>:<date>` |
+| guest handed over on its own, `via_host` (UC-DP-005 cases b/c) | `guest` / `guest_orders.id` | `host` | ~~`host:<host_friend_id>`~~ → `host_guests:<host>:<date>` |
+| guest handed over on its own, `packeta` (module 20) | `guest` / `guest_orders.id` | `packeta` | ~~`packeta`~~ → `handed_over:packeta:<date>` |
 | a host with NO own order (synthetic party) | — no `friend` row; only the guest rows above | — | — |
 
-Fixed columns: `channel = 'whatsapp'`, `status = 'queued'`, `cycle_id`, `order_id` (friend
-rows) / `guest_order_id` (guest rows), `created_at = CURRENT_TIMESTAMP`, **`body = NULL`,
-`phone_e164 = NULL`, `released_at/sent_at/error = NULL`**.
+Fixed columns: ~~`channel = 'whatsapp'`, `status = 'queued'`,~~ `cycle_id`, `order_id` (friend
+rows) / `guest_order_id` (guest rows), `created_at = CURRENT_TIMESTAMP`, ~~**`body = NULL`,
+`phone_e164 = NULL`,**~~ `released_at/sent_at = NULL` (→ WA-T4: channel/status/`body`/`phone_e164`/
+`email`/`error` per 21 §UC-WA-006 — learnings 15 §WA-T4).
 
 **Business rules:**
 
-- **Facts, not text.** This module stores WHICH template for WHOM about WHICH bag. Module 21
+- ~~**Facts, not text.**~~ → **SUPERSEDED by 21 §UC-WA-001/006 (WA-T4)**: the body is rendered and the
+  number snapshot at ENQUEUE; WA-T5's rerender is the door for a later template edit. Original text:
+  This module stores WHICH template for WHOM about WHICH bag. Module 21
   renders `body` from the template key + the live row (recipient name, place, address, host,
   amount) at RELEASE time and resolves `phone_e164` then (from `friends.phone_e164` /
   `guest_phone`, opt-in, `skipped` on a missing number — all 21's rules). ⚠ Reason: template
@@ -478,25 +497,27 @@ rows) / `guest_order_id` (guest rows), `created_at = CURRENT_TIMESTAMP`, **`body
   arranges the hand-over directly — orchestrator reconciliation 2026-09-19). Recipients are never friends without
   a bag: the „everyone at point X“ segments are 21's composer, not a hand-over row.
 - **Idempotent enqueue:** before INSERT, if a `queued` row exists for the same `(template_key,
-  recipient_kind, recipient_id, order_id/guest_order_id)` no second row is written. A
+  recipient_kind, recipient_id, ~~order_id/guest_order_id~~ → WA-T4: cycle_id)` no second row is written. A
   `released`/`sent` row does not block a new `queued` one (a genuine re-hand-over after a
   reversal is a new event).
 - **Reversal dequeues:** `handed_over: false` **DELETEs** this bag's rows with `status =
   'queued'` (and, on a host reversal, its inherited guests' `queued` rows) — never
   `released`/`sent`/`failed`/`skipped` rows (those are history). The row count returned as
   `dequeued_notifications`.
-- Hand-over of a bag whose recipient is a deactivated friend still enqueues (21 decides
-  whether to skip; this module records the event).
+- ~~Hand-over of a bag whose recipient is a deactivated friend still enqueues (21 decides
+  whether to skip; this module records the event).~~ → WA-T4: 21 decided — no row (consent
+  predicate `active = 1`), counted `none`.
 - ⚠ **No sending, no outbound call, no import of any WhatsApp/mail code from these routes**;
   no `released` transition exists in this module.
 - Board copy that mentions the messages (confirm modal second sentence, toast half „· n správ
   zaradených na odoslanie (WhatsApp)“, header „Správy (n vo fronte)“) is **module 21's** — this
-  module does not render it (resolved conflict 3). Rows still accumulate from day one so the
+  module does not render it (resolved conflict 3). **→ WA-T8 renders all three on the board
+  (learnings 15 §WA-T8).** Rows still accumulate from day one so the
   trigger data exists when 21 lands (§16 F5 consequence).
 
 **Acceptance criteria:** hand-over of a `pickup` friend with two live guests inserts exactly
 three `queued` rows (1 × `pickup` for the friend with `order_id`, 2 ×
-`host` with the guest ids, `segment_key = 'host:<id>'`), all `body IS NULL`;
+`host` with the guest ids, `segment_key = ~~'host:<id>'~~ → 'host_guests:<id>:<date>'`), ~~all `body IS NULL`~~ (→ WA-T4: rendered bodies);
 a repeat hand-over inserts none; reversal deletes exactly those three and leaves a pre-existing
 `sent` row alone; a synthetic host's guest hand-over inserts guest rows only; no row ever has
 `status <> 'queued'` after any route in this module.
@@ -612,7 +633,8 @@ prototype as drawn.
 - **Group header:** title, sub, badge „{n} balíček/balíčky/balíčkov“, „{p} zabal. · {h}
   odovzd.“, actions „Štítky“ (F7 entry point, see header rule), „Odovzdať zabalené ({ready})“
   where `ready` = parties in the group with `stage = 'packed'`; disabled when `ready = 0`
-  (`data-testid="handover-group-<group_key>"`). No „Správa skupine“ — module 21 adds it.
+  (`data-testid="handover-group-<group_key>"`). No „Správa skupine“ — module 21 adds it
+  (**added by WA-T8**: `messages-group-<group_key>`, pickup points + Packeta only).
 - **State handling:** `loadSeq` guard on the load; group-by / filter / focus are local `ref`s
   and survive in-place row patches; the per-item pending map, `guestCollapse` fold map and the
   pickup-locations error Alert are kept as shipped.
@@ -712,7 +734,10 @@ selector retargets listed in UC-DP-015.
    `bagsLabel`), banner **„Hostia v balíku hostiteľa sa označia spolu s ním. Peniaze sa
    nemenia — účtovanie prebehlo pri zabalení.“**, buttons **„Zrušiť“** / **„Áno, odovzdané“**
    (`data-testid="handover-confirm"`). The prototype's second sentence about the WhatsApp
-   message is module 21's (resolved conflict 3) — not rendered here.
+   message is module 21's (resolved conflict 3) — not rendered here. **→ WA-T8 renders it
+   (`handover-message-note`): „Pre každý balíček sa pripraví WhatsApp správa („{template
+   name}“). Odošlete ju jedným tlačidlom v záložke Správy.“ for a pickup point / Packeta
+   group, none for `in_person`, a generic DRAFT for the stage/friend groupings.**
 2. Confirm → `POST /cycles/:id/distribution/hand-over` with `order_ids` = the group's
    `stage = 'packed'` parties that have an `order_id`, and `guest_order_ids` = the live
    sub-order ids of the group's `stage = 'packed'` synthetic hosts plus (module 20) the group's
@@ -721,7 +746,8 @@ selector retargets listed in UC-DP-015.
 3. **200** → patch rows from the payload (`handed_over`, `guests_inherited`), recompute plan
    cards from a re-fetch (loadSeq), toast **„{n} balíček odovzdaný“ / „{n} balíčky odovzdané“ /
    „{n} balíčkov odovzdaných“** for 3.5 s (`data-testid="handover-toast"`). The „· n správ
-   zaradených na odoslanie (WhatsApp)“ half is module 21's.
+   zaradených na odoslanie (WhatsApp)“ half is module 21's (**WA-T8: rendered, declined, from
+   the POST's `queued_notifications`, only when > 0**).
 4. **409 `not_packed`** → close the modal, re-fetch, show an inline Alert „Niektoré balíčky
    už nie sú zabalené — zoznam bol obnovený.“ and highlight the named rows.
 5. The group button is pending-disabled for the duration; other rows stay interactive.
@@ -819,7 +845,8 @@ every module: Playwright in `e2e/`, no unit runner, `node --check` on changed ba
   `handed_over`, rows unchanged; after reversal the un-pack posts exactly one reversal row.
 - **Outbox contract (UC-DP-008):** row counts and columns per case in its acceptance
   criteria; dedupe; dequeue on reversal leaves a hand-inserted `sent` row; every row
-  `status = 'queued'`, `body IS NULL`. Uses `node:sqlite` on `DB_PATH` (self-skips without it,
+  `status = 'queued'`, ~~`body IS NULL`~~ (→ WA-T4: a rendered body; per-recipient statuses in
+  `whatsapp-handover-enqueue.spec.js` — learnings 15 §WA-T4). Uses `node:sqlite` on `DB_PATH` (self-skips without it,
   the documented skip) — and remember its constraint error codes differ from better-sqlite3's.
 - **Bodies:** `{}`, `true`, `[3]`, `'abc'`, `{ handed_over: 'yes' }` ⇒ 400, never 500; ids from
   another cycle ⇒ 400 `foreign_id`.

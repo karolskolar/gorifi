@@ -36,6 +36,9 @@ import guestWaitlistRouter from './routes/guest-waitlist.js';
 import magicLinkRouter from './routes/magic-link.js';
 import coffeeProductsRouter from './routes/coffee-products.js';
 import imagesRouter from './routes/images.js';
+import notificationsRouter from './routes/notifications.js';
+import { sweepInterruptedEmailRows } from './helpers/outbox.js';
+import { isDbBusy, sendDbBusy } from './helpers/db-busy.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -125,6 +128,10 @@ app.use('/api/guest-order-items', requireAdmin, guestOrderItemsRouter);
 // (admin only), so the WHOLE mount is gated — the public signup is
 // `POST /api/guest/:token/waitlist` on the bare guest router above, never here.
 app.use('/api/guest-waitlist', requireAdmin, guestWaitlistRouter);
+// 21 §UC-WA-004 (WA-T2) onwards: the WhatsApp notifications API (templates now; segments,
+// outbox compose/release/retry in later rows). Single-audience — admin only — so the
+// WHOLE mount is gated; every route on it joins ADMIN_ENDPOINTS.
+app.use('/api/notifications', requireAdmin, notificationsRouter);
 
 // Module 12 (PC-T2): the coffee-product catalog — WHOLE-MOUNT admin, like
 // bakery-products. No public/friend route may ever live on this router
@@ -250,6 +257,11 @@ app.use((err, req, res, next) => {
     return res.status(status).json({ error: CLIENT_ERROR_MESSAGES[status] || 'Neplatna poziadavka' });
   }
 
+  // WA-T9 (21 §UC-WA-011): the `gorifi-wa` process is the SECOND writer to the SQLite
+  // file — a `SQLITE_BUSY*` is transient and retryable: 503 `db_busy`, never a 500 with a
+  // stack (`helpers/db-busy.js`). Nothing was written (the transaction rolled back).
+  if (isDbBusy(err)) return sendDbBusy(req, res, err);
+
   console.error(err.stack);
   res.status(500).json({ error: 'Nieco sa pokazilo' });
 });
@@ -258,6 +270,11 @@ app.use((err, req, res, next) => {
 // nginx (which proxies to 127.0.0.1) and never directly on the LAN. Override
 // with HOST=0.0.0.0 if a deployment genuinely needs external binding. Keep this
 // in sync with the hardened server (SEC-I2).
+// WA-T6 (21 §UC-WA-010): e-mail notifications left `released` by a previous process are
+// sends that never finished — fail them as `interrupted` so the composer's retry re-sends.
+// ONCE, here, never in `db/schema.js` (see `sweepInterruptedEmailRows()`).
+sweepInterruptedEmailRows();
+
 app.listen(PORT, process.env.HOST || '127.0.0.1', () => {
   console.log(`Server bezi na porte ${PORT} (${process.env.HOST || '127.0.0.1'})`);
 });

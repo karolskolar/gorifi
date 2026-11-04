@@ -1038,6 +1038,11 @@ function goToStatus() {
           inputmode="tel"
           maxlength="32"
         />
+        <!-- 21 Decision D6 (WA-T1) — the ONE consent sentence for guests, who have no
+             opt-in flag: they are messaged only about their OWN sub-order. Module 21's
+             fixed string, VERBATIM — ⚠ it is vy-form on the TY-form guest surface
+             (learnings 11 §TY-guest); a PO question, not a call-site rewording. -->
+        <div class="field-help" data-testid="guest-phone-help">Na toto číslo ti pošleme správu, keď bude objednávka pripravená.</div>
       </div>
       <!-- 20 §UC-GP-003 item 1 — below Mobil, above E-mail (whose label depends on it).
            Renders NOTHING on a parcel-off round. -->
